@@ -187,8 +187,10 @@ function anchored(chain, roots, now) {
 //   4. run       — only once the container is valid *and* trusted.
 //
 // The gate is on the signature marker: an unsigned container never reaches the
-// checks (and, here, never runs). A future ZipProvider will fold the per-member
-// hash checks into member fetches, and the --vfs loader can require a signature.
+// checks (and, here, never runs). The per-member hash checks that this gate
+// leaves implicit are folded into member fetches by lib/provider.js, which is
+// what a `--vfs-mount` of a `.napp` uses; a SEA cannot reach for it, because it
+// lives inside the very archive this code has to vet before mounting.
 // ---------------------------------------------------------------------------
 
 function refuse(state, reason) {

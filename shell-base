@@ -1,2 +1,1 @@
-#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs
-
+#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs-load --vfs-mount

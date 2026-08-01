@@ -1,10 +1,16 @@
 {
-    "name":"test-app",
+    "name":"@pipobscure/napp",
     "version": "0.0.0",
     "type":"module",
     "main":"app.js",
+    "bin": { "napp": "./app.js" },
     "exports": {
         ".": "./app.js",
-        "./manifest": "./manifest.js"
+        "./manifest": "./manifest.js",
+        "./archive": "./archive.js",
+        "./provider": "./provider.js",
+        "./register": "./register.cjs",
+        "./recorder": "./recorder.js",
+        "./record": "./record.cjs"
     }
 }

@@ -1,18 +1,35 @@
 # builtinsea
 
-An experiment in **bundling and distributing Node.js applications as single files** —
-either as a small self-executing ZIP archive that runs on any installed Node, or as a
-fully self-contained native executable that needs no Node at all.
+A tool — **`napp`** — for **bundling and distributing Node.js applications as single,
+signed files**, and the experiment that produced it. It does four things:
 
-It is driven by a modified Node.js, in two additions on top of Node's existing experimental
-**virtual file system** (`node:vfs`, by Matteo Collina):
+- **`napp create`** — archive a set of files and sign them.
+- **`napp verify`** — validate an archive and report its trust state.
+- **`@pipobscure/napp/register`** — a **`node:vfs` provider** you preload with `-r` (or
+  `--import`), so `node --vfs-load --vfs-mount app.napp` mounts and runs an application
+  *only* if it is properly signed, and checks each member against its recorded digest as
+  that member is read.
+- **`@pipobscure/napp/record`** — a second provider that writes down every file a run
+  actually reads, so the list of what to archive comes from observation rather than
+  guesswork. It is the userland replacement for the `--vfs-manifest` flag.
+
+The result is an application in one file that the runtime itself refuses to run when it
+has been tampered with — either as a plain `.napp` archive, as a small self-executing ZIP
+that runs on any installed Node, or as a fully self-contained native executable that needs
+no Node at all.
+
+It is driven by a modified Node.js, in three additions on top of Node's existing
+experimental **virtual file system** (`node:vfs`, by Matteo Collina):
 
 1. **ZIP archive support in `node:zlib`** plus a **`ZipProvider`** that mounts such an
    archive through VFS as a file tree — proposed upstream as
    [nodejs/node#64339](https://github.com/nodejs/node/pull/64339).
-2. A **`--vfs` module loader** that resolves a program's entry point and all its
-   `require()`/`import` against a mounted directory or archive — prepared as a follow-on in
-   [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
+2. A **`--vfs-mount` / `--vfs-load` module loader** that mounts directories and archives
+   and resolves a program's entry point and all its `require()`/`import` against them —
+   prepared as a follow-on in [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
+3. **`vfs.registerProvider()`**, the extension point that lets a preloaded module
+   decide which provider backs a mount — which is what makes a *verifying* mount, or a
+   *recording* one, possible from userland at all.
 
 Together they let the root a program runs from be a plain `.zip` embedded inside the
 program's own file. Combined with Node's newer **Single Executable Application (SEA)**
@@ -59,8 +76,9 @@ one lives:
   - **ZIP archive support in `node:zlib`** and the **`ZipProvider`** that mounts an archive
     through VFS — proposed upstream as
     [nodejs/node#64339](https://github.com/nodejs/node/pull/64339).
-  - The **`--vfs` / `--vfs-manifest` module loader** that makes a mounted tree the thing a
-    program actually resolves and runs from — prepared as a follow-on in
+  - The **`--vfs-mount` / `--vfs-load` module loader** that makes a mounted tree the thing a
+    program actually resolves and runs from, and the provider registry that decides what
+    backs a mount — prepared as a follow-on in
     [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
 - **The SEA group** is recent upstream Node functionality the experiment leans on, carried
   along so the whole pipeline works from one binary.
@@ -110,23 +128,27 @@ Directories are recognized both explicitly and implicitly; a file opened for wri
 as a new archive entry when its handle is closed. This is what lets a `.zip` be *mounted*
 and treated like a directory.
 
-### 3. `--vfs` / `--vfs-manifest` startup flags — the keystone *([pipobscure/node#3](https://github.com/pipobscure/node/pull/3))*
+### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([pipobscure/node#3](https://github.com/pipobscure/node/pull/3))*
 
 This is what wires VFS into Node's *startup and module resolution* so a mounted tree
-becomes the thing the program actually runs from:
+becomes the thing the program actually runs from. Mounting and running are two separate
+flags, so a program can be given several mounts and still have one entry point:
 
-- **`--vfs=<target>`** mounts a target and resolves the entry point *and all subsequent
-  `require()` / `import`* against it instead of the real filesystem.
-  - A **directory** target is mounted with `RealFSProvider` at its own real path.
-  - A **file** target is opened as a read-only ZIP (`ZipFile`) and mounted with
+- **`--vfs-mount <source>[=<target>]`** mounts `<source>` at `<target>`, defaulting to
+  `<source>`'s own resolved path. Repeatable.
+  - A **directory** source is mounted with `RealFSProvider`.
+  - A **file** source is opened as a read-only ZIP (`ZipFile`) and mounted with
     `ZipProvider` — turning that one file into a virtual directory.
-- With `--vfs` active, `argv[1]` is *unconditionally the mount root*, exactly as if you
-  had run `node <mountRoot>`. The mount's own `package.json` `"main"` decides what runs;
-  a positional argument is the program's own argument (shifted to `argv[2]+`), never an
+- **`--vfs-load`** runs the entry point out of the **last** `--vfs-mount`, resolving it
+  *and all subsequent `require()` / `import`* against the mount instead of the real
+  filesystem. `argv[1]` is then *unconditionally that mount point*, exactly as if you had
+  run `node <mountPoint>`. The mount's own `package.json` `"main"` decides what runs; a
+  positional argument is the program's own argument (shifted to `argv[2]+`), never an
   entry-point override.
 - That rule is precisely what makes a **self-mounting shebang** work:
-  `#!/usr/bin/env -S node --vfs`. The kernel appends the script's own path as the value of
-  `--vfs`, so the script mounts *itself* and runs its embedded `package.json` main.
+  `#!/usr/bin/env -S node --vfs-load --vfs-mount`. The kernel appends the script's own path
+  as the value of the trailing `--vfs-mount`, so the script mounts *itself* and runs its
+  embedded `package.json` main.
 - To make this real, four module-resolution primitives (package.json reading,
   nearest-scope lookup, legacy main resolution, extensionless format sniffing) were
   changed to stop calling native bindings directly and instead go through a VFS-aware path
@@ -137,12 +159,52 @@ becomes the thing the program actually runs from:
   at). **Worker threads** inherit the active mount, so sandboxed code can't spawn an
   "escaped" worker.
 
-**`--vfs-manifest=<file>`** (used with a directory target) records the path of *every file
-actually read through the mount* — by module resolution or by the program's own `fs`
-calls. It's implemented as a small observer hook on the provider, not by patching methods.
-This gives you a **dependency manifest by observation**: run the app once, and you get the
-exact minimal set of files it touches — the correct contents for the archive you're about
-to build.
+Recording the path of *every file actually read through a mount* — by module resolution or
+by the program's own `fs` calls — used to be a third flag, `--vfs-manifest`, implemented as
+an observer hook inside `node:vfs`. It is now a **provider** instead, in this repo: see
+[Recording the manifest](#recording-the-manifest). Either way it gives you a **dependency
+manifest by observation**: run the app once, and you get the exact minimal set of files it
+touches — the correct contents for the archive you're about to build.
+
+### 4. `vfs.registerProvider()` — choosing what backs a mount
+
+A mount source is not hard-wired to the built-in provider for its kind. `node:vfs` exposes
+a small registry:
+
+```js
+vfs.registerProvider({ name, canHandle(resolvedPath, stats), create(resolvedPath, stats) });
+```
+
+Registered providers are consulted **before** the built-ins — the `RealFSProvider` for a
+directory and the `ZipProvider` for an archive are themselves just the last two entries —
+newest first, and selection happens *after* preload modules have run. That is the whole
+point: a preloaded module can install a provider for the source about to be mounted.
+
+```sh
+node --experimental-vfs -r @pipobscure/napp/register --vfs-load --vfs-mount app.napp
+```
+
+`canHandle` receives the `statSync()` of the source, so a provider can claim archives, or
+directories, or both — and because the built-ins are last, it can *wrap* either one rather
+than only adding new formats.
+
+Because a registered provider outranks the built-in one even for a file the built-in would
+happily handle, it can also **vet** a file rather than merely add a format. That is exactly
+what this repo does with `.napp`: the provider claims the file, verifies it, and either
+returns a filesystem or throws — and a throw during provider selection means the process
+never reaches the entry point.
+
+Two consequences worth stating plainly:
+
+- **Either preload flag works, because mounting waits for both.** `-r` modules run during
+  bootstrap; `--import` modules are only evaluated later, on the way into the entry point.
+  Mounting is therefore deferred past *both* — when `--import` is present the mounts are
+  made from `asyncRunEntryPointWithESMLoader`, and idempotently, so a registration from
+  either flag is in place before any provider is chosen.
+- **Claim by content, not just by name.** The built-in provider recognizes a ZIP by
+  sniffing its leading bytes, so an archive can be called anything. A verifying provider
+  that only claimed `*.napp` could be bypassed by renaming the file, which is why the one
+  here also claims anything carrying a `SIGNED:` marker.
 
 ### SEA support carried along
 
@@ -155,7 +217,7 @@ code-cache support for it. That's why `npm run sea` below is a single `node` inv
 
 ## The experiment in this repo
 
-This repo is a minimal application (`lib/`) and a set of npm scripts that demonstrate two
+This repo is a minimal application (`lib/`) and a set of npm scripts that demonstrate three
 end-to-end packaging pipelines built on the fork.
 
 ### The "application"
@@ -165,11 +227,16 @@ the **bundler**, the **verifier**, and an importable **library**:
 
 ```
 lib/
-  package.json   { "type":"module", "main":"app.js",
-                   "exports": { ".":"./app.js", "./manifest":"./manifest.js" } }
-  app.js         parseArgs CLI with `create` / `verify` subcommands; re-exports the library
+  package.json   { "type":"module", "main":"app.js", "bin": { "napp":"./app.js" },
+                   "exports": { ".", "./manifest", "./archive", "./provider",
+                                 "./register", "./recorder", "./record" } }
+  app.js         parseArgs CLI with `create` / `verify` / `run`; re-exports the library
   archive.js     createArchive() / bundle() — streams files, then signs the whole file
-  manifest.js    buildManifest() / parseManifest() / verify() — signing + verification core
+  manifest.js    buildManifest() / parseManifest() / verifySync() — signing + verification core
+  provider.js    NappProvider + register() — the verifying node:vfs file provider
+  register.cjs   the `-r` preload: registers that provider and nothing else
+  recorder.js    recording() + Manifest — a provider that writes down what it reads
+  record.cjs     the `-r` preload for manifest recording
 ```
 
 Packaging the verifier *as* one of these archives is the point: the same artifact that
@@ -180,13 +247,19 @@ to refuse to boot a tampered container (see [Signing and verification](#signing-
 
 | File | Role |
 |------|------|
-| `lib/app.js` | The application. A `parseArgs` CLI (`create` / `verify`); also the SEA/`--vfs` entry point and the package's library root. |
-| `lib/archive.js` | Bundler: writes a **prefix** (shebang stub or Node/SEA binary), then appends a ZIP of the listed files — each stamped with its content digest — with a `baseOffset` equal to the prefix size and an `AUTHORITY.PEM` manifest, then signs the whole file into the EOCD comment. |
-| `lib/manifest.js` | The signing/verification core: `buildManifest(…)`, `parseManifest(…)` and `verify(source)`. |
+| `lib/app.js` | The application. A `parseArgs` CLI (`create` / `verify` / `run`); also the SEA and mounted entry point and the package's library root. |
+| `lib/archive.js` | Bundler: optionally writes a **prefix** (shebang stub or Node/SEA binary), then appends a ZIP of the listed files — each stamped with its content digest — with a `baseOffset` equal to the prefix size and an `AUTHORITY.PEM` manifest, then signs the whole file into the EOCD comment. |
+| `lib/manifest.js` | The signing/verification core: `buildManifest(…)`, `parseManifest(…)`, `signatureOf(…)` and `verifySync(source)`. |
+| `lib/provider.js` | The verifying VFS provider: verifies an archive before it becomes a filesystem, then hashes each member as it is fetched. `register()` installs it with `node:vfs`. |
+| `lib/register.cjs` | The `-r` preload entry point — one call to `register()`, configured through the environment. |
+| `lib/recorder.js` | The recording provider: wraps a provider class so every read through it is appended to a manifest. Replaces the `--vfs-manifest` flag. |
+| `lib/record.cjs` | The `-r` preload for recording — set `NAPP_MANIFEST` and mount a directory. |
+| `test/napp.test.js` | End-to-end tests: sign, verify, mount, run, and every way that should be refused. |
+| `test/record.test.js` | Tests for the recording provider: what gets recorded, once, and what doesn't. |
 | `sea.js` | The SEA program. **Verifies itself** (`process.argv[0]`, whole-file signature inlined from `manifest.js`), and only then opens it as a `ZipFile`, mounts it via `ZipProvider` at `/APP`, and `require`s the app. |
 | `sea.json` | SEA build config: ESM-capable, runs with `--experimental-vfs`, outputs `node-base`. |
-| `shell-base` | The shebang prefix: `#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs`. |
-| `app.manifest` | The observed file list (from `--vfs-manifest`) that says what goes into the archive. |
+| `shell-base` | The shebang prefix: `#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs-load --vfs-mount`. |
+| `app.manifest` | The observed file list (from the recording provider) that says what goes into the archive, plus the four files nothing imports at build time (`provider.js`, `register.cjs`, `recorder.js`, `record.cjs`). |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives. |
 
 ### The scripts (`package.json`)
@@ -195,9 +268,15 @@ to refuse to boot a tampered container (see [Signing and verification](#signing-
 "sea":      "node --no-warnings --build-sea sea.json",
 // Build a self-contained SEA Node binary (`node-base`) whose entry is sea.js.
 
-"manifest": "node --no-warnings --experimental-vfs --vfs=lib/ --vfs-manifest app.manifest ./",
-// Run the app with lib/ mounted, recording every file it actually reads into app.manifest.
-// This *discovers* the archive's contents by observation instead of static analysis.
+"manifest": "NAPP_MANIFEST=app.manifest node --no-warnings --experimental-vfs -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\nregister.cjs\nrecorder.js\nrecord.cjs\n' >> app.manifest",
+// Run the app with lib/ mounted behind the recording provider, writing every file it
+// actually reads to app.manifest. This *discovers* the archive's contents by observation
+// instead of static analysis — then adds the four files a run can't observe: the two
+// providers are never imported by the CLI (they need node:vfs, which only exists under
+// --experimental-vfs) and the two preloads are loaded by `node -r`, not by the app.
+
+"napp":     "node --no-warnings lib/app.js create --base lib/ --key certs/leaf.key --chain certs/chain.pem --files app.manifest --output app.napp",
+// No prefix. Result: app.napp — a signed archive, run with `--vfs-mount` + the provider.
 
 "archive":  "node --no-warnings lib/app.js create --base lib/ --prefix shell-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.run && chmod 0755 app.run",
 // Prefix = shell-base (shebang). Result: app.run — a tiny self-executing ZIP app, signed.
@@ -205,22 +284,51 @@ to refuse to boot a tampered container (see [Signing and verification](#signing-
 "executable":"node --no-warnings lib/app.js create --base lib/ --prefix node-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.sea && chmod 0755 app.sea",
 // Prefix = node-base (the SEA binary). Result: app.sea — a standalone executable, signed.
 
-"verify":   "node --no-warnings lib/app.js verify --root certs/root.pem"
+"verify":   "node --no-warnings lib/app.js verify --root certs/root.pem",
 // Verify an archive against the test root, e.g. `npm run verify -- app.run`.
+
+"start":    "NAPP_ROOTS=certs/root.pem node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp",
+// Mount app.napp through the verifying provider and run it, trusting the test root.
+
+"test":     "node --no-warnings --experimental-vfs --test test/*.test.js"
 ```
 
 Drop `--key`/`--chain` from `create` to build an **unsigned** archive; drop `--root` from
-`verify` to see how the same archive reads when its certificate isn't trusted.
+`verify` to see how the same archive reads when its certificate isn't trusted. Drop
+`--prefix` to build a plain `.napp` instead of a self-executing container.
 
-### The two artifacts, and how each runs itself
+### The three artifacts, and how each runs itself
 
-**`app.run` — the shebang archive (~hundreds of bytes; needs Node installed).**
+**`app.napp` — the plain signed archive (~21 KB; needs Node and the preload).**
+No prefix at all: just the ZIP of `lib/`, with its per-member digests, its `AUTHORITY.PEM`
+manifest and the whole-file signature in the EOCD comment. It is run by mounting it:
+
+```sh
+node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp <args>
+```
+
+The preload registers the provider; `--vfs-mount` hands it `app.napp`; the provider verifies the
+signature and the chain **before** returning a filesystem, so an archive that fails is never
+mounted and the entry point never runs. This is the mode where the *runtime* enforces the
+signature rather than the application checking itself — the application needs no boot code
+of its own at all.
+
+**`app.run` — the shebang archive (the same ZIP plus a one-line header; needs Node installed).**
 It is literally the `shell-base` shebang line followed by the ZIP of `lib/`. When executed,
-the kernel runs `env node --vfs` and appends the file's own path. `--vfs` with no explicit
-target therefore mounts **`app.run` itself** as a read-only ZIP, whose `package.json` main
-(`app.js`) becomes the entry point. The archive's `baseOffset` was seeded to skip the
+the kernel runs `env node --vfs-load --vfs-mount` and appends the file's own path, which
+becomes that trailing flag's value — so it mounts **`app.run` itself** as a read-only ZIP,
+whose `package.json` main (`app.js`) becomes the entry point. The archive's `baseOffset`
+was seeded to skip the
 shebang bytes, so it stays a valid ZIP even though it doesn't start at byte 0. A whole
 application in a file you can email — provided the recipient has a compatible Node.
+
+> **Note:** this needs a Node whose provider selection recognizes a ZIP by locating its
+> end-of-central-directory record rather than by sniffing `PK\x03\x04` at byte 0 — a
+> prefixed container by construction has no `PK` at byte 0, and the leading-bytes test
+> rejected it with `ERR_VFS_INVALID_TARGET` before anything else happened. The napp
+> provider never had that blind spot (it always scanned from the tail), so
+> `node -r ./lib/register.cjs --vfs-load --vfs-mount app.run` mounts and verifies the same
+> file either way.
 
 **`app.sea` — the native executable (~155 MB; needs nothing).**
 It is the SEA `node-base` binary followed by the same ZIP. Running it starts `sea.js`,
@@ -234,25 +342,35 @@ Because `sea.js` self-verifies before it will run, `./app.sea` **refuses to boot
 embedded certificate chain is trusted. The demo signs with a self-signed test cert, so point
 Node at the test root to trust it: `NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea`.
 
-Same application, same archive format, two prefixes — one optimizing for **size**
-(reuse the user's Node), one for **self-containment** (bring your own Node).
+Same application, same archive format, three shapes — one where the **runtime** enforces
+the signature (`.napp`), one optimizing for **size** (reuse the user's Node), one for
+**self-containment** (bring your own Node).
 
 ### Try it
 
 ```sh
 npm run manifest     # observe which files the app reads  -> app.manifest
+npm run napp         # build + sign the plain archive     -> ./app.napp
+npm run verify -- app.napp                       # -> VALID
+npm start -- help                                # mount through the provider and run it
+node --no-warnings lib/app.js run --root certs/root.pem app.napp -- help   # the same, via the CLI
+node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp help  # refuses: untrusted
+
 npm run archive      # build + sign the shebang archive   -> ./app.run
+./app.run help       # mounts itself via the shebang (no gate of its own)
+node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.run help  # verified
 ./app.run verify --root certs/root.pem app.sea   # verify some other archive -> VALID
 
 npm run sea          # build the SEA base binary          -> ./node-base
 npm run executable   # build + sign the standalone exe    -> ./app.sea
 NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea verify app.run   # self-checks, then runs
 ./app.sea            # refuses: certificate not trusted (no NODE_EXTRA_CA_CERTS)
+
+npm test             # sign / verify / mount / run, and everything that must be refused
 ```
 
-The app is a verifier, so it needs an archive to check. Note the `--vfs` launcher
-(`app.run`) cannot verify **itself** by its own path — `--vfs` mounts the container over
-that path, so it resolves to the archive's *interior*, not the raw bytes; verify any other
+The app is a verifier, so it needs an archive to check. Note the shebang launcher
+(`app.run`) cannot verify **itself** by its own path — the mount covers that path, so it resolves to the archive's *interior*, not the raw bytes; verify any other
 archive, or use the SEA, which mounts at `/APP` and *can* self-verify.
 
 ---
@@ -319,6 +437,13 @@ be checked on its own (and a member fetch can re-verify it).
 | **valid-untrusted** | hash + signature + digests are sound, but the certificate chain isn't anchored in the trust store |
 | **valid** | all of the above sound **and** the chain is trusted |
 
+`verifySync()` is the implementation and `verify()` an `async` wrapper around it; both take
+`{ extraRoots, now, deep }`. With `deep: false` the member digests are checked for
+*presence* but not recomputed — the right trade for a mount, which re-checks each member as
+it is actually read (see below). The result also carries `hashAlg` and the `digests` map
+read from the archive that was just hashed, so a caller that goes on to serve those members
+checks them against what the signature covered rather than re-reading the comments later.
+
 The whole scheme is gated on the `SIGNED:` marker: only a signed archive is checked at all.
 Because the hash covers the central directory, it fixes *which* members exist and every
 member's digest, so editing *any* byte after signing yields **invalid**. Trust is evaluated
@@ -330,15 +455,67 @@ against the system CA store **plus** `NODE_EXTRA_CA_CERTS` (and any extra roots 
 `lib/` doubles as an importable package (the intended reuse point for the loader):
 
 ```js
-import { buildManifest, verify } from 'test-app/manifest';
+import { buildManifest, verifySync } from '@pipobscure/napp/manifest';
 
 // build the AUTHORITY.PEM manifest content (algorithms + chain); the whole-file
 // signature is applied by bundle(), not here
 const content = buildManifest({ hashAlg: 'sha256', signAlg: 'sha256', chain });
 
 // verify an archive path or a Buffer of the whole file
-const { state, reason, subject } = await verify('app.run', { extraRoots });
+const { state, reason, subject } = verifySync('app.run', { extraRoots });
 ```
+
+`./provider` and `./recorder` are deliberately *not* re-exported from the package root:
+importing them needs `node:vfs`, which only exists under `--experimental-vfs`, while
+creating and verifying archives does not.
+
+### Running only what is signed — the `.napp` provider
+
+`lib/provider.js` is where verification stops being something an application does to itself
+and becomes a property of the mount. It is a `ZipProvider` subclass, registered ahead of the
+built-in one, and it gates in two places:
+
+**At mount.** `open()` recomputes the whole-file hash, checks the signature over it against
+the leaf certificate in `AUTHORITY.PEM`, and anchors the chain in the trust store. Anything
+short of `valid` throws `ERR_NAPP_UNTRUSTED` out of provider selection, which is *before*
+the entry point is resolved — an archive that fails does not become a filesystem, so there
+is no window in which its code could run.
+
+**At fetch.** Every member is hashed as it is read and compared with the digest recorded for
+it, and only then handed over; a mismatch throws `ERR_NAPP_INTEGRITY` instead of returning
+content. The mount-time hash already covers every member's bytes — but it covers them *as
+they were when the file was hashed*, and a `ZipFile` reads members lazily from an open file
+descriptor. Rewriting the archive underneath a running program would otherwise serve the new
+bytes unchecked. Verified content is kept in memory (members are an application's own files,
+not the runtime), so each member is read and hashed at most once, and what later reads see is
+the copy that was verified rather than a fresh read of the file.
+
+A mounted archive is read-only regardless of how the underlying ZIP was opened: any write
+would invalidate the signature the mount was granted on, so writes fail with `EROFS`.
+
+Configure the preload through the environment, since `-r` takes no arguments:
+
+| Variable | Effect |
+|----------|--------|
+| `NAPP_ROOTS` | Extra trusted roots, a path-delimiter-separated list of PEM files. |
+| `NAPP_ALLOW_UNTRUSTED` | Accept a good signature whose chain is not anchored in the trust store. |
+
+For anything more, call `register()` yourself from a preload of your own:
+
+```js
+// my-preload.cjs — node --experimental-vfs -r ./my-preload.cjs --vfs-load --vfs-mount app.napp
+require('@pipobscure/napp/provider').register({
+  extensions: ['.napp', '.bundle'],  // claimed by name
+  claimSigned: true,                 // and anything carrying a SIGNED: marker
+  roots: ['/etc/ssl/my-root.pem'],   // PEM text or paths to PEM files
+  allowUntrusted: false,
+  deep: false,                       // recompute every digest at mount, not on fetch
+});
+```
+
+`napp run <archive> [-- <args>]` is the same thing with the flags filled in: it re-execs
+`node` with the preload and `--vfs-mount`, so what runs is what the child's own bootstrap
+verified.
 
 ### Self-verifying the SEA
 
@@ -353,11 +530,58 @@ concrete:
    and anchor it in the trust store.
 4. **run** — `require` the app only once the container is `valid` *and* trusted.
 
-An unsigned, tampered, or untrusted container exits non-zero without ever running. This split
-is deliberate groundwork: a future `ZipProvider` can fold the per-member digest checks into
-member fetches (erroring before it closes a member's stream on a hash mismatch), and the
-`--vfs` loader can *require* a signature outright. (The `--vfs` shebang launcher has no
-pre-mount stage today, so `app.run` does not self-verify — it hands straight off to the app.)
+An unsigned, tampered, or untrusted container exits non-zero without ever running. That
+split is the same one `lib/provider.js` now makes for VFS mounts — with the per-member
+digest checks folded into member fetches, which a SEA cannot reuse: the provider lives
+inside the very archive `sea.js` has to vet before it can mount anything.
+
+The shebang launcher, by contrast, has no pre-mount stage of its own, so `app.run`
+executed directly does not self-verify — it hands straight off to the app. Mounting it with the
+provider preloaded (`node -r ./lib/register.cjs --vfs-load --vfs-mount app.run`) is what
+closes that gap, and is the one route by which `app.run` runs verified at all.
+
+---
+
+## Recording the manifest
+
+Building an archive needs a file list, and the honest way to get one is to run the
+application and write down what it read. That used to be `--vfs-manifest=<file>`, a flag
+that poked an observer slot inside `node:vfs`. With mounting reduced to `--vfs-mount` and
+provider selection the one place a mount can be influenced, the same job is better done by
+a **provider** — which is what `lib/recorder.js` is:
+
+```sh
+NAPP_MANIFEST=app.manifest node --experimental-vfs \
+    -r @pipobscure/napp/record --vfs-load --vfs-mount ./lib
+```
+
+`recording(Base, manifest)` wraps a provider *class*, leaving its constructor signature
+alone, and records every read that passes through it; `register()` installs
+`recording(RealFSProvider)` for directory mounts. Paths are appended, VFS-relative and one
+per line, **as they are read** rather than buffered until exit, so a killed process still
+leaves a usable list — and worker threads, which inherit `execArgv` and so run this preload
+too, append to the same file instead of truncating it (only the main thread starts a fresh
+one; `O_APPEND` writes don't interleave).
+
+It is a superset of what the flag recorded, in one respect. The flag hooked
+`readFile()`/`readFileSync()`, where the module loader and ordinary `fs` reads converge —
+but a `createReadStream()` goes through `open()` and a handle, and was never recorded. Here
+read-only `open()`s count too: a file that was opened but never read is harmless in a
+bundle, a streamed file missing from one is not.
+
+Because it wraps a *class*, it composes — this records what a signed archive's own code
+touches at run time:
+
+```js
+// my-preload.cjs
+const { NappProvider } = require('@pipobscure/napp/provider');
+const { recording, Manifest } = require('@pipobscure/napp/recorder');
+const Recording = recording(NappProvider, new Manifest('reads.txt'));
+```
+
+One thing it does not do: it records per *mount*, not per process, so several
+`--vfs-mount` directories merge into one list. The flag only ever supported a single
+directory target, so this is new ground rather than a regression.
 
 ---
 
@@ -376,24 +600,38 @@ The through-line is: **let a single file be the file tree a program runs from.**
   Routing those primitives through a VFS-aware layer (that is a no-op when nothing is
   mounted) means the *whole* runtime, not just the bundler's slice, agrees on where files
   are. Assets and addons come along for free.
-- **The self-mounting shebang is the elegant payoff.** Because `--vfs`'s no-target case
-  mounts the invoked script itself, a plain executable ZIP with a one-line header behaves
+- **The self-mounting shebang is the elegant payoff.** Because the kernel appends the
+  invoked script's own path to a trailing `--vfs-mount`, so the script mounts *itself*,
+  a plain executable ZIP with a one-line header behaves
   like an installed program — no launcher, no wrapper, no unpacking. It's the Python
   zipapp / self-extracting-jar idea, but resolved natively by the runtime rather than
   bootstrapped by user code.
 - **The manifest closes the "what do I even ship?" problem.** Static dependency analysis is
   perennially wrong for dynamic `require`, data files, and conditional imports.
-  `--vfs-manifest` answers it empirically: *these are the files this run touched.* Combined
-  with the mount, build-time discovery and run-time resolution use the same mechanism.
-- **SEA is the second delivery mode, not a different world.** By carrying `--build-sea`,
+  A recording provider answers it empirically: *these are the files this run touched.*
+  Combined with the mount, build-time discovery and run-time resolution use the same
+  mechanism — and once selection is an extension point, discovery doesn't need to be a
+  flag in the runtime at all.
+- **SEA is another delivery mode, not a different world.** By carrying `--build-sea`,
   ESM SEA entry points, and their code cache, the *same* archive that powers `app.run` also
   powers `app.sea`. You choose "small, needs Node" vs. "large, needs nothing" per target
   without changing how you package.
+- **A pluggable provider registry turns "can mount an archive" into "can refuse to."**
+  Selection happening after `-r` preloads, and registered providers outranking the built-in
+  one, are what let a policy — verify this signature, or don't mount at all — sit *below*
+  the entry point instead of in it. An application cannot forget to call its own checker if
+  the checker is what produced its filesystem.
 
 ### Honest limitations
 
 - **VFS is not a sandbox.** It redirects `fs`; it does not confine untrusted code. Real
   isolation still needs OS-level mechanisms. The fork's own docs say so.
+- **A verified mount is an integrity gate, not a confinement.** It proves the code is the
+  code that was signed, by someone whose chain you trust. Once that code runs it has the
+  full authority of the process — the guarantee is about *provenance*, not privilege.
+- **The gate is only as strong as how the runtime was launched.** Anyone who can change the
+  command line can drop the `-r`, and `--vfs-mount` will mount the archive with the built-in
+  provider, which verifies nothing. Registration is a userland opt-in, not a runtime policy.
 - **Native SEAs are large** because they include a full Node. That's inherent to
   zero-dependency native distribution, not a flaw in the approach.
 - **Everything here is experimental** — a personal fork, `--experimental-vfs`, `REPLACEME`
@@ -406,20 +644,27 @@ The through-line is: **let a single file be the file tree a program runs from.**
 
 ```
 builtinsea/
-  lib/            the app: bundler + verifier + importable library
-    app.js          parseArgs CLI (create / verify); SEA + --vfs entry; library root
-    archive.js      createArchive() / bundle(): prefix + zip(baseOffset), whole-file signature
-    manifest.js     buildManifest() / parseManifest() / verify(): the signing + verification core
-    package.json    { type:module, main:app.js, exports: { ".", "./manifest" } }
+  lib/            the tool: bundler + verifier + VFS provider + importable library
+    app.js          parseArgs CLI (create / verify / run); SEA + mount entry; library root
+    archive.js      createArchive() / bundle(): [prefix +] zip(baseOffset), whole-file signature
+    manifest.js     buildManifest() / parseManifest() / verifySync(): signing + verification core
+    provider.js     NappProvider + register(): verify at mount, hash every member at fetch
+    register.cjs    the `-r` preload; configured via NAPP_ROOTS / NAPP_ALLOW_UNTRUSTED
+    recorder.js     recording() + Manifest: the userland replacement for --vfs-manifest
+    record.cjs      the `-r` preload for recording; configured via NAPP_MANIFEST
+    package.json    { type:module, main:app.js, bin:napp, exports: { ".", "./manifest",
+                      "./archive", "./provider", "./register", "./recorder", "./record" } }
+  test/           napp.test.js (sign / verify / mount / run) and record.test.js (`npm test`)
   sea.js          SEA bootstrap: verify self (whole-file signature), then mount and require the app
   sea.json        --build-sea configuration
   shell-base      shebang prefix for the portable archive
   certs/          self-signed test PKI (root CA + leaf) and gen.sh
   app.manifest    observed file list (produced by `npm run manifest`)
+  app.napp        built: signed archive, mounted and verified by the provider
   app.run         built: self-executing ZIP app (needs Node)
   app.sea         built: standalone executable (needs nothing)
-  package.json    the sea / manifest / archive / executable / verify scripts
+  package.json    the sea / manifest / napp / archive / executable / verify / start / test scripts
 ```
 
-Build outputs (`app`, `app.manifest`, `app.run`, `app.sea`, `node-base`) are generated by
-the scripts above.
+Build outputs (`app`, `app.manifest`, `app.napp`, `app.run`, `app.sea`, `node-base`) are
+generated by the scripts above.
