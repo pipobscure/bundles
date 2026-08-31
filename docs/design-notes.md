@@ -1,15 +1,16 @@
 # Design notes
 
-Two pieces of design that were decided-enough to write down before they were built.
-**Both are now implemented** — this file is kept as the reasoning behind them, which is
-worth more than the diff. Where the implementation departed from the plan, that is
-recorded inline.
+Design that was decided-enough to write down before it was built. This file is kept as
+the reasoning, which is worth more than the diff; where an implementation departed from
+its plan, that is recorded inline.
 
 - **§1 signing-time attestation** — built. The marker grammar is extensible, and the
   evidence rides in a `SIGSTORE=` field carrying a full sigstore bundle (transparency-log
   entry *and* RFC 3161 token) rather than a bare TSA token. See `lib/sigstore.js` and
   the "Signing with sigstore" section of the README.
 - **§2 the audit skill** — built, as `skills/audit-bundle/`.
+- **§3 shipping the tool as a bundle of itself** — **not built.** The distribution model
+  the whole thing is arguing for, applied to itself.
 
 ---
 
@@ -217,3 +218,113 @@ Output is a per-file report over a fixed, finite set of bytes.
   tampered archive would be worse than no audit.
 - Worth pairing with a diff mode: review only what changed against a previously approved
   archive, which is the realistic repeat-use case.
+
+---
+
+## 3. Shipping the tool as a bundle of itself
+
+> **Not built.** This is the intended end state, recorded now because it is what the rest
+> of the design is for.
+
+### The claim
+
+`bundle` should not be installed from npm. It should be distributed the way it tells
+everyone else to distribute: **one signed file**, verifiable by a copy of `bundle` you
+already have, and auditable as a closed set before you run it.
+
+That makes the tool its own best demonstration. Every property the README claims — a file
+list discovered by observation, a whole-file signature, a mount that refuses what does not
+verify, a closed set an audit can be complete over — is exercised by the way the tool
+itself arrives on your machine. If the model does not hold up for `bundle`, it does not
+hold up for anything.
+
+### Why this is the answer to "where is the lock file?"
+
+A lock file pins the bytes of a dependency tree that is still **fetched and executed at
+install time**. It is a real improvement over not having one, but note what it is
+improving: an install step that resolves a graph, runs lifecycle scripts, and ends with
+code on your disk that nobody looked at. Reproducing that exactly is worth something, and
+it is not the same as not needing it.
+
+A signed bundle removes the step rather than pinning it:
+
+| | lock file | signed bundle |
+|---|---|---|
+| what you fetch | a graph, resolved at install | one file |
+| what runs at install | lifecycle scripts, transitively | nothing; there is no install |
+| what you can review | in principle the tree, in practice not | every byte, and the set is finite |
+| what proves origin | the registry's word | a signature over the whole artifact |
+| what "the same bytes" means | same versions, re-resolved | literally the same bytes |
+
+So the lock file is eye-candy *for this repo specifically* — the shipped artifact is not
+produced by `npm install` on the user's machine. It stays useful for contributors
+reproducing a build, which is a different question and an orthogonal one.
+
+### The chain of custody
+
+Version *N* is verified by version *N−1*. That is an ordinary trust chain over time, and
+it is how package managers already handle their own updates:
+
+```
+bundle@0.1 (you have it)  --verify-->  bundle@0.2.bundle  --verify-->  bundle@0.3.bundle
+```
+
+Each release is signed through sigstore by the release workflow, so the identity to pin is
+a workflow ref rather than a person:
+
+```sh
+bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/release.yml@refs/heads/main' \
+              --issuer   'https://token.actions.githubusercontent.com' \
+              bundle.bundle
+```
+
+`--identity` and `--issuer` already exist and already report a mismatch as
+`valid-untrusted` rather than `invalid` — genuinely signed, just not by who you demanded.
+`BUNDLE_IDENTITY`/`BUNDLE_ISSUER` impose the same policy at mount time, so a machine can
+be configured to run *only* releases from that workflow.
+
+**Bootstrapping.** The first copy has to be trusted some other way; there is no way around
+that and pretending otherwise would be the dishonest part. The options are the usual ones —
+verify the sigstore identity by hand against the transparency log, or take it from a
+release page over TLS and audit it before first run. Trust-on-first-use, with the
+mitigation that TOFU here is over an artifact you can read completely.
+
+### The wrinkle: the tool has dependencies now
+
+This is the part that needs work rather than just a decision. `lib/sigstore.js` pulls in
+`@sigstore/*`, and a bundle has no `node_modules` at runtime — so those libraries have to
+become **members of the bundle**.
+
+That is not a workaround, it is the point: the dependency tree stops being a thing you
+fetch and becomes a fixed set of files inside one signed artifact that `/audit-bundle` can
+review in full. But it means:
+
+- The manifest run has to resolve `node_modules`, not just `lib/`. Today `npm run manifest`
+  mounts `lib/` alone, so nothing under `node_modules` is observed. The recording provider
+  will capture them once the mount covers them — the mechanism is right, the mount point is
+  not.
+- The result is a much larger member list, and it is the honest one. Roughly 96 packages
+  came in with the sigstore libraries; every one of them would be visible in the manifest,
+  which is uncomfortable and correct.
+- Verification-only builds could drop the signing half. `@sigstore/sign` and the OIDC flow
+  are needed to *produce* a signature, not to check one, so a verify-only distribution is
+  meaningfully smaller. Worth doing only if the size difference turns out to matter.
+
+Until then the shipped `app.run` carries no sigstore libraries, which is why it degrades a
+sigstore-signed archive to `valid-untrusted` — correct behaviour, and a limitation this
+section is what fixes.
+
+### Open questions
+
+- **Downgrade.** A correctly signed old release stays valid forever, which is the point of
+  the timestamp and also means nothing stops someone handing you version 0.1 tomorrow.
+  Whether the tool should carry a version floor, or leave that to whoever is deploying it,
+  is undecided. Probably the latter — it is a policy, and policy is the thing this project
+  keeps insisting does not belong in the mechanism.
+- **What the release artifact actually is.** A plain `.bundle` needs Node plus the preload
+  flags; an `app.run` shebang runs anywhere with a compatible Node; a SEA needs nothing and
+  costs 150 MB. Probably all three, but only the shebang one is a pleasant default.
+- **Whether `npm` publication continues in parallel.** Useful for people embedding the
+  library, and it should be explicit that the npm package is the *library* and the signed
+  bundle is the *tool*, rather than pretending the registry copy does not exist.
+

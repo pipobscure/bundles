@@ -778,6 +778,36 @@ repeat-use case, and considerably more valuable than a fresh full review each ti
 Steps 1 and 2 are the existing CLI; only step 3 is new. That split is deliberate — the
 policy layer is a library and a skill you can replace, not something the runtime does.
 
+### Where this ends up: the tool as a bundle of itself
+
+Not built yet, and the point of everything above. `bundle` should not be installed from
+npm — it should arrive the way it tells everyone else to ship: **one signed file**,
+verified by a copy of `bundle` you already have, and auditable as a closed set before you
+run it. Version *N* verifies version *N+1*, with the identity to pin being the release
+workflow rather than a person:
+
+```sh
+bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/release.yml@refs/heads/main' \
+              --issuer   'https://token.actions.githubusercontent.com' \
+              bundle.bundle
+```
+
+This is also why you will not find a `package-lock.json` here. A lock file pins the bytes
+of a dependency tree that is still fetched and executed at install time; a signed bundle
+removes that step rather than pinning it. There is no install, no lifecycle script, and
+nothing that resolves later — so "the same bytes" means literally the same bytes, and
+`/audit-bundle` can read all of them. The lock file remains useful for contributors
+reproducing a build, which is a different and orthogonal question.
+
+The honest caveat is the first copy: it has to be trusted some other way, and that is
+trust-on-first-use however it is dressed up. The mitigation is that it is TOFU over an
+artifact you can read completely.
+
+See [`docs/design-notes.md` §3](docs/design-notes.md) for the chain of custody, the
+bootstrapping problem, and the one real obstacle — the sigstore dependencies have to
+become members of the bundle, which is uncomfortable, correct, and exactly the
+transparency being argued for.
+
 ---
 
 ## Why these changes to Node make sense
