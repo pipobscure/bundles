@@ -20,7 +20,7 @@ const FILES = {
 };
 
 function fixture() {
-    const dir = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'napp-record-'));
+    const dir = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-record-'));
     for (const [name, content] of Object.entries(FILES)) {
         const file = PATH.join(dir, name);
         FS.mkdirSync(PATH.dirname(file), { recursive: true });
@@ -33,14 +33,18 @@ function fixture() {
 // and returns the recorded lines. `body` is awaited before the unmount: a
 // stream opens on a later tick, and a VFS that is no longer mounted resolves
 // paths against the real filesystem instead.
+//
+// `mount()` chooses the mount point rather than taking one, and returns it, so
+// `body` is handed that path: reads have to go through the mount to be seen by
+// the provider, and `dir` itself is just where the provider gets its bytes.
 async function record(dir, body, options) {
     const out = PATH.join(dir, '..', `${PATH.basename(dir)}.manifest`);
     const manifest = new Manifest(out, { truncate: true, ...options });
     const Recording = recording(VFS.RealFSProvider, manifest);
     const vfs = VFS.create(new Recording(dir), { emitExperimentalWarning: false });
-    vfs.mount(dir);
+    const mount = vfs.mount();
     try {
-        await body();
+        await body(mount);
     } finally {
         vfs.unmount();
     }
@@ -49,33 +53,33 @@ async function record(dir, body, options) {
 
 test('every file read through the mount is recorded, relative to it', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => {
-        FS.readFileSync(PATH.join(dir, 'index.js'), 'utf-8');
-        FS.readFileSync(PATH.join(dir, 'sub/nested.txt'), 'utf-8');
+    const lines = await record(dir, (mount) => {
+        FS.readFileSync(PATH.join(mount, 'index.js'), 'utf-8');
+        FS.readFileSync(PATH.join(mount, 'sub/nested.txt'), 'utf-8');
     });
     assert.deepEqual(lines.sort(), ['index.js', 'sub/nested.txt']);
 });
 
 test('a file that is never read is never recorded', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => {
-        FS.readFileSync(PATH.join(dir, 'index.js'), 'utf-8');
+    const lines = await record(dir, (mount) => {
+        FS.readFileSync(PATH.join(mount, 'index.js'), 'utf-8');
     });
     assert.ok(!lines.includes('unused.js'));
 });
 
 test('a file read repeatedly is recorded once', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => {
-        for (let i = 0; i < 5; i++) FS.readFileSync(PATH.join(dir, 'data.txt'));
+    const lines = await record(dir, (mount) => {
+        for (let i = 0; i < 5; i++) FS.readFileSync(PATH.join(mount, 'data.txt'));
     });
     assert.deepEqual(lines, ['data.txt']);
 });
 
 test('a streamed read is recorded too', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => new Promise((resolve, reject) => {
-        FS.createReadStream(PATH.join(dir, 'data.txt'))
+    const lines = await record(dir, (mount) => new Promise((resolve, reject) => {
+        FS.createReadStream(PATH.join(mount, 'data.txt'))
             .on('data', () => {})
             .on('error', reject)
             .on('end', resolve);
@@ -85,9 +89,9 @@ test('a streamed read is recorded too', async () => {
 
 test('opening a file for writing is not a read', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => {
-        FS.writeFileSync(PATH.join(dir, 'written.txt'), 'new');
-        FS.readFileSync(PATH.join(dir, 'index.js'));
+    const lines = await record(dir, (mount) => {
+        FS.writeFileSync(PATH.join(mount, 'written.txt'), 'new');
+        FS.readFileSync(PATH.join(mount, 'index.js'));
     });
     assert.deepEqual(lines, ['index.js']);
 });
@@ -105,20 +109,20 @@ test('a manifest starts fresh, or appends when told to', () => {
 });
 
 test('recording is skipped entirely when no destination is configured', () => {
-    const previous = process.env.NAPP_MANIFEST;
-    delete process.env.NAPP_MANIFEST;
+    const previous = process.env.BUNDLE_MANIFEST;
+    delete process.env.BUNDLE_MANIFEST;
     try {
         assert.equal(register(), null);
     } finally {
-        if (previous !== undefined) process.env.NAPP_MANIFEST = previous;
+        if (previous !== undefined) process.env.BUNDLE_MANIFEST = previous;
     }
 });
 
 test('the recorded list is what create() consumes', async () => {
     const dir = fixture();
-    const lines = await record(dir, () => {
-        FS.readFileSync(PATH.join(dir, 'index.js'));
-        FS.readFileSync(PATH.join(dir, 'sub/nested.txt'));
+    const lines = await record(dir, (mount) => {
+        FS.readFileSync(PATH.join(mount, 'index.js'));
+        FS.readFileSync(PATH.join(mount, 'sub/nested.txt'));
     });
     // Every line has to resolve against the mount root as a --base.
     for (const line of lines) assert.ok(FS.existsSync(PATH.join(dir, line)), line);

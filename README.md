@@ -1,20 +1,35 @@
-# builtinsea
+# bundles
 
-A tool — **`napp`** — for **bundling and distributing Node.js applications as single,
-signed files**, and the experiment that produced it. It does four things:
+A tool — **`bundle`** — for **bundling and distributing Node.js applications as single,
+signed files**, and the experiment that produced it. It does five things:
 
-- **`napp create`** — archive a set of files and sign them.
-- **`napp verify`** — validate an archive and report its trust state.
-- **`@pipobscure/napp/register`** — a **`node:vfs` provider** you preload with `-r` (or
-  `--import`), so `node --vfs-load --vfs-mount app.napp` mounts and runs an application
+- **`@pipobscure/bundle/record`** — a provider you preload with `-r` that writes down every
+  file a run actually reads, so the list of what to archive comes from observation rather
+  than guesswork. It is the userland replacement for the `--vfs-manifest` flag.
+- **`bundle create`** — archive that list of files, optionally behind a prefix (a `#!`
+  launcher, or a Node binary).
+- **`bundle sign`** — sign an archive into a new file, through **sigstore** (a GitHub OIDC
+  sign-in, or an ambient CI identity) or against a certificate authority of your own.
+- **`bundle verify`** — validate an archive and report its trust state and signing identity.
+- **`@pipobscure/bundle/register`** — a **`node:vfs` provider** you preload with `-r` (or
+  `--import`), so `node --vfs-load --vfs-mount app.bundle` mounts and runs an application
   *only* if it is properly signed, and checks each member against its recorded digest as
   that member is read.
-- **`@pipobscure/napp/record`** — a second provider that writes down every file a run
-  actually reads, so the list of what to archive comes from observation rather than
-  guesswork. It is the userland replacement for the `--vfs-manifest` flag.
+
+Signing is a step of its own rather than part of building, and that is what makes one build
+serve every target. `create` produces an unsigned archive; `sign` re-emits it behind
+whatever prefix you name and signs the finished bytes. So a single `app.bundle` becomes a
+`#!` launcher, a self-contained executable and a plain mountable archive — each correctly
+offset, each signed over itself.
+
+There is also a **[Claude Code skill](skills/audit-bundle/SKILL.md)**
+(`/audit-bundle`) that verifies an archive, extracts it, and security-reviews every file
+in it. A signature says who produced the bytes; it says nothing about whether they are
+safe. Because a bundle is a closed set — nothing resolves later, nothing is fetched at
+install — a review over one can actually be complete.
 
 The result is an application in one file that the runtime itself refuses to run when it
-has been tampered with — either as a plain `.napp` archive, as a small self-executing ZIP
+has been tampered with — either as a plain `.bundle` archive, as a small self-executing ZIP
 that runs on any installed Node, or as a fully self-contained native executable that needs
 no Node at all.
 
@@ -181,7 +196,7 @@ newest first, and selection happens *after* preload modules have run. That is th
 point: a preloaded module can install a provider for the source about to be mounted.
 
 ```sh
-node --experimental-vfs -r @pipobscure/napp/register --vfs-load --vfs-mount app.napp
+node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
 ```
 
 `canHandle` receives the `statSync()` of the source, so a provider can claim archives, or
@@ -190,7 +205,7 @@ than only adding new formats.
 
 Because a registered provider outranks the built-in one even for a file the built-in would
 happily handle, it can also **vet** a file rather than merely add a format. That is exactly
-what this repo does with `.napp`: the provider claims the file, verifies it, and either
+what this repo does with `.bundle`: the provider claims the file, verifies it, and either
 returns a filesystem or throws — and a throw during provider selection means the process
 never reaches the entry point.
 
@@ -203,7 +218,7 @@ Two consequences worth stating plainly:
   either flag is in place before any provider is chosen.
 - **Claim by content, not just by name.** The built-in provider recognizes a ZIP by
   sniffing its leading bytes, so an archive can be called anything. A verifying provider
-  that only claimed `*.napp` could be bypassed by renaming the file, which is why the one
+  that only claimed `*.bundle` could be bypassed by renaming the file, which is why the one
   here also claims anything carrying a `SIGNED:` marker.
 
 ### SEA support carried along
@@ -227,13 +242,13 @@ the **bundler**, the **verifier**, and an importable **library**:
 
 ```
 lib/
-  package.json   { "type":"module", "main":"app.js", "bin": { "napp":"./app.js" },
+  package.json   { "type":"module", "main":"app.js", "bin": { "bundle":"./app.js" },
                    "exports": { ".", "./manifest", "./archive", "./provider",
                                  "./register", "./recorder", "./record" } }
   app.js         parseArgs CLI with `create` / `verify` / `run`; re-exports the library
   archive.js     createArchive() / bundle() — streams files, then signs the whole file
   manifest.js    buildManifest() / parseManifest() / verifySync() — signing + verification core
-  provider.js    NappProvider + register() — the verifying node:vfs file provider
+  provider.js    BundleProvider + register() — the verifying node:vfs file provider
   register.cjs   the `-r` preload: registers that provider and nothing else
   recorder.js    recording() + Manifest — a provider that writes down what it reads
   record.cjs     the `-r` preload for manifest recording
@@ -247,20 +262,24 @@ to refuse to boot a tampered container (see [Signing and verification](#signing-
 
 | File | Role |
 |------|------|
-| `lib/app.js` | The application. A `parseArgs` CLI (`create` / `verify` / `run`); also the SEA and mounted entry point and the package's library root. |
-| `lib/archive.js` | Bundler: optionally writes a **prefix** (shebang stub or Node/SEA binary), then appends a ZIP of the listed files — each stamped with its content digest — with a `baseOffset` equal to the prefix size and an `AUTHORITY.PEM` manifest, then signs the whole file into the EOCD comment. |
-| `lib/manifest.js` | The signing/verification core: `buildManifest(…)`, `parseManifest(…)`, `signatureOf(…)` and `verifySync(source)`. |
+| `lib/app.js` | The application. A `parseArgs` CLI (`create` / `sign` / `verify` / `run` / `trust`); also the SEA and mounted entry point and the package's library root. |
+| `lib/archive.js` | Bundler: optionally writes a **prefix** (shebang stub or Node/SEA binary), then appends a ZIP of the listed files — each stamped with its content digest — with a `baseOffset` equal to the prefix size and an `AUTHORITY.PEM` manifest, then signs the whole file into the EOCD comment. `bundle()` builds from a directory; `rebundle()` re-emits an existing archive behind a new prefix, which is what `sign` runs. |
+| `lib/manifest.js` | The signing/verification core: `buildManifest(…)`, `parseManifest(…)`, `signatureOf(…)`, `parseSignature(…)`/`formatSignature(…)` and `verifySync(source)`. |
+| `lib/sigstore.js` | Sigstore as one of the signers the format can carry: a two-phase signer (get the Fulcio certificate, *then* sign the finished hash), synchronous bundle verification, and the trust root. |
+| `lib/oidc.js` | Getting an OIDC identity token — an ambient CI token, a browser sign-in through sigstore's Dex, or a device code. No dependencies of its own. |
 | `lib/provider.js` | The verifying VFS provider: verifies an archive before it becomes a filesystem, then hashes each member as it is fetched. `register()` installs it with `node:vfs`. |
 | `lib/register.cjs` | The `-r` preload entry point — one call to `register()`, configured through the environment. |
 | `lib/recorder.js` | The recording provider: wraps a provider class so every read through it is appended to a manifest. Replaces the `--vfs-manifest` flag. |
-| `lib/record.cjs` | The `-r` preload for recording — set `NAPP_MANIFEST` and mount a directory. |
-| `test/napp.test.js` | End-to-end tests: sign, verify, mount, run, and every way that should be refused. |
+| `lib/record.cjs` | The `-r` preload for recording — set `BUNDLE_MANIFEST` and mount a directory. |
+| `test/bundle.test.js` | End-to-end tests: sign, verify, mount, run, and every way that should be refused. |
+| `test/sign.test.js` | Tests for signing as its own step: one archive re-emitted behind several prefixes, the marker grammar, and a forged sigstore field. |
 | `test/record.test.js` | Tests for the recording provider: what gets recorded, once, and what doesn't. |
 | `sea.js` | The SEA program. **Verifies itself** (`process.argv[0]`, whole-file signature inlined from `manifest.js`), and only then opens it as a `ZipFile`, mounts it via `ZipProvider` at `/APP`, and `require`s the app. |
 | `sea.json` | SEA build config: ESM-capable, runs with `--experimental-vfs`, outputs `node-base`. |
 | `shell-base` | The shebang prefix: `#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs-load --vfs-mount`. |
 | `app.manifest` | The observed file list (from the recording provider) that says what goes into the archive, plus the four files nothing imports at build time (`provider.js`, `register.cjs`, `recorder.js`, `record.cjs`). |
-| `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives. |
+| `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
+| `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
 
 ### The scripts (`package.json`)
 
@@ -268,46 +287,69 @@ to refuse to boot a tampered container (see [Signing and verification](#signing-
 "sea":      "node --no-warnings --build-sea sea.json",
 // Build a self-contained SEA Node binary (`node-base`) whose entry is sea.js.
 
-"manifest": "NAPP_MANIFEST=app.manifest node --no-warnings --experimental-vfs -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\nregister.cjs\nrecorder.js\nrecord.cjs\n' >> app.manifest",
+"manifest": "BUNDLE_MANIFEST=app.manifest node ... -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\nregister.cjs\nrecorder.js\nrecord.cjs\n' >> app.manifest",
 // Run the app with lib/ mounted behind the recording provider, writing every file it
 // actually reads to app.manifest. This *discovers* the archive's contents by observation
 // instead of static analysis — then adds the four files a run can't observe: the two
 // providers are never imported by the CLI (they need node:vfs, which only exists under
 // --experimental-vfs) and the two preloads are loaded by `node -r`, not by the app.
 
-"napp":     "node --no-warnings lib/app.js create --base lib/ --key certs/leaf.key --chain certs/chain.pem --files app.manifest --output app.napp",
-// No prefix. Result: app.napp — a signed archive, run with `--vfs-mount` + the provider.
+"create":   "node --no-warnings lib/app.js create --base lib/ --files app.manifest --output app.bundle",
+// No prefix, no signature. Result: app.bundle — the unsigned archive every shipped
+// shape is signed from. This is the one build.
 
-"archive":  "node --no-warnings lib/app.js create --base lib/ --prefix shell-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.run && chmod 0755 app.run",
+"sign":     "node ... lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --output app.signed.bundle app.bundle",
+// No prefix. Result: app.signed.bundle — a signed archive, run with `--vfs-mount` + the provider.
+
+"archive":  "node ... lib/app.js sign --key ... --chain ... --prefix shell-base --output app.run app.bundle",
 // Prefix = shell-base (shebang). Result: app.run — a tiny self-executing ZIP app, signed.
 
-"executable":"node --no-warnings lib/app.js create --base lib/ --prefix node-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.sea && chmod 0755 app.sea",
+"executable":"node ... lib/app.js sign --key ... --chain ... --prefix node-base --output app.sea app.bundle",
 // Prefix = node-base (the SEA binary). Result: app.sea — a standalone executable, signed.
+
+"sigstore": "node --no-warnings lib/app.js sign --prefix shell-base --output app.run app.bundle",
+// The same, signed through sigstore instead: no --key, so it takes the identity from CI
+// when there is one and otherwise opens a GitHub sign-in.
+
+"trust":    "node --no-warnings lib/app.js trust",
+// Refresh the sigstore trust root (over TUF) into the local cache. Verification never
+// reaches for the network, so this is the explicit step that feeds it.
 
 "verify":   "node --no-warnings lib/app.js verify --root certs/root.pem",
 // Verify an archive against the test root, e.g. `npm run verify -- app.run`.
 
-"start":    "NAPP_ROOTS=certs/root.pem node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp",
-// Mount app.napp through the verifying provider and run it, trusting the test root.
+"build":    "npm run manifest && npm run create && npm run sign && npm run archive",
+// The whole offline pipeline: observe -> archive -> sign -> sign again with a prefix.
+
+"start":    "BUNDLE_ROOTS=certs/root.pem node ... -r ./lib/register.cjs --vfs-load --vfs-mount app.signed.bundle",
+// Mount the signed archive through the verifying provider and run it, trusting the test root.
 
 "test":     "node --no-warnings --experimental-vfs --test test/*.test.js"
 ```
 
-Drop `--key`/`--chain` from `create` to build an **unsigned** archive; drop `--root` from
-`verify` to see how the same archive reads when its certificate isn't trusted. Drop
-`--prefix` to build a plain `.napp` instead of a self-executing container.
+Note the shape of the pipeline: **`create` once, `sign` many times.** `create` never needs a
+key, and the archive it writes is the single input to every signed artifact. Drop `--root`
+from `verify` to see how the same archive reads when its certificate isn't trusted; drop
+`--prefix` from `sign` to produce a plain archive instead of a self-executing container.
+
+`create` still accepts `--key`/`--chain` to sign at build time, which is convenient when you
+only ever want one shape. It cannot be used with sigstore: a Fulcio certificate is bound to
+an identity you have to authenticate for, so that path goes through `sign`.
 
 ### The three artifacts, and how each runs itself
 
-**`app.napp` — the plain signed archive (~21 KB; needs Node and the preload).**
+All three are produced by `sign`, from the same `app.bundle`, differing only in the
+`--prefix` they are re-emitted behind.
+
+**`app.signed.bundle` — the plain signed archive (~37 KB; needs Node and the preload).**
 No prefix at all: just the ZIP of `lib/`, with its per-member digests, its `AUTHORITY.PEM`
 manifest and the whole-file signature in the EOCD comment. It is run by mounting it:
 
 ```sh
-node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp <args>
+node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.signed.bundle <args>
 ```
 
-The preload registers the provider; `--vfs-mount` hands it `app.napp`; the provider verifies the
+The preload registers the provider; `--vfs-mount` hands it the archive; the provider verifies the
 signature and the chain **before** returning a filesystem, so an archive that fails is never
 mounted and the entry point never runs. This is the mode where the *runtime* enforces the
 signature rather than the application checking itself — the application needs no boot code
@@ -325,7 +367,7 @@ application in a file you can email — provided the recipient has a compatible 
 > **Note:** this needs a Node whose provider selection recognizes a ZIP by locating its
 > end-of-central-directory record rather than by sniffing `PK\x03\x04` at byte 0 — a
 > prefixed container by construction has no `PK` at byte 0, and the leading-bytes test
-> rejected it with `ERR_VFS_INVALID_TARGET` before anything else happened. The napp
+> rejected it with `ERR_VFS_INVALID_TARGET` before anything else happened. The bundle
 > provider never had that blind spot (it always scanned from the tail), so
 > `node -r ./lib/register.cjs --vfs-load --vfs-mount app.run` mounts and verifies the same
 > file either way.
@@ -343,30 +385,44 @@ embedded certificate chain is trusted. The demo signs with a self-signed test ce
 Node at the test root to trust it: `NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea`.
 
 Same application, same archive format, three shapes — one where the **runtime** enforces
-the signature (`.napp`), one optimizing for **size** (reuse the user's Node), one for
-**self-containment** (bring your own Node).
+the signature (`.bundle`), one optimizing for **size** (reuse the user's Node), one for
+**self-containment** (bring your own Node). And, because the prefix is chosen at *signing*
+time rather than at build time, all three come from one `create` and differ by one flag.
 
 ### Try it
 
 ```sh
 npm run manifest     # observe which files the app reads  -> app.manifest
-npm run napp         # build + sign the plain archive     -> ./app.napp
-npm run verify -- app.napp                       # -> VALID
-npm start -- help                                # mount through the provider and run it
-node --no-warnings lib/app.js run --root certs/root.pem app.napp -- help   # the same, via the CLI
-node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp help  # refuses: untrusted
+npm run create       # archive them, unsigned             -> ./app.bundle
+npm run verify -- app.bundle                     # -> UNSIGNED
 
-npm run archive      # build + sign the shebang archive   -> ./app.run
+npm run sign         # sign it, no prefix                 -> ./app.signed.bundle
+npm run verify -- app.signed.bundle              # -> VALID
+npm start -- help                                # mount through the provider and run it
+node --no-warnings lib/app.js run --root certs/root.pem app.signed.bundle -- help   # the same, via the CLI
+node --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.signed.bundle help  # refuses: untrusted
+
+npm run archive      # sign the SAME app.bundle behind a shebang -> ./app.run
 ./app.run help       # mounts itself via the shebang (no gate of its own)
 node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.run help  # verified
-./app.run verify --root certs/root.pem app.sea   # verify some other archive -> VALID
+./app.run verify --root certs/root.pem app.signed.bundle   # verify some other archive -> VALID
 
 npm run sea          # build the SEA base binary          -> ./node-base
-npm run executable   # build + sign the standalone exe    -> ./app.sea
+npm run executable   # sign the same app.bundle behind it -> ./app.sea
 NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea verify app.run   # self-checks, then runs
 ./app.sea            # refuses: certificate not trusted (no NODE_EXTRA_CA_CERTS)
 
 npm test             # sign / verify / mount / run, and everything that must be refused
+```
+
+Or the whole offline pipeline in one go: `npm run build`.
+
+To sign through sigstore instead of the test PKI — this opens a browser:
+
+```sh
+npm run trust                                    # fetch the sigstore trust root, once
+npm run sigstore                                 # sign app.bundle via a GitHub sign-in -> ./app.run
+npm run verify -- app.run                        # -> VALID, with the identity that signed it
 ```
 
 The app is a verifier, so it needs an archive to check. Note the shebang launcher
@@ -415,7 +471,7 @@ comment. The leaf certificate then signs **that hash** (not the file), and the E
 which the hash deliberately stops short of — records both:
 
 ```
-SIGNED:<hash-of-region-hex>:<signature-hex>
+SIGNED:<hash-of-region-hex>:<signature-hex>[:<NAME>=<value>]*
 ```
 
 Signing the hash rather than the file is what makes the stages cheap: a verifier hashes the
@@ -426,6 +482,64 @@ algorithm lines, or the embedded chain — can be altered without changing it. T
 digests are that guarantee applied one file at a time, so an individual extracted member can
 be checked on its own (and a member fetch can re-verify it).
 
+The trailing `NAME=value` fields are the **unsigned-attribute region** every code-signing
+scheme eventually grows. Anything obtained *after* the signature exists cannot be inside
+what the signature covers, so it goes beside it instead — the same placement RFC 3161 gives
+timestamp tokens in CMS `unsignedAttrs`, and Authenticode gives counter-signatures. Today
+the only field is `SIGSTORE=`, carrying the transparency-log entry and timestamp that
+establish *when* the archive was signed. Fields are optional and unknown ones are ignored,
+so a two-field marker written before the grammar existed still parses.
+
+### Signing with sigstore
+
+`bundle sign` defaults to sigstore, which replaces "a signing key on someone's disk" with
+"an identity you authenticate as". [Fulcio](https://github.com/sigstore/fulcio) issues a
+certificate binding an OIDC identity to a keypair that exists only for the duration of the
+command; there is no long-lived key to steal, because the certificate expires in about ten
+minutes.
+
+Where the identity comes from is a property of where the command runs, so it is not a flag
+you have to remember:
+
+| Where | What happens | The identity |
+|---|---|---|
+| GitHub Actions | `ACTIONS_ID_TOKEN_REQUEST_URL` is read directly (needs `permissions: id-token: write`) | the repository and workflow — `https://github.com/OWNER/REPO/.github/workflows/release.yml@refs/heads/main` |
+| A workstation | a browser opens on sigstore's Dex, which redirects straight to GitHub | your email |
+| A headless box | a device code to enter elsewhere | your email |
+
+Override with `--flow ci\|browser\|device`, `--token <jwt>` to supply one yourself, or
+`--connector google\|microsoft\|none` to sign in as something other than GitHub.
+
+**The ordering problem.** `AUTHORITY.PEM` is a member, so it is inside the hashed region:
+the certificate chain must be known *before* the hash exists. The signature must be made
+*after*. Sigstore's own `BundleBuilder` does both in one call, which cannot work here — but
+it does not have to, because a Fulcio certificate binds an *identity to a public key* and
+says nothing about any message. So the two halves separate cleanly, and `lib/sigstore.js`
+exposes them as a two-phase signer: sign in and get the certificate, then, once the archive
+has been built around it and hashed, sign the hash and have that signature witnessed by
+Rekor and the timestamp authority.
+
+**Why the witnesses matter more here than usual.** A ten-minute certificate makes "is this
+chain in date *now*?" the wrong question — it fails every archive older than lunchtime. The
+right question is whether the certificate was valid *when the signature was made*, and
+answering it needs a trustworthy assertion of when that was. That is exactly what the
+transparency-log entry and the RFC 3161 token in the `SIGSTORE=` field provide, and it is
+why a sigstore signature takes a different trust path from an ordinary one rather than an
+additional check on the same path. `bundle sign` refuses to finish if neither witness could
+be reached, because the result could never be verified again.
+
+Two things are checked that the sigstore libraries do not check for you. The bundle must be
+over *this* archive's hash — otherwise a valid bundle could be transplanted from another
+archive — and the certificate it was verified against must be the same one `AUTHORITY.PEM`
+names. Without the second, an attacker could pin a genuine bundle for their own identity to
+an archive whose extractable manifest claims a different signer: the signature would check
+out and the inspectable file would be a lie.
+
+Verification never reaches for the network. The sigstore trust root is fetched by an
+explicit `bundle trust` (over TUF — signed metadata with its own root of trust, not a plain
+download) and cached; `verifySync()` then loads it synchronously, which it has to, because
+the mount path decides whether to serve an archive before any of the program in it runs.
+
 ### The four verification states
 
 `verify()` runs the stages in order and reports exactly one state:
@@ -434,15 +548,28 @@ be checked on its own (and a member fetch can re-verify it).
 |-------|---------|
 | **unsigned** | no `AUTHORITY.PEM` manifest, or no `SIGNED:…` marker in the EOCD comment |
 | **invalid** | the recomputed hash doesn't match the recorded one, the signature doesn't verify over it, **or** a member's recorded digest doesn't match its content |
-| **valid-untrusted** | hash + signature + digests are sound, but the certificate chain isn't anchored in the trust store |
+| **valid-untrusted** | hash + signature + digests are sound, but the certificate chain isn't anchored in the trust store — or, for a sigstore signature, the trust root is missing or the identity didn't match a required policy |
 | **valid** | all of the above sound **and** the chain is trusted |
 
+Note which side of the line the sigstore cases fall on. Not being *able* to check — no trust
+root cached, the libraries absent — is `valid-untrusted`, not `invalid`: "I could not check"
+and "this is forged" are different answers and conflating them is how people are trained to
+click through warnings. A bundle that is present and fails to verify is `invalid`.
+
 `verifySync()` is the implementation and `verify()` an `async` wrapper around it; both take
-`{ extraRoots, now, deep }`. With `deep: false` the member digests are checked for
+`{ extraRoots, now, deep, trustedRoot, identity, issuer }`. `identity` and `issuer` impose a
+policy on a sigstore signature — "it must be *this* signer" — and a mismatch reports
+`valid-untrusted`, since the signature is genuine and simply not the one demanded. `now` is
+ignored on the sigstore path, which derives the signing time from the archive's own log
+entry instead. With `deep: false` the member digests are checked for
 *presence* but not recomputed — the right trade for a mount, which re-checks each member as
 it is actually read (see below). The result also carries `hashAlg` and the `digests` map
 read from the archive that was just hashed, so a caller that goes on to serve those members
 checks them against what the signature covered rather than re-reading the comments later.
+
+For a sigstore signature the result also carries `identity`, `issuer` and `signedAt`. Those
+are the answer to "who signed this"; the certificate subject is an ephemeral Fulcio artifact
+and says nothing useful, so `bundle verify` prints the identity instead when there is one.
 
 The whole scheme is gated on the `SIGNED:` marker: only a signed archive is checked at all.
 Because the hash covers the central directory, it fixes *which* members exist and every
@@ -455,21 +582,41 @@ against the system CA store **plus** `NODE_EXTRA_CA_CERTS` (and any extra roots 
 `lib/` doubles as an importable package (the intended reuse point for the loader):
 
 ```js
-import { buildManifest, verifySync } from '@pipobscure/napp/manifest';
+import { buildManifest, verifySync } from '@pipobscure/bundle/manifest';
+import { bundle, rebundle, keySigner } from '@pipobscure/bundle/archive';
 
 // build the AUTHORITY.PEM manifest content (algorithms + chain); the whole-file
-// signature is applied by bundle(), not here
+// signature is applied by bundle()/rebundle(), not here
 const content = buildManifest({ hashAlg: 'sha256', signAlg: 'sha256', chain });
 
 // verify an archive path or a Buffer of the whole file
-const { state, reason, subject } = verifySync('app.run', { extraRoots });
+const { state, reason, identity } = verifySync('app.run', { extraRoots });
+
+// build unsigned, then sign into as many shapes as you ship
+await bundle({ base: 'lib/', files, out: createWriteStream('app.bundle') });
+await rebundle({
+    source: 'app.bundle',
+    prefix: 'shell-base',
+    signer: keySigner({ key, chain }),
+    out: createWriteStream('app.run'),
+});
 ```
+
+A **signer** is just `{ chain, signAlg, sign(digest) }`: the chain goes into `AUTHORITY.PEM`
+before hashing, and `sign()` is called after, with the finished hash, returning a signature
+and any unsigned-attribute fields. `keySigner()` is the offline-CA implementation and
+`@pipobscure/bundle/sigstore`'s `signer()` is the other one — `rebundle()` knows about
+neither, which is the point. Writing a third (an HSM, a KMS, a corporate signing service) is
+a matter of implementing those three properties.
 
 `./provider` and `./recorder` are deliberately *not* re-exported from the package root:
 importing them needs `node:vfs`, which only exists under `--experimental-vfs`, while
-creating and verifying archives does not.
+creating and verifying archives does not. `./sigstore` is not re-exported either, but for a
+different reason: it is the only part of the package with npm dependencies, and an archive
+signed against an ordinary CA verifies with nothing but `node:crypto`. Its absence degrades
+a sigstore verification to `valid-untrusted` rather than breaking it.
 
-### Running only what is signed — the `.napp` provider
+### Running only what is signed — the `.bundle` provider
 
 `lib/provider.js` is where verification stops being something an application does to itself
 and becomes a property of the mount. It is a `ZipProvider` subclass, registered ahead of the
@@ -477,12 +624,12 @@ built-in one, and it gates in two places:
 
 **At mount.** `open()` recomputes the whole-file hash, checks the signature over it against
 the leaf certificate in `AUTHORITY.PEM`, and anchors the chain in the trust store. Anything
-short of `valid` throws `ERR_NAPP_UNTRUSTED` out of provider selection, which is *before*
+short of `valid` throws `ERR_BUNDLE_UNTRUSTED` out of provider selection, which is *before*
 the entry point is resolved — an archive that fails does not become a filesystem, so there
 is no window in which its code could run.
 
 **At fetch.** Every member is hashed as it is read and compared with the digest recorded for
-it, and only then handed over; a mismatch throws `ERR_NAPP_INTEGRITY` instead of returning
+it, and only then handed over; a mismatch throws `ERR_BUNDLE_INTEGRITY` instead of returning
 content. The mount-time hash already covers every member's bytes — but it covers them *as
 they were when the file was hashed*, and a `ZipFile` reads members lazily from an open file
 descriptor. Rewriting the archive underneath a running program would otherwise serve the new
@@ -497,15 +644,15 @@ Configure the preload through the environment, since `-r` takes no arguments:
 
 | Variable | Effect |
 |----------|--------|
-| `NAPP_ROOTS` | Extra trusted roots, a path-delimiter-separated list of PEM files. |
-| `NAPP_ALLOW_UNTRUSTED` | Accept a good signature whose chain is not anchored in the trust store. |
+| `BUNDLE_ROOTS` | Extra trusted roots, a path-delimiter-separated list of PEM files. |
+| `BUNDLE_ALLOW_UNTRUSTED` | Accept a good signature whose chain is not anchored in the trust store. |
 
 For anything more, call `register()` yourself from a preload of your own:
 
 ```js
-// my-preload.cjs — node --experimental-vfs -r ./my-preload.cjs --vfs-load --vfs-mount app.napp
-require('@pipobscure/napp/provider').register({
-  extensions: ['.napp', '.bundle'],  // claimed by name
+// my-preload.cjs — node --experimental-vfs -r ./my-preload.cjs --vfs-load --vfs-mount app.bundle
+require('@pipobscure/bundle/provider').register({
+  extensions: ['.bundle', '.bundle'],  // claimed by name
   claimSigned: true,                 // and anything carrying a SIGNED: marker
   roots: ['/etc/ssl/my-root.pem'],   // PEM text or paths to PEM files
   allowUntrusted: false,
@@ -513,7 +660,7 @@ require('@pipobscure/napp/provider').register({
 });
 ```
 
-`napp run <archive> [-- <args>]` is the same thing with the flags filled in: it re-execs
+`bundle run <archive> [-- <args>]` is the same thing with the flags filled in: it re-execs
 `node` with the preload and `--vfs-mount`, so what runs is what the child's own bootstrap
 verified.
 
@@ -551,8 +698,8 @@ provider selection the one place a mount can be influenced, the same job is bett
 a **provider** — which is what `lib/recorder.js` is:
 
 ```sh
-NAPP_MANIFEST=app.manifest node --experimental-vfs \
-    -r @pipobscure/napp/record --vfs-load --vfs-mount ./lib
+BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
+    -r @pipobscure/bundle/record --vfs-load --vfs-mount ./lib
 ```
 
 `recording(Base, manifest)` wraps a provider *class*, leaving its constructor signature
@@ -574,14 +721,62 @@ touches at run time:
 
 ```js
 // my-preload.cjs
-const { NappProvider } = require('@pipobscure/napp/provider');
-const { recording, Manifest } = require('@pipobscure/napp/recorder');
-const Recording = recording(NappProvider, new Manifest('reads.txt'));
+const { BundleProvider } = require('@pipobscure/bundle/provider');
+const { recording, Manifest } = require('@pipobscure/bundle/recorder');
+const Recording = recording(BundleProvider, new Manifest('reads.txt'));
 ```
 
 One thing it does not do: it records per *mount*, not per process, so several
 `--vfs-mount` directories merge into one list. The flag only ever supported a single
 directory target, so this is new ground rather than a regression.
+
+---
+
+## Auditing a bundle
+
+A signature answers *who produced these bytes*. It does not answer *are these bytes safe*.
+Those are different questions, and the second one is the one the recent supply-chain
+attacks actually exploited: every significant npm compromise of recent years shipped a
+correctly published, correctly signed package from a legitimately compromised account.
+Provenance would have confirmed it came from the real maintainer, and been useless.
+
+What makes the second question tractable here is that a bundle is a **closed set**. Nothing
+resolves later, nothing is fetched at install, no lifecycle script pulls in more code.
+Unlike a review of a dependency tree, a review over a bundle can be complete.
+
+`skills/audit-bundle/` is a [Claude Code](https://claude.com/claude-code) skill that
+does it in three phases:
+
+1. **Verify** — run `bundle verify --json` and report the state and signing identity. This
+   phase gates the rest and is not skippable: it stops on `invalid`, and continues with a
+   prominent warning on `unsigned` or `valid-untrusted`, since reviewing an archive you
+   cannot place is precisely the useful case. An audit that silently reviewed a tampered
+   archive would be worse than no audit.
+2. **Extract** — `unzip` to a scratch directory. It is a real ZIP, so this needs no special
+   tooling, and the extracted file list is reconciled against the signed member list.
+3. **Review** — read every file, hunting what those attacks did: install and load-time
+   hooks, obfuscated or encoded payloads, outbound network calls from modules with no
+   reason to make them, environment and credential reads, CI token and cloud metadata
+   endpoints, `child_process`/`eval`/dynamic `require`, and members nothing references.
+
+```
+/audit-bundle app.run
+```
+
+Claude Code discovers skills under `.claude/skills/`, which is ignored here (it is also
+where local settings live), so the skill itself is kept at the top level and linked into
+place. After cloning:
+
+```sh
+mkdir -p .claude/skills && ln -s ../../skills/audit-bundle .claude/skills/audit-bundle
+```
+
+It also has a diff mode: verify and extract two archives, review only what changed against a
+previously approved one, and call out any member added or removed. That is the realistic
+repeat-use case, and considerably more valuable than a fresh full review each time.
+
+Steps 1 and 2 are the existing CLI; only step 3 is new. That split is deliberate — the
+policy layer is a library and a skill you can replace, not something the runtime does.
 
 ---
 
@@ -634,6 +829,14 @@ The through-line is: **let a single file be the file tree a program runs from.**
   provider, which verifies nothing. Registration is a userland opt-in, not a runtime policy.
 - **Native SEAs are large** because they include a full Node. That's inherent to
   zero-dependency native distribution, not a flaw in the approach.
+- **Signing proves provenance, and provenance is not safety.** Every significant npm
+  compromise of recent years shipped a correctly signed package from a legitimately
+  compromised account. A signature would have confirmed it came from the real maintainer
+  and been useless. That is what the audit skill is for, and why it is a separate step.
+- **A sigstore signature is only as private as the transparency log.** Signing puts your
+  identity, the archive's hash and the time in a public append-only log. That is the
+  mechanism working — it is what makes the ten-minute certificate verifiable later — but it
+  is not something to discover after the fact.
 - **Everything here is experimental** — a personal fork, `--experimental-vfs`, `REPLACEME`
   version markers. It's a proof of concept for a distribution model, not a supported
   product.
@@ -643,28 +846,48 @@ The through-line is: **let a single file be the file tree a program runs from.**
 ## Layout
 
 ```
-builtinsea/
-  lib/            the tool: bundler + verifier + VFS provider + importable library
-    app.js          parseArgs CLI (create / verify / run); SEA + mount entry; library root
-    archive.js      createArchive() / bundle(): [prefix +] zip(baseOffset), whole-file signature
+bundles/
+  lib/            the tool: bundler + signer + verifier + VFS providers + importable library
+    app.js          parseArgs CLI (create / sign / verify / run / trust); SEA + mount entry; library root
+    archive.js      bundle() builds unsigned from a directory; rebundle() re-emits behind a new
+                    prefix and signs; keySigner() is the offline-CA signer
     manifest.js     buildManifest() / parseManifest() / verifySync(): signing + verification core
-    provider.js     NappProvider + register(): verify at mount, hash every member at fetch
-    register.cjs    the `-r` preload; configured via NAPP_ROOTS / NAPP_ALLOW_UNTRUSTED
+    sigstore.js     the sigstore signer (two-phase) and synchronous bundle verification
+    oidc.js         identity tokens: ambient CI, browser sign-in, or device code
+    provider.js     BundleProvider + register(): verify at mount, hash every member at fetch
+    register.cjs    the `-r` preload; configured via BUNDLE_ROOTS / BUNDLE_ALLOW_UNTRUSTED
     recorder.js     recording() + Manifest: the userland replacement for --vfs-manifest
-    record.cjs      the `-r` preload for recording; configured via NAPP_MANIFEST
-    package.json    { type:module, main:app.js, bin:napp, exports: { ".", "./manifest",
-                      "./archive", "./provider", "./register", "./recorder", "./record" } }
-  test/           napp.test.js (sign / verify / mount / run) and record.test.js (`npm test`)
+    record.cjs      the `-r` preload for recording; configured via BUNDLE_MANIFEST
+    package.json    { type:module, main:app.js, bin:bundle, exports: { ".", "./manifest",
+                      "./archive", "./provider", "./register", "./recorder", "./record",
+                      "./sigstore", "./oidc" } }
+  test/           bundle.test.js (mount / run), sign.test.js (signing), record.test.js (`npm test`)
+  skills/audit-bundle/
+                  the audit skill: verify -> extract -> security-review every file.
+                  symlinked into .claude/skills/ (ignored) so Claude Code picks it up
   sea.js          SEA bootstrap: verify self (whole-file signature), then mount and require the app
   sea.json        --build-sea configuration
   shell-base      shebang prefix for the portable archive
   certs/          self-signed test PKI (root CA + leaf) and gen.sh
   app.manifest    observed file list (produced by `npm run manifest`)
-  app.napp        built: signed archive, mounted and verified by the provider
+  app.bundle      built: the UNSIGNED archive every signed shape is produced from
+  app.signed.bundle  built: signed archive, mounted and verified by the provider
   app.run         built: self-executing ZIP app (needs Node)
   app.sea         built: standalone executable (needs nothing)
-  package.json    the sea / manifest / napp / archive / executable / verify / start / test scripts
+  package.json    the manifest / create / sign / archive / executable / sigstore / trust /
+                  verify / build / start / test scripts
 ```
 
-Build outputs (`app`, `app.manifest`, `app.napp`, `app.run`, `app.sea`, `node-base`) are
-generated by the scripts above.
+Build outputs (`app.manifest`, `app.bundle`, `app.signed.bundle`, `app.run`, `app.sea`,
+`node-base`) are generated by the scripts above.
+
+**Environment variables**
+
+| | |
+|---|---|
+| `BUNDLE_MANIFEST` | where the recording provider writes the observed file list |
+| `BUNDLE_ROOTS` | extra trusted roots for verification, path-delimiter separated |
+| `BUNDLE_ALLOW_UNTRUSTED` | mount an archive whose signature is good but untrusted |
+| `BUNDLE_IDENTITY` / `BUNDLE_ISSUER` | require a particular sigstore signer at mount time |
+| `BUNDLE_SIGSTORE_ROOT` | path to the sigstore trust root, instead of the cache |
+| `BUNDLE_NO_BROWSER` | never try to open a browser; use the device flow |

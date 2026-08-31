@@ -10,8 +10,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-SUBJ_ROOT="/CN=SEA Test Root CA/O=builtinsea"
-SUBJ_LEAF="/CN=SEA Test Signer/O=builtinsea"
+SUBJ_ROOT="/CN=Bundle Test Root CA/O=bundle"
+SUBJ_LEAF="/CN=Bundle Test Signer/O=bundle"
 
 # Root CA (self-signed).
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \

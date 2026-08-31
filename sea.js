@@ -189,7 +189,7 @@ function anchored(chain, roots, now) {
 // The gate is on the signature marker: an unsigned container never reaches the
 // checks (and, here, never runs). The per-member hash checks that this gate
 // leaves implicit are folded into member fetches by lib/provider.js, which is
-// what a `--vfs-mount` of a `.napp` uses; a SEA cannot reach for it, because it
+// what a `--vfs-mount` of a `.bundle` uses; a SEA cannot reach for it, because it
 // lives inside the very archive this code has to vet before mounting.
 // ---------------------------------------------------------------------------
 

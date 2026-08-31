@@ -1,20 +1,22 @@
 {
-  "name": "@pipobscure/napp",
+  "name": "@pipobscure/bundle",
   "version": "0.0.0",
-  "description": "Archive and sign a set of files, verify the result, and mount it as a verifying node:vfs provider so only properly signed .napp archives run.",
+  "description": "Record what an application reads, archive it, sign it with sigstore, verify it, and mount it as a verifying node:vfs provider so only signed archives run.",
   "keywords": [
     "SEA",
     "VFS",
     "signing",
-    "napp",
-    "Experiment"
+    "sigstore",
+    "bundle",
+    "zip",
+    "provenance"
   ],
   "license": "EUPL-1.2",
   "author": "Philipp Dunkel <pip@pipobscure.com>",
   "type": "module",
   "main": "lib/app.js",
   "bin": {
-    "napp": "lib/app.js"
+    "bundle": "lib/app.js"
   },
   "exports": {
     ".": "./lib/app.js",
@@ -23,17 +25,30 @@
     "./provider": "./lib/provider.js",
     "./register": "./lib/register.cjs",
     "./recorder": "./lib/recorder.js",
-    "./record": "./lib/record.cjs"
+    "./record": "./lib/record.cjs",
+    "./sigstore": "./lib/sigstore.js",
+    "./oidc": "./lib/oidc.js"
   },
   "scripts": {
     "sea": "node --no-warnings --build-sea sea.json",
-    "manifest": "NAPP_MANIFEST=app.manifest node --no-warnings --experimental-vfs -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\\nregister.cjs\\nrecorder.js\\nrecord.cjs\\n' >> app.manifest",
-    "napp": "node --no-warnings lib/app.js create --base lib/ --key certs/leaf.key --chain certs/chain.pem --files app.manifest --output app.napp",
-    "archive": "node --no-warnings lib/app.js create --base lib/ --prefix shell-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.run && chmod 0755 app.run",
-    "executable": "node --no-warnings lib/app.js create --base lib/ --prefix node-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.sea && chmod 0755 app.sea",
+    "manifest": "BUNDLE_MANIFEST=app.manifest node --no-warnings --experimental-vfs -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\\nregister.cjs\\nrecorder.js\\nrecord.cjs\\n' >> app.manifest",
+    "create": "node --no-warnings lib/app.js create --base lib/ --files app.manifest --output app.bundle",
+    "sign": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --output app.signed.bundle app.bundle",
+    "archive": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --prefix shell-base --output app.run app.bundle",
+    "executable": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --prefix node-base --output app.sea app.bundle",
+    "sigstore": "node --no-warnings lib/app.js sign --prefix shell-base --output app.run app.bundle",
+    "trust": "node --no-warnings lib/app.js trust",
     "verify": "node --no-warnings lib/app.js verify --root certs/root.pem",
-    "start": "NAPP_ROOTS=certs/root.pem node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.napp",
+    "build": "npm run manifest && npm run create && npm run sign && npm run archive",
+    "start": "BUNDLE_ROOTS=certs/root.pem node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.signed.bundle",
     "test": "node --no-warnings --experimental-vfs --test test/*.test.js"
   },
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@sigstore/bundle": "^3.1.0",
+    "@sigstore/protobuf-specs": "^0.4.3",
+    "@sigstore/sign": "^3.1.0",
+    "@sigstore/tuf": "^3.1.1",
+    "@sigstore/verify": "^2.1.1"
+  }
 }

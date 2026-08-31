@@ -3,4 +3,8 @@ app.manifest
 app.run
 app.sea
 node-base
-app.napp
+app.bundle
+app.signed.bundle
+node_modules/
+.claude/
+package-lock.json

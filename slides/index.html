@@ -1,0 +1,1287 @@
+<title>Ship the Tree</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Single-theme by intent: a projected deck must not follow the room's OS theme. */
+:root{
+  --ground:#0E1420; --panel:#151D2B; --panel2:#1B2536; --rule:#26334C; --rule-hi:#37496B;
+  --ink:#E9EEF7; --ink-dim:#B6C2D6; --muted:#8595B0; --faint:#5C6B87;
+  --accent:#F0A93B; --accent-dim:#8C6220;
+  --ok:#4FBF8B; --warn:#E0B24A; --bad:#E5615B; --none:#7C8BA6;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Archivo",system-ui,-apple-system,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);margin:0;overflow:hidden;height:100vh}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:800;letter-spacing:-.02em;line-height:1.02}
+
+#fit{position:fixed;inset:0;display:grid;place-items:center}
+#stage{width:1280px;height:720px;position:relative;transform-origin:center center;flex:none}
+.slide{position:absolute;inset:0;display:none;padding:56px 72px 62px 116px}
+.slide.on{display:block;animation:in .32s cubic-bezier(.2,.7,.3,1) both}
+@keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.slide.on{animation:none}}
+
+.gutter{position:absolute;left:0;top:0;bottom:0;width:70px;border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:56px 0 60px;background:rgba(0,0,0,.16)}
+.gutter .off{font-family:var(--mono);font-size:13px;color:var(--faint);letter-spacing:.06em}
+.gutter .act{font-family:var(--mono);font-size:11px;color:var(--accent-dim);writing-mode:vertical-rl;
+  transform:rotate(180deg);letter-spacing:.32em;text-transform:uppercase}
+
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.3em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}
+.eyebrow.q{color:var(--muted)}
+.chapter{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:16px;display:flex;gap:14px;align-items:center}
+.chapter .yr{color:var(--accent)}
+.chapter .ln{flex:1;height:1px;background:var(--rule)}
+h1{font-size:74px}
+h2{font-size:48px;line-height:1.06}
+h3{font-size:25px;font-weight:700;letter-spacing:-.01em}
+.lead{font-size:24px;line-height:1.42;color:var(--ink-dim);max-width:30ch;font-weight:400}
+.sub{font-size:18.5px;line-height:1.5;color:var(--muted);max-width:60ch}
+.big{font-size:38px;line-height:1.16;font-weight:700;letter-spacing:-.02em;max-width:22ch}
+
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start;margin-top:30px}
+.cols.w{grid-template-columns:1.05fr .95fr}
+.cols.n{grid-template-columns:.85fr 1.15fr}
+.stack{display:flex;flex-direction:column;gap:16px}
+.stack.t{gap:12px}
+
+/* Per-chapter takeaways — each job teaches its own things. */
+.takes{display:flex;flex-direction:column;gap:11px;margin-top:22px}
+.take{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;
+  background:rgba(240,169,59,.06);border-left:2px solid var(--accent);border-radius:0 5px 5px 0;padding:11px 16px}
+.take .n{font-family:var(--mono);font-size:11.5px;color:var(--accent);padding-top:2px}
+.take .x{font-size:17.5px;line-height:1.38;color:var(--ink)}
+.take .x b{color:var(--accent);font-weight:700}
+
+.bullets{display:flex;flex-direction:column;gap:15px;margin-top:6px}
+.bullets li{list-style:none;font-size:19.5px;line-height:1.44;color:var(--ink-dim);
+  padding-left:22px;position:relative;max-width:46ch}
+.bullets li::before{content:"";position:absolute;left:0;top:.6em;width:9px;height:1px;background:var(--rule-hi)}
+.bullets li b{color:var(--ink);font-weight:600}
+ul{margin:0;padding:0}
+
+code,.mono{font-family:var(--mono)}
+.cmd{background:var(--panel);border:1px solid var(--rule);border-left:2px solid var(--accent);
+  border-radius:5px;padding:14px 17px;font-family:var(--mono);font-size:15px;line-height:1.7;
+  color:var(--ink-dim);overflow-x:auto;white-space:pre}
+.cmd .p{color:var(--accent);user-select:none}
+.cmd .c{color:var(--faint)}
+.cmd .o{color:var(--muted)}
+.cmd .g{color:var(--ok)} .cmd .r{color:var(--bad)} .cmd .y{color:var(--warn)}
+.cmd.sm{font-size:13.5px;line-height:1.64}
+
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:20px 22px}
+.card h3{margin-bottom:9px}
+.card p{margin:0;font-size:16px;line-height:1.5;color:var(--muted)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:26px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}
+
+.tag{display:inline-block;font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+  text-transform:uppercase;padding:4px 9px;border-radius:4px;border:1px solid var(--rule-hi);color:var(--muted)}
+.tag.ok{color:var(--ok);border-color:#2C6B51;background:rgba(79,191,139,.09)}
+.tag.warn{color:var(--warn);border-color:#6E5721;background:rgba(224,178,74,.09)}
+.tag.bad{color:var(--bad);border-color:#7A3330;background:rgba(229,97,91,.09)}
+.tag.none{color:var(--none);border-color:var(--rule-hi)}
+.tag.acc{color:var(--accent);border-color:var(--accent-dim);background:rgba(240,169,59,.09)}
+
+.shot{border:1px dashed var(--rule-hi);border-radius:8px;background:
+  repeating-linear-gradient(135deg,transparent 0 9px,rgba(55,73,107,.09) 9px 18px);
+  display:flex;flex-direction:column;justify-content:center;gap:8px;padding:20px;min-height:190px}
+.shot .k{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+.shot .w{font-size:15.5px;line-height:1.44;color:var(--ink-dim);font-weight:500}
+.shot .u{font-family:var(--mono);font-size:12px;color:var(--faint);word-break:break-all;line-height:1.5}
+
+table{border-collapse:collapse;width:100%;font-size:16.5px}
+th{text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);font-weight:500;padding:0 14px 10px 0;border-bottom:1px solid var(--rule)}
+td{padding:12px 14px 12px 0;border-bottom:1px solid var(--rule);color:var(--ink-dim);vertical-align:top}
+td b{color:var(--ink)} td .mono{font-size:14.5px}
+.tw{overflow-x:auto}
+
+.timeline{display:flex;flex-direction:column;margin-top:20px}
+.ev{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:11px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+.ev:last-child{border-bottom:0}
+.ev .d{font-family:var(--mono);font-size:13.5px;color:var(--accent)}
+.ev .t{font-size:17px;line-height:1.38;color:var(--ink-dim)}
+.ev .t b{color:var(--ink);font-weight:600}
+.ev.hot .t b{color:var(--bad)}
+
+figure{margin:0}
+svg{display:block;max-width:100%}
+.cap{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:11px;line-height:1.5}
+
+.kicker{position:absolute;left:116px;right:72px;bottom:24px;display:flex;justify-content:space-between;
+  align-items:center;font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.05em}
+
+#bar{position:fixed;left:0;bottom:0;height:3px;background:var(--accent);z-index:40;transition:width .3s}
+#hud{position:fixed;right:14px;bottom:14px;z-index:41;display:flex;gap:8px;align-items:center;
+  font-family:var(--mono);font-size:12px;color:var(--faint);background:rgba(14,20,32,.9);
+  border:1px solid var(--rule);border-radius:7px;padding:7px 11px;backdrop-filter:blur(6px)}
+#hud b{color:var(--ink-dim);font-weight:500}
+#clock{font-variant-numeric:tabular-nums}
+#clock.run{color:var(--ok)} #clock.late{color:var(--bad)} #clock.early{color:var(--ok)}
+#hud .sep{width:1px;height:13px;background:var(--rule)}
+#hud button{font:inherit;background:none;border:1px solid var(--rule);color:var(--muted);
+  border-radius:4px;padding:2px 7px;cursor:pointer}
+#hud button:hover{color:var(--ink);border-color:var(--rule-hi)}
+#hud button:focus-visible,.ov-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:44vh;overflow-y:auto;z-index:39;
+  background:#0A0F19;border-top:1px solid var(--rule);padding:18px 24px 40px}
+#notes[hidden]{display:none}
+#notes h4{margin:0 0 9px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--accent);font-weight:500}
+#notes .body{font-size:15px;line-height:1.6;color:var(--ink-dim);max-width:105ch}
+#notes .body p{margin:0 0 9px}
+#notes .body b{color:var(--ink)}
+#notes .body em{color:var(--accent);font-style:normal;font-family:var(--mono);font-size:13.5px}
+#notes .body .say{border-left:2px solid var(--accent-dim);padding-left:13px;color:var(--ink);margin:0 0 11px}
+#notes .body ul{margin:0 0 9px;padding-left:18px}
+#notes .body li{list-style:disc;margin-bottom:5px}
+
+#ov{position:fixed;inset:0;z-index:50;background:rgba(10,15,25,.97);overflow-y:auto;padding:32px;
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:15px;align-content:start}
+#ov[hidden]{display:none}
+.ov-card{background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:13px;
+  cursor:pointer;text-align:left;font:inherit;color:inherit;display:flex;flex-direction:column;gap:7px;min-height:100px}
+.ov-card:hover{border-color:var(--accent-dim)}
+.ov-card.cur{border-color:var(--accent)}
+.ov-card .i{font-family:var(--mono);font-size:11px;color:var(--faint);display:flex;justify-content:space-between}
+.ov-card .i .a{color:var(--accent-dim)}
+.ov-card .h{font-size:14.5px;line-height:1.32;font-weight:600;color:var(--ink)}
+
+#help{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(10,15,25,.94)}
+#help[hidden]{display:none}
+#help .box{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:28px 32px;max-width:460px}
+#help h4{margin:0 0 16px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);font-weight:500}
+#help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:10px 20px;font-size:15px;align-items:baseline}
+#help dt{font-family:var(--mono);color:var(--ink)}
+#help dd{margin:0;color:var(--muted)}
+</style>
+
+<div id="fit"><div id="stage">
+
+<!-- ═══ 00 ═══ -->
+<section class="slide" data-act="" data-t="20">
+  <div class="gutter"><span class="off">0x00</span><span class="act"></span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
+    <div class="eyebrow">Node.js &middot; module loading &middot; distribution</div>
+    <h1 style="font-size:104px">Ship the Tree</h1>
+    <p class="lead" style="margin-top:26px;max-width:42ch">Node can now run a program directly out of a zip archive
+      &mdash; <b style="color:var(--accent)">the whole tree</b>, not a flattened bundle. Signing and verifying live
+      outside it, in tools you choose.</p>
+    <p class="lead" style="margin-top:14px;max-width:42ch">On top of that you can build application archives that are
+      <b style="color:var(--accent)">self-executing, signable, verifiable, and fully known</b>.</p>
+    <div style="margin-top:40px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <span class="tag acc">node:vfs</span>
+      <span class="tag acc">zip in node:zlib</span>
+      <span class="tag">--vfs-mount</span>
+      <span class="tag">--vfs-load</span>
+    </div>
+    <p class="sub" style="margin-top:36px;font-size:17px">Philipp Dunkel &nbsp;&middot;&nbsp;
+      <span class="mono">@pipobscure.com</span> &nbsp;&middot;&nbsp; <span class="mono">pip@pip.fyi</span></p>
+  </div>
+  <div class="kicker"><span>github.com/pipobscure</span><span>press <b style="color:var(--ink-dim)">?</b> for controls</span></div>
+  <div class="notes" hidden>
+    <p class="say">"I'm going to spend the first third of this talk on jobs I've had, because the design of this thing is downstream of a specific sequence of things going wrong."</p>
+    <p><b>One correction to make early, because people assume otherwise:</b> the runtime's job is to <i>run archives</i>. It does not decide which archives are allowed to run. Signing and verification are optional tools living entirely outside Node. Everything after that builds on the capability, not on the checking.</p>
+    <p><b>Housekeeping:</b> questions at the end, there'll be time for one or two.</p>
+    <p><em>Press T</em> to start the pace timer. Red = behind plan.</p>
+  </div>
+</section>
+
+<!-- ═══ annoyances ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="35">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Where this comes from</div>
+  <h2>What kept going wrong.</h2>
+  <div class="grid3" style="margin-top:34px">
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Registry instability</h3>
+      <p style="margin-top:7px">Something you don't run, in the path of every deploy.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Version &ne; code</h3>
+      <p style="margin-top:7px">Knowing what you asked for is not knowing what you got.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Supply-chain compromise</h3>
+      <p style="margin-top:7px">Routine now. Not exotic, not rare, not somebody else's problem.</p></div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Distribution friction</h3>
+      <p style="margin-top:7px">Shipping a tool means shipping an install procedure, and then supporting it.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Fixes in the wrong place</h3>
+      <p style="margin-top:7px">A library only reaches people who already knew they had the problem.</p></div>
+  </div>
+  <p class="sub" style="margin-top:30px;font-size:19px;color:var(--ink-dim);max-width:84ch">
+    Picked up over the years, in a few different jobs. The next few slides are where some of them came from.</p>
+  <div class="kicker"><span class="mono">the recurring ones</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"These are the things that kept coming up, in different jobs, over quite a lot of years."</p>
+    <p><b>35 seconds.</b> Read the five names and move — the detail is in the examples that follow. Don't dwell on how many there are or where each one came from; the slide just puts the problems on the table.</p>
+    <p>It also does structural work: it tells the audience Act I has a shape and isn't a career retrospective.</p>
+  </div>
+</section>
+
+<!-- ═══ example: durchblicker ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="85">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="chapter"><span>durchblicker.at</span><span class="yr">CTO &middot; 2009&ndash;2014</span><span class="ln"></span></div>
+  <h2>Our deploys depended on<br>somebody else's uptime.</h2>
+  <div class="cols w" style="margin-top:26px">
+    <div class="stack">
+      <p class="lead" style="max-width:34ch">The pipeline ran <code style="color:var(--accent)">npm install</code>
+        against the public registry at deploy time. So shipping was gated on a service we didn't run,
+        with an SLA that wasn't ours.</p>
+      <div class="cmd sm"><span class="c"># deploying, 16:40 on a Tuesday</span>
+<span class="p">$</span> npm install --production
+npm <span class="r">ERR!</span> fetch failed https://registry.npmjs.org/...
+npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
+
+<span class="c"># the code hadn't changed. the build had.</span></div>
+      <div class="takes">
+        <div class="take"><span class="n">01</span><span class="x">The registry is <b>not a build input</b>. Don't reach
+          for the network at deploy time.</span></div>
+        <div class="take"><span class="n">02</span><span class="x">Reproducible, <b>known versions</b> are worth real
+          effort. Resolve once; ship what you resolved.</span></div>
+      </div>
+    </div>
+    <figure>
+      <div style="font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">
+        npm incidents by month &mdash; from npm's own status page</div>
+      <!-- CHART:START — generated by tools/refresh-chart.mjs; do not hand-edit -->
+      <svg viewBox="0 0 520 196" role="img" aria-label="Monthly npm status-page incidents, Oct 2023 to Jul 2026, split into minor and major-or-critical">
+      <title>npm incidents by month, Oct 2023 to Jul 2026</title>
+      <line x1="30" y1="166.0" x2="514" y2="166.0" stroke="#26334C" stroke-width="1"/>
+      <text x="23" y="169.5" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="end">0</text>
+      <line x1="30" y1="106.0" x2="514" y2="106.0" stroke="#26334C" stroke-width="1"/>
+      <text x="23" y="109.5" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="end">2</text>
+      <line x1="30" y1="46.0" x2="514" y2="46.0" stroke="#26334C" stroke-width="1"/>
+      <text x="23" y="49.5" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="end">4</text>
+      <rect x="32.0" y="136.0" width="10.2" height="30.0" rx="0" fill="#F0A93B"><title>2023-10: 1 minor</title></rect>
+      <rect x="32.0" y="104.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2023-10: 1 major/critical</title></rect>
+      <rect x="46.2" y="76.0" width="10.2" height="90.0" rx="3" fill="#F0A93B"><title>2023-11: 3 minor</title></rect>
+      <rect x="60.5" y="136.0" width="10.2" height="30.0" rx="0" fill="#F0A93B"><title>2023-12: 1 minor</title></rect>
+      <rect x="60.5" y="104.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2023-12: 1 major/critical</title></rect>
+      <rect x="74.7" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-01: 1 minor</title></rect>
+      <rect x="117.4" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-04: 1 minor</title></rect>
+      <rect x="131.6" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-05: 1 minor</title></rect>
+      <rect x="145.9" y="106.0" width="10.2" height="60.0" rx="0" fill="#F0A93B"><title>2024-06: 2 minor</title></rect>
+      <rect x="145.9" y="44.0" width="10.2" height="60.0" rx="3" fill="#E5615B"><title>2024-06: 2 major/critical</title></rect>
+      <rect x="174.4" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-08: 1 minor</title></rect>
+      <rect x="188.6" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-09: 1 minor</title></rect>
+      <rect x="202.8" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-10: 1 minor</title></rect>
+      <rect x="217.1" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2024-11: 1 minor</title></rect>
+      <rect x="231.3" y="136.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2024-12: 1 major/critical</title></rect>
+      <rect x="245.5" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2025-01: 1 minor</title></rect>
+      <rect x="288.2" y="106.0" width="10.2" height="60.0" rx="0" fill="#F0A93B"><title>2025-04: 2 minor</title></rect>
+      <rect x="288.2" y="74.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2025-04: 1 major/critical</title></rect>
+      <rect x="316.7" y="136.0" width="10.2" height="30.0" rx="0" fill="#F0A93B"><title>2025-06: 1 minor</title></rect>
+      <rect x="316.7" y="104.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2025-06: 1 major/critical</title></rect>
+      <rect x="345.2" y="106.0" width="10.2" height="60.0" rx="3" fill="#F0A93B"><title>2025-08: 2 minor</title></rect>
+      <rect x="373.6" y="76.0" width="10.2" height="90.0" rx="3" fill="#F0A93B"><title>2025-10: 3 minor</title></rect>
+      <rect x="387.9" y="106.0" width="10.2" height="60.0" rx="3" fill="#F0A93B"><title>2025-11: 2 minor</title></rect>
+      <rect x="402.1" y="136.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2025-12: 1 major/critical</title></rect>
+      <rect x="416.4" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2026-01: 1 minor</title></rect>
+      <rect x="430.6" y="106.0" width="10.2" height="60.0" rx="3" fill="#F0A93B"><title>2026-02: 2 minor</title></rect>
+      <rect x="444.8" y="46.0" width="10.2" height="120.0" rx="0" fill="#F0A93B"><title>2026-03: 4 minor</title></rect>
+      <rect x="444.8" y="14.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2026-03: 1 major/critical</title></rect>
+      <rect x="459.1" y="46.0" width="10.2" height="120.0" rx="0" fill="#F0A93B"><title>2026-04: 4 minor</title></rect>
+      <rect x="459.1" y="14.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2026-04: 1 major/critical</title></rect>
+      <rect x="487.5" y="136.0" width="10.2" height="30.0" rx="3" fill="#F0A93B"><title>2026-06: 1 minor</title></rect>
+      <rect x="501.8" y="106.0" width="10.2" height="60.0" rx="0" fill="#F0A93B"><title>2026-07: 2 minor</title></rect>
+      <rect x="501.8" y="74.0" width="10.2" height="30.0" rx="3" fill="#E5615B"><title>2026-07: 1 major/critical</title></rect>
+      <line x1="30" y1="166.0" x2="514" y2="166.0" stroke="#26334C" stroke-width="1"/>
+      <text x="37.1" y="181" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">2023</text>
+      <text x="79.8" y="181" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">2024</text>
+      <text x="250.6" y="181" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">2025</text>
+      <text x="421.5" y="181" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">2026</text>
+      <rect x="30" y="185" width="9" height="9" rx="2" fill="#F0A93B"/>
+      <text x="43" y="192.5" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5">minor</text>
+      <rect x="92" y="185" width="9" height="9" rx="2" fill="#E5615B"/>
+      <text x="105" y="192.5" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5">major / critical</text>
+      </svg>
+      <!-- CHART:END -->
+      <figcaption class="cap">The 50 most recent incidents npm publishes, Oct 2023 &ndash; Jul 2026:
+        <span style="color:var(--ink-dim)">one every 20.4 days</span>, 11 of them major or critical.
+        <span style="color:var(--rule-hi)">source: status.npmjs.org/api/v2/incidents.json</span></figcaption>
+    </figure>
+  </div>
+  <div class="kicker"><span class="mono">example — the registry in the deploy path</span><span>01</span></div>
+  <div class="notes" hidden>
+    <p class="say">"The code we were deploying hadn't changed. The <i>build</i> changed — because the build reached out over the internet, and the internet said no."</p>
+    <p><b>The real lesson isn't downtime, it's non-determinism.</b> Even with the registry up, resolving at deploy time can hand you a different tree than an hour ago. Downtime is just the loud version.</p>
+    <p><b>The chart is npm's own data</b>, pulled from <em>status.npmjs.org/api/v2/incidents.json</em> — the 50 most recent incidents they publish, Oct 2023 to Jul 2026. That is one every 20 days, and 11 of the 50 were flagged major or critical. <b>Say it's their number, not yours</b> — it's much stronger that way, and it's re-runnable if someone doubts it. Note the honest limit: the API returns the 50 most recent, so this is a window, not the whole history.</p>
+    <p>Pre-empt the obvious objection: <i>"that's what lockfiles are for."</i> Concede it — lockfiles fixed <b>which versions</b>. They didn't remove the network from the deploy path, and they don't tell you the bytes behind a version are the bytes you reviewed. That's chapter 2.</p>
+    <p><b>This is chapter one of four, and each chapter teaches something different.</b> Don't merge them — the point is that different contexts produced different requirements, and only together do they specify the design.</p>
+  </div>
+</section>
+
+<!-- ═══ 02 ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="100">
+  <div class="gutter"><span class="off">0x02</span><span class="act">I · where this comes from</span></div>
+  <div class="chapter"><span>Bloomberg LP</span><span class="yr">2014&ndash;2026</span><span class="ln"></span><span>i &mdash; provenance</span></div>
+  <h2>&ldquo;What is running on that<br>host?&rdquo; needs a real answer.</h2>
+  <div class="cols n" style="margin-top:24px">
+    <div class="stack">
+      <ul class="bullets">
+        <li><b>Known software.</b> "A dependency tree resolved at some point by some pipeline" is not an answer
+          anyone can act on.</li>
+        <li><b>Controlled software.</b> Someone is accountable for every byte, and must be able to say who put it there.</li>
+      </ul>
+      <div class="takes">
+        <div class="take"><span class="n">03</span><span class="x">Ship the <b>artifact</b>, not the recipe. The tested
+          bytes are the shipped bytes.</span></div>
+        <div class="take"><span class="n">04</span><span class="x">Supply-chain attacks are <b>real and routine</b>.
+          Knowing the version is not knowing the code.</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="timeline" style="margin-top:0">
+        <div class="ev"><span class="d">2016-03</span><span class="t"><b>left-pad</b> unpublished. Thousands of builds break. Not an attack &mdash; a preview.</span></div>
+        <div class="ev hot"><span class="d">2018-11</span><span class="t"><b>event-stream</b>. A helpful new maintainer, a couple of benign PRs, publish rights &mdash; then a wallet stealer.</span></div>
+        <div class="ev hot"><span class="d">2021-10</span><span class="t"><b>ua-parser-js</b>. Account takeover. ~8M weekly downloads shipping a miner and a credential stealer.</span></div>
+        <div class="ev hot"><span class="d">2024-03</span><span class="t"><b>xz-utils</b>. A multi-year social-engineering campaign for one backdoor.</span></div>
+        <div class="ev hot"><span class="d">2025-09</span><span class="t"><b>Shai-Hulud</b>. Self-replicating: steals CI credentials, then uses them to publish itself onward.</span></div>
+      </div>
+      <div class="card" style="border-color:#7A3330;background:rgba(229,97,91,.07);padding:16px 20px;
+           display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center">
+        <div>
+          <div style="font-family:var(--mono);font-size:34px;color:var(--bad);font-weight:700;
+               letter-spacing:-.02em;line-height:1">30,930</div>
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+               color:var(--faint);margin-top:5px">and counting</div>
+        </div>
+        <p style="font-size:15.5px;line-height:1.45;color:var(--ink-dim)">malicious <b style="color:var(--ink)">npm</b>
+          package records in OpenSSF's public database. Mostly typosquats and spam &mdash; but that is the
+          <i>background rate</i> the five above had to hide in.</p>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">example — knowing what you run</span><span>02</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Every one of these shipped a correctly published package. The version number you asked for is the version number you got. And you still got owned."</p>
+    <p><b>The trajectory is the argument:</b> accident → targeted theft → account takeover → patient infiltration → a worm that spreads by itself. Walk the arc; don't read the list.</p>
+    <p><b>Verify counts before presenting.</b> Shai-Hulud reporting varies by source and wave. Safe framing: "hundreds of packages across two waves in late 2025, and CISA issued an advisory." Don't quote a precise number from the stage.</p>
+    <p><b>The 30,930 figure</b> is a count of npm records in OpenSSF's public <em>malicious-packages</em> database (github.com/ossf/malicious-packages). <b>Be precise about what it is:</b> overwhelmingly typosquats and SEO spam, not 30,000 event-streams. The honest use is exactly how the slide frames it — that is the background noise a real attack gets to hide inside. If you'd rather not defend the number, drop the tile and let the timeline carry the slide.</p>
+    <p><b>Note what this does and doesn't motivate.</b> It motivates <i>being able to know and check what you shipped</i>. It does <b>not</b> motivate the runtime policing signatures — that comes up in chapter 4 and I argue against it. Don't let the fear slide oversell.</p>
+  </div>
+</section>
+
+<!-- ═══ 03 ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="75">
+  <div class="gutter"><span class="off">0x03</span><span class="act">I · where this comes from</span></div>
+  <div class="chapter"><span>Bloomberg LP</span><span class="yr">2014&ndash;2026</span><span class="ln"></span><span>ii &mdash; distribution</span></div>
+  <h2>A CLI tool is one file,<br>or it is a support ticket.</h2>
+  <div class="cols w" style="margin-top:24px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># shipping a Node CLI, usually</span>
+<span class="p">$</span> git clone … &amp;&amp; cd tool
+<span class="p">$</span> nvm use 20            <span class="c"># "works on 18?" no</span>
+<span class="p">$</span> npm ci                <span class="c"># hundreds of MB</span>
+<span class="p">$</span> npm link              <span class="c"># now it's on PATH. somewhere.</span>
+
+<span class="c"># what it should be</span>
+<span class="p">$</span> curl -O …/tool &amp;&amp; chmod +x tool
+<span class="p">$</span> ./tool</div>
+      <div class="takes">
+        <div class="take"><span class="n">05</span><span class="x">Deploying a CLI is far better when the whole app
+          is <b>a single file</b>.</span></div>
+        <div class="take"><span class="n">06</span><span class="x">Better still if that file <b>executes itself</b> &mdash;
+          a shebang, not a wrapper script.</span></div>
+      </div>
+    </div>
+    <div class="stack t" style="gap:13px">
+      <div class="card" style="padding:16px 20px"><h3 style="font-size:19px">&ldquo;Which Node do I need?&rdquo;</h3>
+        <p style="margin-top:5px">Bring your own. One file doesn't care where it sits.</p></div>
+      <div class="card" style="padding:16px 20px"><h3 style="font-size:19px">&ldquo;Where do I put it?&rdquo;</h3>
+        <p style="margin-top:5px">Anywhere. <code style="color:var(--accent)">chmod +x</code>. Done.</p></div>
+      <div class="card" style="padding:16px 20px"><h3 style="font-size:19px">&ldquo;Is this the current build?&rdquo;</h3>
+        <p style="margin-top:5px">One file has one hash. Compare it.</p></div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">example — getting it to people</span><span>03</span></div>
+  <div class="notes" hidden>
+    <p class="say">"The single best usability improvement I ever made to an internal tool was deleting its installation instructions."</p>
+    <p><b>Self-execution is the underrated half.</b> A file you still invoke as <em>node thing.js</em> is a file plus a convention. A file with a shebang is a <i>program</i> — it works in a Makefile, in CI, in someone's dotfiles, in a container ENTRYPOINT.</p>
+    <p>Plant the seed: <b>the shebang trick in the demo is the direct answer to takeaway 06</b>, and it's the moment people react to.</p>
+    <p><b>Deliberately not in this talk: SEA.</b> If someone asks about shipping to a machine with no Node at all — yes, there's a path where the same archive rides on a self-contained binary. One sentence, then move on. It's a different talk.</p>
+  </div>
+</section>
+
+<!-- ═══ 04 ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="70">
+  <div class="gutter"><span class="off">0x04</span><span class="act">I · where this comes from</span></div>
+  <div class="chapter"><span>TC39 &middot; Temporal</span><span class="yr">~10 years</span><span class="ln"></span></div>
+  <h2>Standardise the primitive.<br>Never the policy.</h2>
+  <div class="cols" style="margin-top:26px">
+    <div class="stack">
+      <p class="lead" style="max-width:34ch">Temporal put <b style="color:var(--ink)">instants, durations, calendars
+        and the arithmetic between them</b> into the language. It did not put your business rules there.</p>
+      <p class="sub" style="font-size:18px;max-width:40ch">Nobody standardised what counts as a working day, or which
+        timezone your invoices settle in. Those change. Those are yours.</p>
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05);padding:16px 20px">
+        <p style="font-size:16.5px;line-height:1.5">Ten years also taught me the other half: <b style="color:var(--ink)">a
+          standard is slow, and then it is permanent.</b> That's correct for a primitive. It is fatal for anything that
+          has to keep up with an adversary.</p>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="takes" style="margin-top:0">
+        <div class="take"><span class="n">07</span><span class="x">Fundamental concepts work better <b>upstream</b>,
+          as a shared primitive everyone can build on.</span></div>
+        <div class="take"><span class="n">08</span><span class="x">Everything that must <b>evolve</b> stays out of the
+          standard, where it can be replaced.</span></div>
+      </div>
+      <div class="card" style="margin-top:6px">
+        <div class="eyebrow" style="margin-bottom:10px">Applied here</div>
+        <p style="font-size:17.5px;line-height:1.5;color:var(--ink)"><b style="color:var(--accent)">Primitive:</b>
+          an application can be loaded and run out of an archive.</p>
+        <p style="font-size:17.5px;line-height:1.5;color:var(--ink);margin-top:10px"><b style="color:var(--accent)">Policy:</b>
+          whether you should trust this particular archive.</p>
+        <p style="font-size:16px;line-height:1.5;margin-top:12px;color:var(--muted)">The first belongs in Node.
+          The second must not.</p>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">example — where a fix belongs</span><span>04</span></div>
+  <div class="notes" hidden>
+    <p class="say">"I spent about a decade getting Temporal into JavaScript. The thing that took the longest wasn't the API — it was working out where the line was. What belongs in the language, and what has to stay outside it."</p>
+    <p><b>This chapter sets up the mechanism/policy split</b> that Act II uses to sort what went into Node from what didn't. Give it its time even though the slide looks light.</p>
+    <p>The "slow, then permanent" point does real work: it's why you'd <i>want</i> the runtime to stay out of trust decisions. Getting a signature format into Node takes two years; getting it out takes ten.</p>
+    <p><b>Say the primitive/policy split out loud and slowly.</b> It's the sentence the next six slides depend on, and it's the sentence you want people repeating afterwards.</p>
+  </div>
+</section>
+
+<!-- ═══ 05 ═══ -->
+<section class="slide" data-act="I · where this comes from" data-t="60">
+  <div class="gutter"><span class="off">0x05</span><span class="act">I · where this comes from</span></div>
+  <div class="chapter"><span>Prior art</span><span class="yr">jar &middot; apk &middot; zipapp</span><span class="ln"></span></div>
+  <h2>Everyone built this already.<br>Study it. Don't copy it.</h2>
+  <div class="grid3" style="margin-top:32px">
+    <div class="card"><div class="tag" style="margin-bottom:11px">Java, 1996</div><h3 style="font-size:22px">.jar</h3>
+      <p style="margin-top:7px">A zip plus a manifest of per-entry checksums, and a signature over <i>those</i>.
+        Not over the archive.</p></div>
+    <div class="card"><div class="tag" style="margin-bottom:11px">Android</div><h3 style="font-size:22px">.apk</h3>
+      <p style="margin-top:7px">Inherited jar signing wholesale, and then had to replace it. Three times.</p></div>
+    <div class="card"><div class="tag" style="margin-bottom:11px">Python</div><h3 style="font-size:22px">zipapp</h3>
+      <p style="margin-top:7px">A zip with a shebang glued on the front. Runs directly. No integrity story at all.</p></div>
+  </div>
+  <div class="takes" style="margin-top:30px;max-width:78ch">
+    <div class="take"><span class="n">09</span><span class="x">Prior art is <b>valuable</b> &mdash; the shape is right,
+      and it has been right for thirty years.</span></div>
+    <div class="take"><span class="n">10</span><span class="x">Prior art should <b>not constrain</b>. These are similar
+      to what we want. They are not identical, and their mistakes are instructive.</span></div>
+  </div>
+  <div class="kicker"><span class="mono">example — what others already tried</span><span>05</span></div>
+  <div class="notes" hidden>
+    <p class="say">"None of this is a new idea. The jar file is older than most of the packages on npm. What's new is that Node can do the loading part natively, instead of a userland bootstrap doing it badly."</p>
+    <p><b>Deliberately don't unpack the failures here</b> — the Android story pays off later, when the signing scheme comes up. Just plant "and then had to replace it, three times" and let it sit unexplained.</p>
+    <p>zipapp is the one to be warm about: it nails the ergonomics you want, and it makes no claims it can't keep. That's a defensible position, not a flaw.</p>
+    <p><b>Credibility:</b> naming prior art accurately buys you the right to critique it in twenty slides' time.</p>
+  </div>
+</section>
+
+<!-- ═══ 06 ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="55">
+  <div class="gutter"><span class="off">0x06</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Sorting the takeaways</div>
+  <h2>Which of these belongs<br>in the runtime?</h2>
+  <div class="cols" style="margin-top:32px">
+    <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+      <div class="eyebrow" style="margin-bottom:14px">In Node</div>
+      <ul class="bullets" style="margin-top:0;gap:12px">
+        <li style="font-size:18px">Run a program <b>out of an archive</b> &mdash; entry point, modules, assets, addons.</li>
+        <li style="font-size:18px">Let an archive live <b>inside another file</b>, after a shebang.</li>
+        <li style="font-size:18px">Let userland <b>decide what backs a mount</b>.</li>
+      </ul>
+      <p class="sub" style="font-size:15.5px;margin-top:16px">Mechanism. Stable for decades. Nothing to keep up with.</p>
+    </div>
+    <div class="card">
+      <div class="eyebrow" style="margin-bottom:14px;color:var(--muted)">Not in Node</div>
+      <ul class="bullets" style="margin-top:0;gap:12px">
+        <li style="font-size:18px">Which <b>hash</b> and which <b>signature algorithm</b>.</li>
+        <li style="font-size:18px">Where the signature <b>lives</b> in the file.</li>
+        <li style="font-size:18px">Whose <b>certificates</b> you trust, and how you anchor them.</li>
+        <li style="font-size:18px">What happens when verification <b>fails</b>.</li>
+      </ul>
+      <p class="sub" style="font-size:15.5px;margin-top:16px">Policy. Adversarial. Must be replaceable.</p>
+    </div>
+  </div>
+  <p class="big" style="margin-top:30px;max-width:60ch;font-size:32px">
+    The left column is what merged. <span style="color:var(--accent)">The right column is a library I wrote,
+    and you could write a different one.</span></p>
+  <div class="kicker"><span class="mono">act II — mechanism, not policy</span><span>06</span></div>
+  <div class="notes" hidden>
+    <p class="say">"So here's the split. Left column: things that have been true since 1996 and will be true in 2050. Right column: things that were wrong last year and will be wrong again next year."</p>
+    <p><b>Timing checkpoint: you should be at about 7 minutes.</b></p>
+    <p>Read the right column slowly — it's the list people assume must be built in, and every item on it is a thing some platform baked in and regretted.</p>
+    <p>The closing line sorts the rest of the deck: everything after this is either the merged capability or the optional layer. Land it, then move.</p>
+  </div>
+</section>
+
+<!-- ═══ 07 ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="65">
+  <div class="gutter"><span class="off">0x07</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Why this needed the runtime at all</div>
+  <h2>An application is a tree.<br>Not a blob.</h2>
+  <div class="cols w" style="margin-top:26px">
+    <div class="stack">
+      <p class="lead" style="max-width:35ch">Bundlers collapse <i>JavaScript</i> into one file. An application is an
+        entry point, sibling modules, a <code style="color:var(--accent)">package.json</code>, templates, static
+        assets, sometimes a native addon.</p>
+      <div class="cmd" style="border-left-color:var(--bad)"><span class="c"># survives a bundler</span>
+import helper from <span class="o">'./helper.js'</span>
+
+<span class="c"># does not</span>
+readFileSync(join(__dirname, <span class="o">'tmpl/mail.html'</span>))
+require(<span class="o">`./plugins/${name}`</span>)
+dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
+    </div>
+    <div class="stack">
+      <p class="sub" style="font-size:18px;max-width:40ch">Node's module resolution &mdash; and every single
+        <code>fs</code> call &mdash; assumes that tree is on a real disk. A bundler rewrites its slice of module
+        loading; everything else keeps pointing at directories that aren't there.</p>
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+        <p style="color:var(--ink);font-size:22px;line-height:1.36;font-weight:600">
+          Don't teach the bundler about more file types.</p>
+        <p style="color:var(--accent);font-size:22px;line-height:1.36;font-weight:600;margin-top:10px">
+          Teach the runtime that a file can <i>be</i> a directory.</p>
+      </div>
+      <p class="sub" style="font-size:17px;max-width:40ch">Then assets work. Addons work. <code>__dirname</code> works.
+        Dynamic <code>require</code> works. Not because anyone special-cased them &mdash; because they all resolve
+        against a tree, and the tree is real.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">the reframe</span><span>07</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Every bundler bug you've ever filed is downstream of this. It rewrote the imports it could see, then some library did a dynamic require, and it fell over at runtime, in production, on a Friday."</p>
+    <p><b>This slide converts skeptics</b> — everyone has been burned by exactly this. Let the code block land. Pause after "does not."</p>
+    <p>This also answers "why did you have to touch Node?" — because the alternative is patching resolution from userland, forever, incompletely.</p>
+  </div>
+</section>
+
+<!-- ═══ 08 ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="70">
+  <div class="gutter"><span class="off">0x08</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Piece 1 &middot; <span style="color:var(--ok)">zip support in node:zlib</span></div>
+  <h2><code style="font-size:42px">baseOffset</code> &mdash; a zip that<br>doesn't start at byte zero.</h2>
+  <div class="cols n" style="margin-top:24px">
+    <figure>
+      <svg viewBox="0 0 500 240" role="img" aria-label="A file made of a prefix followed by a zip archive whose internal offsets are seeded past the prefix">
+        <text x="0" y="12" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5" letter-spacing="1.4">ONE FILE ON DISK</text>
+        <rect x="0" y="26" width="120" height="54" rx="4" fill="rgba(240,169,59,.12)" stroke="#8C6220"/>
+        <text x="60" y="49" fill="#F0A93B" font-family="Archivo, sans-serif" font-size="13" text-anchor="middle" font-weight="600">prefix</text>
+        <text x="60" y="66" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">a shebang line</text>
+        <rect x="120" y="26" width="380" height="54" rx="4" fill="#151D2B" stroke="#26334C"/>
+        <text x="310" y="49" fill="#E9EEF7" font-family="Archivo, sans-serif" font-size="13" text-anchor="middle" font-weight="600">a completely valid zip archive</text>
+        <text x="310" y="66" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">members · central directory · EOCD</text>
+        <line x1="0" y1="92" x2="0" y2="104" stroke="#5C6B87"/><line x1="120" y1="92" x2="120" y2="104" stroke="#F0A93B"/>
+        <line x1="0" y1="98" x2="120" y2="98" stroke="#5C6B87"/>
+        <text x="60" y="118" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="10.5" text-anchor="middle">baseOffset</text>
+
+        <rect x="0" y="150" width="238" height="72" rx="5" fill="#151D2B" stroke="#7A3330"/>
+        <text x="14" y="172" fill="#E5615B" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600">without it</text>
+        <text x="14" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">every internal offset is off by</text>
+        <text x="14" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">len(prefix). your unzip refuses it.</text>
+        <rect x="256" y="150" width="244" height="72" rx="5" fill="#151D2B" stroke="#2C6B51"/>
+        <text x="270" y="172" fill="#4FBF8B" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600">with it</text>
+        <text x="270" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">offsets seeded past the prefix.</text>
+        <text x="270" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">still a valid zip. <tspan fill="#4FBF8B">unzip app.run</tspan> works.</text>
+      </svg>
+      <figcaption class="cap">One small primitive. It is the entire reason "append and go" works.</figcaption>
+    </figure>
+    <div class="stack">
+      <p class="lead" style="max-width:32ch">Zip records offsets internally. Seed them with a base offset and the
+        archive stays valid even when it is <b style="color:var(--ink)">not at the start of its file</b>.</p>
+      <ul class="bullets">
+        <li>Append it after a shebang line &rarr; a <b>self-executing archive</b>.</li>
+        <li>It is still a zip. Every tool you already have still opens it.</li>
+        <li>Read paths enforce size limits and reject malformed records &mdash; zip-bomb and corrupt-input guards, with real error codes.</li>
+      </ul>
+      <p class="sub" style="font-size:16.5px">No custom container format. No injection tool. Concatenation.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">ZipEntry · ZipFile · ZipBuffer · createZipArchive()</span><span>08</span></div>
+  <div class="notes" hidden>
+    <p class="say">"This is the least glamorous slide in the deck, and it's the one that makes everything else possible."</p>
+    <p><b>Hammer "still a valid zip."</b> It is not a bespoke container that happens to resemble one. That's what makes <em>unzip app.run</em> work in the demo — and inspectability is a genuine property, not a party trick. It's also the thing jar got right and everybody since keeps re-deriving.</p>
+    <p>If asked why this had to be in core rather than userland: because the <i>loader</i> needs to read it during bootstrap, before userland exists.</p>
+  </div>
+</section>
+
+<!-- ═══ 09 ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="75">
+  <div class="gutter"><span class="off">0x09</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Piece 2 &middot; <span style="color:var(--ok)">mount and load</span></div>
+  <h2>Resolve the program<br>against the archive.</h2>
+  <div class="cols w" style="margin-top:24px">
+    <div class="stack">
+      <div class="cmd"><span class="p">$</span> node --experimental-vfs \
+     <span class="y">--vfs-mount</span> app.zip \
+     <span class="y">--vfs-load</span></div>
+      <ul class="bullets" style="margin-top:4px">
+        <li><b><code>--vfs-mount</code></b> mounts a source. A directory gets <code>RealFSProvider</code>; a file is
+          opened as a read-only zip and gets <code>ZipProvider</code>. Repeatable.</li>
+        <li><b><code>--vfs-load</code></b> runs the entry point <i>out of</i> the last mount &mdash; resolving it and
+          every later <code>require</code> / <code>import</code> against the mount. The archive's own
+          <code>package.json</code> <code>"main"</code> decides what runs.</li>
+        <li>Resolution primitives were rerouted through a VFS-aware path that <b>defers to the real bindings when
+          nothing is mounted</b> &mdash; so unmounted behaviour is unchanged.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <div class="eyebrow" style="margin-bottom:11px">And then the good bit</div>
+        <p style="color:var(--ink-dim);font-size:16.5px;line-height:1.5">
+          <code style="color:var(--accent)">argv[1]</code> is <i>unconditionally the mount point</i>. So a trailing
+          <code>--vfs-mount</code> with no value takes whatever the kernel appends &mdash;</p>
+        <div class="cmd sm" style="margin-top:12px;border-left-color:var(--ok)">#!/usr/bin/env -S node <span class="c">\</span>
+  --experimental-vfs <span class="y">--vfs-load --vfs-mount</span></div>
+        <p style="color:var(--ink);font-size:16.5px;line-height:1.5;margin-top:12px">
+          &mdash; which is <b style="color:var(--accent)">the script's own path</b>. The file mounts <i>itself</i> and
+          runs its own embedded main.</p>
+      </div>
+      <p class="sub" style="font-size:16.5px;max-width:40ch">Native addons work: archive mounts extract to a per-pid,
+        content-hashed temp file, because <code>dlopen</code> needs a real path. Worker threads inherit the mount.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">node:vfs foundation by Matteo Collina</span><span>09</span></div>
+  <div class="notes" hidden>
+    <p><b>Get the credit right here, out loud.</b> <em>node:vfs</em> — the subsystem itself, MemoryProvider, RealFSProvider — is Matteo Collina's, and so is the VFS module loading that makes a mount resolvable. Yours is the zip support in node:zlib, the Zip VFS provider, and these two flags. The status slide breaks it down; don't blur it here.</p>
+    <p class="say">"The shebang thing is my favourite accident. The kernel appends the script's path to the interpreter line. If the last flag is a <i>--vfs-mount</i> still waiting for a value… it gets the script itself."</p>
+    <p><b>Why two flags?</b> Because you may want several mounts and exactly one entry point. Mounting and running are different concerns. Expect this question.</p>
+    <p>Note what's <i>absent</i> from this slide: any mention of trust. Mounting an archive is just mounting an archive. Node will happily run an unsigned one, and that's correct behaviour.</p>
+  </div>
+</section>
+
+<!-- ═══ 0A ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="65">
+  <div class="gutter"><span class="off">0x0A</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Piece 3 &middot; the extension point</div>
+  <h2><code style="font-size:38px">registerProvider()</code> &mdash; you<br>decide what backs a mount.</h2>
+  <div class="cols n" style="margin-top:24px">
+    <div class="stack">
+      <div class="cmd sm">vfs.registerProvider({
+  name,
+  <span class="y">canHandle</span>(resolvedPath, stats),
+  <span class="y">create</span>(resolvedPath, stats)
+});</div>
+      <ul class="bullets" style="margin-top:2px">
+        <li>Registered providers are consulted <b>before</b> the built-ins &mdash; <code>RealFSProvider</code> and
+          <code>ZipProvider</code> are just the last two entries.</li>
+        <li>Selection happens <b>after preload modules have run</b>. So a <code>-r</code> module can install a provider
+          for the source that is about to be mounted.</li>
+        <li>Because yours outranks the built-in for a file the built-in would happily take, it can <b>wrap</b> or
+          <b>vet</b> &mdash; not just add new formats.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+        <div class="eyebrow" style="margin-bottom:11px">This is the whole trick</div>
+        <p style="font-size:18px;line-height:1.5;color:var(--ink)">Node ships a <b style="color:var(--accent)">hole</b>,
+          not a policy. It says: here is where a decision could go, and it is none of my business what you put there.</p>
+      </div>
+      <div class="grid2" style="margin-top:0;gap:13px">
+        <div class="card" style="padding:15px 17px"><h3 style="font-size:16px;color:var(--accent)">verify a signature</h3>
+          <p style="margin-top:5px;font-size:14.5px">the rest of this talk</p></div>
+        <div class="card" style="padding:15px 17px"><h3 style="font-size:16px;color:var(--accent)">record what's read</h3>
+          <p style="margin-top:5px;font-size:14.5px">build a manifest by observation</p></div>
+        <div class="card" style="padding:15px 17px"><h3 style="font-size:16px;color:var(--accent)">decrypt</h3>
+          <p style="margin-top:5px;font-size:14.5px">or fetch, or cache, or audit</p></div>
+        <div class="card" style="padding:15px 17px"><h3 style="font-size:16px;color:var(--accent)">something I haven't thought of</h3>
+          <p style="margin-top:5px;font-size:14.5px">which is rather the point</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">mechanism, supplied. policy, yours.</span><span>0A</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Node ships a hole rather than a policy. That sounds like a cop-out — the next slide is one reason it isn't."</p>
+    <p><b>Be exact about the ordering</b> — preloads run during bootstrap; provider selection happens after. That gap <i>is</i> the extension point.</p>
+    <p><b>Careful with your verbs from here on.</b> Node does not refuse anything. Node does not enforce anything. A provider <i>you chose to install</i> can decline to return a filesystem. If you don't install it, your archive runs. That's not a weakness in the design — it's the design.</p>
+    <p>The four little cards matter: they show the extension point isn't secretly a signing hook with extra steps.</p>
+  </div>
+</section>
+
+<!-- ═══ signature format stays out ═══ -->
+<section class="slide" data-act="II · the primitive" data-t="85">
+  <div class="gutter"><span class="off">0x0B</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">One of the design decisions</div>
+  <h2>Node defines no signature<br>format. On purpose.</h2>
+  <div class="cols n" style="margin-top:22px">
+    <figure>
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">
+        What happens when the platform owns signing</div>
+      <div class="timeline" style="margin-top:0">
+        <div class="ev"><span class="d">v1</span><span class="t"><b>jar signing.</b> Per-entry checksums in a manifest.
+          The archive's own structure isn't covered.</span></div>
+        <div class="ev hot"><span class="d">2017</span><span class="t"><b>Janus.</b> Hide code in the space v1 doesn't
+          hash. It verifies; a different part of Android runs the hidden code.</span></div>
+        <div class="ev"><span class="d">v2</span><span class="t"><b>Android 7.</b> Whole-file hash. Fixes it &mdash;
+          and needs a <b>new OS release</b> to ship.</span></div>
+        <div class="ev"><span class="d">v3</span><span class="t"><b>Android 9.</b> Key rotation. Another OS release.</span></div>
+        <div class="ev"><span class="d">v4</span><span class="t"><b>Android 11.</b> Streaming installs. Another one.</span></div>
+      </div>
+      <figcaption class="cap">Four schemes. Four platform releases. A device that can't take an OS update
+        can't take the fix.</figcaption>
+    </figure>
+    <div class="stack">
+      <p class="lead" style="max-width:33ch">Bake a signature format into the runtime and you have promised to be right
+        about cryptography <b style="color:var(--ink)">forever</b>, on the release cadence of a runtime.</p>
+      <ul class="bullets" style="margin-top:2px">
+        <li><b>You get stuck.</b> Node 26's blessed format is still Node 26's blessed format in 2032.</li>
+        <li><b>There is no single right trust model.</b> An internal CA, Sigstore and OIDC, pinned keys in an air-gapped
+          site &mdash; all legitimate, all different.</li>
+        <li><b>One blessed format crowds out the rest.</b> Whatever ships in core wins by default, however wrong it turns out to be.</li>
+      </ul>
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05);padding:17px 20px">
+        <p style="font-size:17.5px;line-height:1.5;color:var(--ink)">Leave the hole, and upgrading your signature
+          scheme is <b style="color:var(--accent)">a dependency bump</b> &mdash; not an OS release, not a Node major,
+          not a five-year deprecation.</p>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">why the format stays in userland</span><span></span></div>
+  <div class="notes" hidden>
+    <p><b>One design decision, argued properly — not the thesis of the talk.</b> It earns its ~85 seconds because the evidence is good, but don't oversell it: it is one of several choices, and the talk does not stand or fall on it.</p>
+    <p class="say">"Android is the natural experiment. They took jar signing — a 1996 design — put it in the platform, and then spent fifteen years discovering what was wrong with it. Every fix was an OS release. Every device that couldn't update, didn't get it."</p>
+    <p><b>Get the facts right, they're checkable:</b> v1 is jar signing, which signs per-entry digests listed in a manifest rather than the archive itself. Janus (CVE-2017-13156, 2017) exploited exactly that gap. v2 arrived in Android 7 with a whole-file hash; v3 in Android 9 added key rotation; v4 in Android 11 added streaming install. The jar scheme has its own version of this — entries added after signing leave a jar "partially signed" rather than invalid.</p>
+    <p><b>The move to make explicitly:</b> "I am building a signing scheme in this talk. I think it's a decent one. I would <i>not</i> want it in Node — because in three years I'll have learned why it's wrong, and I'd like to be able to fix it."</p>
+    <p>That self-implicating turn is what keeps this from sounding like an excuse for unfinished work.</p>
+  </div>
+</section>
+
+<!-- ═══ 0C ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="105">
+  <div class="gutter"><span class="off">0x0C</span><span class="act">III · the optional layer</span></div>
+  <div class="eyebrow">One policy, entirely in userland</div>
+  <h2>So here's the scheme<br>I happen to like.</h2>
+  <figure style="margin-top:20px">
+    <svg viewBox="0 0 1090 168" role="img" aria-label="The hashed region spans the whole file up to but excluding the end-of-central-directory comment, where the signature is stored">
+      <rect x="0" y="30" width="130" height="50" rx="4" fill="rgba(240,169,59,.12)" stroke="#8C6220"/>
+      <text x="65" y="52" fill="#F0A93B" font-family="Archivo, sans-serif" font-size="12.5" text-anchor="middle" font-weight="600">prefix</text>
+      <text x="65" y="68" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">shebang</text>
+      <rect x="130" y="30" width="320" height="50" rx="4" fill="#151D2B" stroke="#26334C"/>
+      <text x="290" y="52" fill="#E9EEF7" font-family="Archivo, sans-serif" font-size="12.5" text-anchor="middle" font-weight="600">members</text>
+      <text x="290" y="68" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">app.js, package.json, assets…</text>
+      <rect x="450" y="30" width="170" height="50" rx="4" fill="#1B2536" stroke="#26334C"/>
+      <text x="535" y="49" fill="#E9EEF7" font-family="Archivo, sans-serif" font-size="12" text-anchor="middle" font-weight="600">AUTHORITY.PEM</text>
+      <text x="535" y="66" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">algorithms + cert chain</text>
+      <rect x="620" y="30" width="230" height="50" rx="4" fill="#151D2B" stroke="#26334C"/>
+      <text x="735" y="49" fill="#E9EEF7" font-family="Archivo, sans-serif" font-size="12" text-anchor="middle" font-weight="600">central directory</text>
+      <text x="735" y="66" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">a content digest per member</text>
+      <rect x="850" y="30" width="86" height="50" rx="4" fill="#151D2B" stroke="#26334C"/>
+      <text x="893" y="59" fill="#B6C2D6" font-family="Archivo, sans-serif" font-size="12" text-anchor="middle">EOCD</text>
+      <rect x="936" y="30" width="154" height="50" rx="4" fill="rgba(79,191,139,.09)" stroke="#2C6B51"/>
+      <text x="1013" y="49" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">SIGNED:&lt;hash&gt;:&lt;sig&gt;</text>
+      <text x="1013" y="66" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">the EOCD comment</text>
+      <path d="M0 90 L0 102 L936 102 L936 90" stroke="#F0A93B" fill="none" stroke-width="1.5"/>
+      <rect x="358" y="93" width="220" height="19" rx="3" fill="#0E1420"/>
+      <text x="468" y="107" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11.5" text-anchor="middle">THE HASHED REGION</text>
+      <text x="944" y="128" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10">↑ stops short, so the signature can live here</text>
+      <text x="0" y="152" fill="#B6C2D6" font-family="Archivo, sans-serif" font-size="13">One hash over the whole file — prefix, members, the chain, and the central directory including every member's digest.</text>
+    </svg>
+  </figure>
+  <div class="grid3" style="margin-top:16px">
+    <div class="card" style="padding:14px 17px"><h3 style="font-size:16px;color:var(--accent)">Learned from jar</h3>
+      <p style="margin-top:5px;font-size:14.5px">The central directory is inside the hash, so the member <i>list</i> is signed. You can't add an entry.</p></div>
+    <div class="card" style="padding:14px 17px"><h3 style="font-size:16px;color:var(--accent)">Learned from apk v2</h3>
+      <p style="margin-top:5px;font-size:14.5px">Whole-file, not per-entry. There is no gap between structures to hide in.</p></div>
+    <div class="card" style="padding:14px 17px"><h3 style="font-size:16px;color:var(--accent)">Four states, not two</h3>
+      <p style="margin-top:5px;font-size:14.5px"><span class="tag none" style="font-size:10px">unsigned</span>
+        <span class="tag bad" style="font-size:10px">invalid</span>
+        <span class="tag warn" style="font-size:10px">untrusted</span>
+        <span class="tag ok" style="font-size:10px">valid</span></p></div>
+  </div>
+  <div class="kicker"><span class="mono">a library. not a standard. replaceable.</span><span>0C</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Everything from here down is optional. None of it is in Node. If you delete all of it, your archive still runs — you just don't know who made it."</p>
+    <p><b>Where the signature lives is the neat bit:</b> it has to be inside the file, but can't be covered by its own hash. Zip hands you that — the EOCD comment is the last structure, so you hash everything up to it.</p>
+    <p><b>The three cards are the payoff for slide 0x05.</b> This scheme is prior art plus its post-mortems: jar's mistake was signing a list of entries rather than the archive; apk v2's fix was whole-file. Say that you copied their homework <i>and their corrections</i>.</p>
+    <p><b>The four states, briefly</b> — the interesting one is "valid but untrusted": genuinely signed, bytes intact, and you have no idea who this person is. That's a different problem from tampering, and conflating them is how you train people to click through warnings.</p>
+  </div>
+</section>
+
+<!-- ═══ 0D ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="20">
+  <div class="gutter"><span class="off">0x0D</span><span class="act">III · the optional layer</span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
+    <div class="eyebrow">Act III</div>
+    <h1 style="font-size:78px">Demo.</h1>
+    <div class="grid3" style="margin-top:40px">
+      <div class="card"><div class="tag acc" style="margin-bottom:11px">01</div><h3 style="font-size:18px">Bundle &amp; run</h3>
+        <p style="margin-top:5px">Discover the file list by observation, then <code>./app.run</code>.</p></div>
+      <div class="card"><div class="tag acc" style="margin-bottom:11px">02</div><h3 style="font-size:18px">Sign &amp; verify</h3>
+        <p style="margin-top:5px">Sigstore, and all four states including a flipped byte.</p></div>
+      <div class="card"><div class="tag acc" style="margin-bottom:11px">03</div><h3 style="font-size:18px">Opt in to refusing</h3>
+        <p style="margin-top:5px">Install the provider and watch the mount decline.</p></div>
+    </div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="card"><div class="tag acc" style="margin-bottom:11px">04</div><h3 style="font-size:18px">It's just a zip</h3>
+        <p style="margin-top:5px">Extract it and read what you were actually sent.</p></div>
+      <div class="card"><div class="tag acc" style="margin-bottom:11px">05</div><h3 style="font-size:18px">Audit it with Claude</h3>
+        <p style="margin-top:5px">Verify &rarr; extract &rarr; review the tree for malicious code.</p></div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">~7 minutes</span><span>0D</span></div>
+  <div class="notes" hidden>
+    <p><b>Timing checkpoint: aim to be at ~13 minutes here.</b> If you're past 16, cut demo 4 to a single sentence.</p>
+    <p><b>Terminal hygiene:</b> font size up, scrollback cleared, short prompt, already <em>cd</em>'d in, and the built artifacts present as a fallback so a failed build doesn't end the demo.</p>
+    <p>One sentence of setup, then get into the terminal. Don't read the cards.</p>
+  </div>
+</section>
+
+<!-- ═══ 0E ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="120">
+  <div class="gutter"><span class="off">0x0E</span><span class="act">III · the optional layer</span></div>
+  <div class="eyebrow">Demo 01</div>
+  <h2>Observe, bundle, execute.</h2>
+  <div class="cols" style="margin-top:24px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># 1. what does this app ACTUALLY read?</span>
+<span class="p">$</span> npm run manifest
+<span class="p">$</span> cat app.manifest
+<span class="o">package.json</span>
+<span class="o">app.js</span>
+<span class="o">manifest.js</span>  <span class="c">…</span></div>
+      <p class="sub" style="font-size:16px;max-width:42ch">Not static analysis. The app runs behind a
+        <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
+        which writes down every file it opens.</p>
+      <div class="cmd sm" style="margin-top:4px"><span class="c"># 2. archive it, then sign it behind a shebang</span>
+<span class="p">$</span> npm run create
+<span class="o">+ app.js</span>
+<span class="o">+ package.json</span>  <span class="c">…</span>
+<span class="o">* unsigned archive (10 members)</span>
+
+<span class="p">$</span> npm run archive
+<span class="g">* signed: 3c81bb2b0890…</span></div>
+    </div>
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># 3. what did we just make?</span>
+<span class="p">$</span> head -c 90 app.run
+<span class="y">#!/usr/bin/env -S node --no-warnings \
+   --experimental-vfs --vfs-load --vfs-mount</span>
+
+<span class="p">$</span> ls -l app.run
+<span class="o">-rwxr-xr-x  21006  app.run</span></div>
+      <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program.</span>
+<span class="p">$</span> ./app.run help
+<span class="g">usage: &lt;command&gt; [options]</span>
+<span class="o">  create    build an archive</span>
+<span class="o">  verify    check one …</span></div>
+      <p class="sub" style="font-size:16px;max-width:42ch">21 kilobytes. No install, no <code>node_modules</code>,
+        no wrapper. The kernel appended the path; the file mounted itself.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">observe → bundle → ./app.run</span><span>0E</span></div>
+  <div class="notes" hidden>
+    <p><b>Beat 1 — the manifest (25s).</b> "Static dependency analysis is perennially wrong — dynamic require, data files, conditional imports. So don't analyse. Run it and write down what it touched." Note it records <em>open()</em> too, so streamed files get caught. Also: this is a <i>second</i> provider, which quietly proves the extension point isn't signing-shaped.</p>
+    <p><b>Beat 2 — build (20s).</b> Fast.</p>
+    <p><b>Beat 3 — head -c (25s). This is the beat people react to.</b> The front of the file is a shebang and nothing else. Let it sit.</p>
+    <p><b>Beat 4 — run it (25s).</b> "Twenty-one kilobytes, and it is a program."</p>
+    <p><b>Fallback:</b> artifacts are committed — just <em>./app.run help</em> and move on. Do not debug on stage.</p>
+    <p><b>Say the honest thing here:</b> running <em>./app.run</em> directly does <i>not</i> verify anything. It's a zip with a shebang; Node mounts it and runs it. Verification is the next demo, and it's opt-in. Getting ahead of that keeps you consistent with slide 0x0B.</p>
+  </div>
+</section>
+
+<!-- ═══ 0F ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="115">
+  <div class="gutter"><span class="off">0x0F</span><span class="act">III · the optional layer</span></div>
+  <div class="eyebrow">Demo 02 &middot; 03</div>
+  <h2>Sign it. Break it.<br>Then opt in to caring.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># signed via sigstore — identity, not a key file</span>
+<span class="p">$</span> npm run verify -- app.run
+<span class="g">VALID</span> — signature good, certificate trusted
+  identity: <span class="o">github.com/pipobscure/…  (GitHub Actions)</span></div>
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># flip exactly one byte, anywhere</span>
+<span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.run bs=1 seek=9000 \
+      conv=notrunc
+<span class="p">$</span> npm run verify -- app.run
+<span class="r">INVALID</span> — recorded hash does not match content</div>
+      <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
+<span class="p">$</span> ./app.run help
+<span class="o">usage: &lt;command&gt; [options]  …</span>   <span class="c"># ← runs fine</span></div>
+    </div>
+    <div class="stack">
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+        <p style="font-size:18px;line-height:1.48;color:var(--ink)">That last one is not a bug. Node was asked to run
+          a zip, so it ran a zip. <b style="color:var(--accent)">Caring is something you switch on.</b></p>
+      </div>
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># now install a provider that has an opinion</span>
+<span class="p">$</span> node --experimental-vfs <span class="y">-r @pipobscure/bundle/register</span> \
+    --vfs-load --vfs-mount app.run
+
+<span class="r">Error [ERR_BUNDLE_UNTRUSTED]</span>: archive failed verification
+<span class="c">    at BundleProvider.open (…/provider.js)</span></div>
+      <p class="sub" style="font-size:16px;max-width:42ch">The throw happens during <b style="color:var(--ink)">provider
+        selection</b> &mdash; before the entry point is resolved. Not because Node objects, but because
+        <i>you</i> loaded something that does.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">policy is a -r flag away</span><span>0F</span></div>
+  <div class="notes" hidden>
+    <p><b>The running-the-broken-one beat matters.</b> It looks like a failure; it's the design working. Say clearly: <i>"Node ran the tampered archive, and that is correct. Node's job is loading, not judging."</i></p>
+    <p><b>Then the turn:</b> add one <em>-r</em> flag, and the same file is refused — by a library, which you chose, and could replace tomorrow with one that checks something else entirely.</p>
+    <p><b>Prep:</b> <em>cp app.run /tmp/app.run.bak</em> before the dd, restore straight after, or every later demo breaks.</p>
+    <p>Order: valid → tampered/invalid → <b>runs anyway</b> → opt in → refused. Don't reorder; the punchline needs the setup.</p>
+    <p><b>Sigstore:</b> if the live signing path isn't ready, verify a pre-signed artifact and say the signing ran in CI. Keep the <b>identity</b> on screen — "signed by this repo, by this workflow" is the point, and it beats <em>CN=Test Signer</em> as a demo. <b>Don't get into certificate lifetimes on stage</b> — that's an implementation detail of the tool, not of the argument. Prepared answer at the end if anyone asks.</p>
+  </div>
+</section>
+
+<!-- ═══ 10 ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="40">
+  <div class="gutter"><span class="off">0x10</span><span class="act">III · the optional layer</span></div>
+  <div class="eyebrow">Demo 04</div>
+  <h2>You can just&hellip; open it.</h2>
+  <div class="cols w" style="margin-top:28px">
+    <div class="stack">
+      <div class="cmd sm"><span class="p">$</span> unzip -o app.run -d ./inspect
+<span class="o">  inflating: inspect/app.js</span>
+<span class="o">  inflating: inspect/package.json</span>
+<span class="o">  inflating: inspect/AUTHORITY.PEM</span>   <span class="c">← who signed it</span>
+
+<span class="p">$</span> head -3 inspect/AUTHORITY.PEM
+<span class="o">!manifest 2</span>
+<span class="o">!hash sha256</span>
+<span class="o">!sign sha256</span></div>
+    </div>
+    <div class="stack">
+      <p class="lead" style="max-width:33ch">A signed container you cannot inspect asks you to trust
+        <b style="color:var(--ink)">the signature and the vendor</b>.</p>
+      <p class="lead" style="max-width:33ch;color:var(--ink)">One you can open with
+        <code style="color:var(--accent)">unzip</code> lets you trust <b>the code</b>.</p>
+      <div class="card" style="padding:16px 19px">
+        <p style="font-size:16px;line-height:1.5">Which is why the chain is a real, extractable filename and not a
+          magic footer &mdash; a plain zip utility on a machine with none of this installed can pull it out.</p>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">inspectability is a property, not a bonus</span><span>10</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Signing tells you the bytes are the bytes someone meant to send. It tells you nothing about whether those bytes are <i>good</i>. Different questions — and you need to be able to ask the second one."</p>
+    <p><b>Fast: 40 seconds.</b> It sets up demo 5, which is where it pays.</p>
+    <p><b>Cut this first if you're long</b> — one sentence carries it: "and because it's a real zip, you can just unzip it, which matters for the last demo."</p>
+  </div>
+</section>
+
+<!-- ═══ 11 ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="80">
+  <div class="gutter"><span class="off">0x11</span><span class="act">III · the optional layer</span></div>
+  <div class="eyebrow">Demo 05</div>
+  <h2>Provenance says <i>who</i>.<br>Now ask <i>what</i>.</h2>
+  <div class="cols n" style="margin-top:24px">
+    <figure>
+      <svg viewBox="0 0 470 236" role="img" aria-label="A pipeline: verify, extract, then review the extracted tree for malicious code">
+        <defs><marker id="ar3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <path d="M0 0 L7 3.5 L0 7 z" fill="#5C6B87"/></marker></defs>
+        <rect x="0" y="6" width="470" height="42" rx="5" fill="#151D2B" stroke="#26334C"/>
+        <text x="16" y="24" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">1 · VERIFY</text>
+        <text x="16" y="40" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">check the signature and the identity — stop if it doesn't hold</text>
+        <line x1="235" y1="52" x2="235" y2="64" stroke="#5C6B87" marker-end="url(#ar3)"/>
+        <rect x="0" y="70" width="470" height="42" rx="5" fill="#151D2B" stroke="#26334C"/>
+        <text x="16" y="88" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">2 · EXTRACT</text>
+        <text x="16" y="104" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">unzip to a scratch dir — a closed, finite set of files</text>
+        <line x1="235" y1="116" x2="235" y2="128" stroke="#5C6B87" marker-end="url(#ar3)"/>
+        <rect x="0" y="134" width="470" height="96" rx="5" fill="rgba(240,169,59,.08)" stroke="#8C6220"/>
+        <text x="16" y="152" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">3 · REVIEW EVERY FILE</text>
+        <text x="16" y="170" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">install hooks · obfuscated or minified payloads</text>
+        <text x="16" y="186" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">outbound network in odd places · env and credential reads</text>
+        <text x="16" y="202" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">child_process · eval · CI tokens · cloud metadata</text>
+        <text x="16" y="222" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10.5">→ a report over a fixed set of bytes</text>
+      </svg>
+    </figure>
+    <div class="stack">
+      <p class="lead" style="max-width:32ch">A bundle is a <b style="color:var(--ink)">closed set</b>. Nothing resolves
+        later; nothing is fetched at install. That is the shape a review can actually be complete over.</p>
+      <p class="sub" style="font-size:17.5px;max-width:40ch">So: a Claude Code skill that verifies, extracts, and audits
+        every file that will run &mdash; hunting the patterns from slide
+        <span class="mono" style="color:var(--accent)">0x02</span>.</p>
+      <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:15px 19px">
+        <p style="font-size:15.5px;line-height:1.5"><b style="color:var(--ok)">Status:</b> built &mdash;
+          <span class="mono">/audit-bundle app.run</span>. Verify and extract are the existing CLI;
+          the skill is the review on top, plus a diff mode against the last archive you approved.</p>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">verify → extract → audit</span><span>11</span></div>
+  <div class="notes" hidden>
+    <p><b>The skill exists</b> (<em>skills/audit-bundle/</em>), so this is a live demo rather than a promise. Plant something findable first — see below. If you are running long, describe it in one sentence instead and move on; the argument does not depend on the demo landing.</p>
+    <p class="say">"Every attack on the timeline earlier was legitimately signed by a legitimately compromised account. Provenance would have told you it came from the real maintainer — and been completely useless. You need both halves."</p>
+    <p><b>The strong framing:</b> this is why the trust layer being <i>optional and pluggable</i> matters. Signature checking is one policy. "Extract it and read it" is another. "Diff it against the last version you approved" is a third. Same hole, different things plugged into it.</p>
+    <p>If demoing live: plant something obvious in the tree (an env read plus an outbound POST) so there's something to find.</p>
+  </div>
+</section>
+
+<!-- ═══ 12 ═══ -->
+<section class="slide" data-act="IV · close" data-t="65">
+  <div class="gutter"><span class="off">0x12</span><span class="act">IV · close</span></div>
+  <div class="eyebrow">Status</div>
+  <h2>This is in Node.</h2>
+  <div class="tw" style="margin-top:28px"><table>
+    <thead><tr><th style="width:42%">Work package</th><th style="width:17%">Where</th><th>Who</th></tr></thead>
+    <tbody>
+      <tr><td><b><code>node:vfs</code></b><br><span style="font-size:14.5px;color:var(--muted)">the VFS subsystem it all stands on</span></td>
+        <td><span class="tag ok">in Node</span></td><td>Matteo Collina</td></tr>
+      <tr><td><b>Zip support in <code>node:zlib</code></b><br><span style="font-size:14.5px;color:var(--muted)">ZipEntry / ZipFile / ZipBuffer, baseOffset</span></td>
+        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
+      <tr><td><b>VFS module loading</b><br><span style="font-size:14.5px;color:var(--muted)">resolve and run a program out of a mount</span></td>
+        <td><span class="tag ok">in Node</span></td><td>Matteo Collina</td></tr>
+      <tr><td><b>Zip VFS provider</b><br><span style="font-size:14.5px;color:var(--muted)">mount an archive as a file tree</span></td>
+        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
+      <tr><td><b><code>--vfs-mount</code> / <code>--vfs-load</code></b><br><span style="font-size:14.5px;color:var(--muted)">mount it, and run the program out of it</span></td>
+        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
+      <tr><td><b>Signing, verifying, recording</b><br><span style="font-size:14.5px;color:var(--muted)">the optional layer &mdash; and deliberately so</span></td>
+        <td><span class="tag acc">userland</span></td><td class="mono" style="font-size:14px">@pipobscure/bundle</td></tr>
+    </tbody>
+  </table></div>
+  <p class="sub" style="margin-top:20px;font-size:18px;color:var(--ink-dim);max-width:78ch">
+    Still behind <code style="color:var(--accent)">--experimental-vfs</code>. Flags and names can move before it settles.</p>
+  <div class="kicker"><span class="mono">mechanism landed. policy is yours.</span><span></span></div>
+  <div class="notes" hidden>
+    <p><b>⚠ Check every row the week of the talk.</b> As of Aug 2026 the bottom two Node rows were still in flight — the Zip VFS provider expected within ~2 weeks, the mount/load flags within ~4–6 weeks. If either slipped, change that row rather than glossing it; the credibility you built in Act I is worth more than a tidy table.</p>
+    <p><b>Attribution matters on this slide and people do read it.</b> Two of the five Node rows are Matteo Collina's — the VFS subsystem itself and the module loading. Say so out loud; don't let a table of your own name imply otherwise.</p>
+    <p>The line to land: <i>"the mechanism is in Node. The policy is a package you can fork, replace, or ignore. That separation is the deliverable."</i></p>
+  </div>
+</section>
+
+<!-- ═══ 13 ═══ -->
+<section class="slide" data-act="IV · close" data-t="55">
+  <div class="gutter"><span class="off">0x13</span><span class="act">IV · close</span></div>
+  <div class="eyebrow">Before anyone else says it</div>
+  <h2>What this is not.</h2>
+  <div class="grid2" style="margin-top:30px">
+    <div class="card" style="border-color:#7A3330">
+      <h3 style="font-size:19px;color:var(--bad)">VFS is not a sandbox</h3>
+      <p style="margin-top:7px">It redirects <code>fs</code> calls whose resolved path falls under a mount. It does not
+        confine untrusted code. Node's own docs say so.</p></div>
+    <div class="card" style="border-color:#7A3330">
+      <h3 style="font-size:19px;color:var(--bad)">Verification is not confinement</h3>
+      <p style="margin-top:7px">A checked mount proves the code is what someone you trust signed. Once it runs it has the
+        full authority of the process. <b style="color:var(--ink)">Provenance, not privilege.</b></p></div>
+    <div class="card" style="border-color:#6E5721">
+      <h3 style="font-size:19px;color:var(--warn)">The check is opt-in &mdash; by design</h3>
+      <p style="margin-top:7px">Drop the <code>-r</code> and the archive mounts unverified. That is not a hole to close;
+        it is the consequence of Node not owning your trust policy.</p></div>
+    <div class="card" style="border-color:#6E5721">
+      <h3 style="font-size:19px;color:var(--warn)">My scheme will age badly</h3>
+      <p style="margin-top:7px">So will yours. That's the whole argument for keeping it out of core, and I'd be a
+        hypocrite to pretend otherwise.</p></div>
+  </div>
+  <p class="sub" style="margin-top:26px;font-size:18px;color:var(--ink-dim);max-width:76ch">
+    And it is experimental: a flag, an API that can still move, and a userland package at version zero.</p>
+  <div class="kicker"><span class="mono">honest limitations</span><span>13</span></div>
+  <div class="notes" hidden>
+    <p><b>Do not skip this even if you're over.</b> Cut demo 4 instead. Naming your own limits before the audience does is the highest-return thing in the last three minutes.</p>
+    <p><b>The third card is the one to dwell on</b>, because it's the question a security person will ask, and the answer is the design rather than an apology: yes, someone can skip the check. If that's unacceptable in your environment, that's your build pipeline's job, or your OS's — not the language runtime's.</p>
+    <p class="say">"If you take one caveat away: this is provenance, not privilege. It tells you the code is what someone you trust signed. It does nothing about what that code does next."</p>
+  </div>
+</section>
+
+<!-- ═══ 14 ═══ -->
+<section class="slide" data-act="IV · close" data-t="45">
+  <div class="gutter"><span class="off">0x14</span><span class="act">IV · close</span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
+    <div class="eyebrow">What I actually want</div>
+    <h2 style="font-size:52px;max-width:26ch">An application in one file.<br>Self-executing, checkable,<br>and fully known.</h2>
+    <div class="cols" style="margin-top:36px">
+      <div class="stack t">
+        <p class="sub" style="font-size:18px;max-width:42ch">Node supplies the loading. The archive format, the
+          signing, the verifying and the inspecting are ordinary code on top &mdash; which means you can replace any of
+          it, including mine.</p>
+        <p class="sub" style="font-size:18px;max-width:42ch;color:var(--ink-dim)">
+          <b style="color:var(--accent)">Take it and build something.</b> A different signature scheme, an audit step,
+          a provider that does something I haven't thought of.</p>
+      </div>
+      <div class="stack t">
+        <div class="card" style="padding:16px 20px"><h3 style="font-size:16px;color:var(--accent)">The tooling</h3>
+          <p class="mono" style="margin-top:5px;font-size:14.5px;color:var(--ink-dim)">@pipobscure/bundle</p></div>
+        <div class="card" style="padding:16px 20px"><h3 style="font-size:16px;color:var(--accent)">The code</h3>
+          <p class="mono" style="margin-top:5px;font-size:14.5px;color:var(--ink-dim)">github.com/pipobscure</p></div>
+        <div class="card" style="padding:16px 20px"><h3 style="font-size:16px;color:var(--accent)">Me</h3>
+          <p class="mono" style="margin-top:5px;font-size:14.5px;color:var(--ink-dim)">@pipobscure.com &nbsp;&middot;&nbsp; pip@pip.fyi</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">Philipp Dunkel</span><span>14</span></div>
+  <div class="notes" hidden>
+    <p><b>One ask:</b> build something on it. The interesting outcome isn't the signing library — it's someone writing a provider that does something you and I haven't thought of.</p>
+    <p class="say">"I've been annoyed by this since 2009. The annoying part was never packaging — it was never being able to answer 'what exactly is running, and who put it there' without a paragraph of hedging. Now the runtime gives me a file I can point at, and lets me decide for myself what checking it means."</p>
+    <p><b>Then stop.</b> Don't trail off. Land it, advance, take questions.</p>
+  </div>
+</section>
+
+<!-- ═══ 15 ═══ -->
+<section class="slide" data-act="IV · close" data-t="120">
+  <div class="gutter"><span class="off">0x15</span><span class="act">IV · close</span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center;align-items:flex-start">
+    <div class="eyebrow q">Two, if we're lucky</div>
+    <h1 style="font-size:100px">Questions?</h1>
+    <div style="display:flex;gap:14px;margin-top:36px;flex-wrap:wrap">
+      <span class="tag acc" style="font-size:14px">@pipobscure/bundle</span>
+      <span class="tag" style="font-size:14px">github.com/pipobscure</span>
+      <span class="tag" style="font-size:14px">@pipobscure.com</span>
+      <span class="tag" style="font-size:14px">pip@pip.fyi</span>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">thank you</span><span>15</span></div>
+  <div class="notes" hidden>
+    <p><b>Prepared answers:</b></p>
+    <ul>
+      <li><b>"Shouldn't Node just verify signatures?"</b> — the question the talk exists to answer. Point at Android: four schemes, four OS releases. Then: whose CA? which algorithm? what happens on failure? Every answer is somebody's wrong answer.</li>
+      <li><b>"Then what stops me shipping an unsigned archive?"</b> Nothing, and nothing should. Your CI, your registry, your deployment tooling are where that belongs — all of which can use the same library.</li>
+      <li><b>"Isn't this just a .jar?"</b> Same shape, deliberately. Differences: jar signs a manifest of per-entry digests, so entries can be added after signing and the archive structure isn't covered — this hashes the whole file including the central directory. And the JVM verifies jars; here nothing verifies unless you ask it to.</li>
+      <li><b>"Why not containers?"</b> Different granularity. A container ships an OS to run one CLI. This is one file on the machine you're already on — and inspectable with <em>unzip</em> on a locked-down laptop.</li>
+      <li><b>"npm has provenance attestations now."</b> Yes, and they're good, and they're a neighbouring problem: provenance for packages you're about to install. This is the artifact you already built. Sigstore is the common substrate; they compose.</li>
+      <li><b>"Reproducible builds?"</b> Orthogonal and worth having. This says the bytes are signed by a known identity; it doesn't say those bytes correspond to that source.</li>
+      <li><b>"Sigstore certs only live ten minutes — how does verification work later?"</b> Good question, and it's the next thing to fix in the tool. The signature has to be checked against the certificate's validity <i>at signing time</i>, which means the archive must carry a trustworthy signing timestamp — a Rekor entry or an RFC 3161 token — rather than a self-asserted date. Say it's an open implementation detail; it doesn't touch the argument of the talk.</li>
+      <li><b>"What about no Node on the target?"</b> There's a path where the same archive rides on a self-contained binary. Genuinely a different talk — one sentence, move on.</li>
+      <li><b>"Windows?"</b> Be straight: the shebang route is POSIX. Mounting a plain archive is the portable answer. <b>Check the current state before you present</b> rather than guessing on stage.</li>
+    </ul>
+  </div>
+</section>
+
+</div></div>
+
+<div id="bar"></div>
+<div id="hud">
+  <span id="pos">01 / 23</span><span class="sep"></span>
+  <span id="clock" title="press T to start/pause">0:00</span><span class="sep"></span>
+  <button id="bN" type="button" title="speaker notes (S)">notes</button>
+  <button id="bO" type="button" title="overview (O)">grid</button>
+</div>
+
+<div id="notes" hidden><h4 id="nh">Speaker notes</h4><div class="body" id="nb"></div></div>
+<div id="ov" hidden></div>
+<div id="help" hidden><div class="box">
+  <h4>Controls</h4>
+  <dl>
+    <dt>&rarr; &nbsp;&darr; &nbsp;space</dt><dd>next slide</dd>
+    <dt>&larr; &nbsp;&uarr;</dt><dd>previous slide</dd>
+    <dt>Home / End</dt><dd>first / last</dd>
+    <dt>S</dt><dd>speaker notes</dd>
+    <dt>O</dt><dd>overview grid</dd>
+    <dt>T</dt><dd>start / pause the pace timer</dd>
+    <dt>R</dt><dd>reset the timer</dd>
+    <dt>F</dt><dd>fullscreen</dd>
+    <dt>?</dt><dd>this panel</dd>
+  </dl>
+  <p style="margin:18px 0 0;font-size:13.5px;color:var(--muted);line-height:1.5">
+    The timer turns <b style="color:var(--bad)">red</b> when you are behind the planned pace for the current slide and
+    <b style="color:var(--ok)">green</b> when you are ahead. Planned runtime is about 26 minutes, leaving room for
+    two questions.</p>
+</div></div>
+
+<script>
+(function(){
+  var slides = [].slice.call(document.querySelectorAll('.slide'));
+  var stage = document.getElementById('stage');
+  var N = slides.length, cur = 0;
+
+  var plan = [], acc = 0;
+  slides.forEach(function(s){ plan.push(acc); acc += parseInt(s.dataset.t || '60', 10); });
+  var total = acc;
+
+  // Offsets, act labels and kicker numbers are derived from position, so
+  // inserting or moving a slide can never leave them inconsistent.
+  slides.forEach(function(s, i){
+    var hex = '0x' + i.toString(16).toUpperCase().padStart(2, '0');
+    var off = s.querySelector('.gutter .off'); if (off) off.textContent = hex;
+    var act = s.querySelector('.gutter .act'); if (act) act.textContent = s.dataset.act || '';
+    var k = s.querySelector('.kicker');
+    if (k && k.lastElementChild) k.lastElementChild.textContent = hex.slice(2);
+  });
+
+  function heading(s){
+    var h = s.querySelector('h1, h2');
+    return h ? h.textContent.replace(/\s+/g,' ').trim() : '—';
+  }
+
+  function fit(){
+    var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    stage.style.transform = 'scale(' + k + ')';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  var nb = document.getElementById('nb'), nh = document.getElementById('nh');
+  function show(i){
+    cur = Math.max(0, Math.min(N - 1, i));
+    slides.forEach(function(s, j){ s.classList.toggle('on', j === cur); });
+    document.getElementById('pos').textContent =
+      String(cur + 1).padStart(2,'0') + ' / ' + String(N).padStart(2,'0');
+    document.getElementById('bar').style.width = (cur / (N - 1) * 100) + '%';
+    var n = slides[cur].querySelector('.notes');
+    nb.innerHTML = n ? n.innerHTML : '<p style="color:var(--faint)">No notes for this slide.</p>';
+    var m = Math.floor(plan[cur] / 60), sec = plan[cur] % 60;
+    nh.textContent = 'Speaker notes — slide ' + (cur+1) + ' of ' + N +
+      ' · planned start ' + m + ':' + String(sec).padStart(2,'0') +
+      ' · this slide ' + slides[cur].dataset.t + 's';
+    history.replaceState(null, '', '#' + (cur + 1));
+    tick();
+  }
+
+  var running = false, elapsed = 0, last = 0;
+  var clock = document.getElementById('clock');
+  function fmt(s){
+    var neg = s < 0; s = Math.abs(Math.round(s));
+    return (neg ? '-' : '') + Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  }
+  function tick(){
+    clock.textContent = fmt(elapsed) + ' / ' + fmt(total);
+    clock.className = '';
+    if (!running && elapsed === 0) return;
+    var drift = elapsed - plan[cur];
+    clock.className = drift > 45 ? 'late' : (drift < -45 ? 'early' : 'run');
+    clock.title = drift > 0 ? Math.round(drift) + 's behind plan' : Math.round(-drift) + 's ahead of plan';
+  }
+  setInterval(function(){
+    if (!running) return;
+    var now = Date.now(); elapsed += (now - last) / 1000; last = now; tick();
+  }, 500);
+
+  var ov = document.getElementById('ov');
+  function buildOv(){
+    ov.innerHTML = '';
+    slides.forEach(function(s, i){
+      var b = document.createElement('button');
+      b.className = 'ov-card' + (i === cur ? ' cur' : '');
+      b.type = 'button';
+      b.innerHTML = '<span class="i"><span>' + String(i+1).padStart(2,'0') +
+        '</span><span class="a"></span></span><span class="h"></span>';
+      b.querySelector('.a').textContent = s.dataset.act || '';
+      b.querySelector('.h').textContent = heading(s);
+      b.addEventListener('click', function(){ ov.hidden = true; show(i); });
+      ov.appendChild(b);
+    });
+  }
+  function toggleOv(){
+    if (ov.hidden) { buildOv(); ov.hidden = false; } else { ov.hidden = true; }
+  }
+
+  var notes = document.getElementById('notes'), help = document.getElementById('help');
+  document.getElementById('bN').addEventListener('click', function(){ notes.hidden = !notes.hidden; });
+  document.getElementById('bO').addEventListener('click', toggleOv);
+
+  document.addEventListener('keydown', function(e){
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'Escape') { ov.hidden = true; help.hidden = true; return; }
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === ' ' || k === 'PageDown') { e.preventDefault(); show(cur+1); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { e.preventDefault(); show(cur-1); }
+    else if (k === 'Home') { e.preventDefault(); show(0); }
+    else if (k === 'End') { e.preventDefault(); show(N-1); }
+    else if (k === 's' || k === 'S') { notes.hidden = !notes.hidden; }
+    else if (k === 'o' || k === 'O') { toggleOv(); }
+    else if (k === 't' || k === 'T') { running = !running; last = Date.now(); tick(); }
+    else if (k === 'r' || k === 'R') { running = false; elapsed = 0; tick(); }
+    else if (k === 'f' || k === 'F') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    }
+    else if (k === '?') { help.hidden = !help.hidden; }
+  });
+
+  var start = parseInt((location.hash || '#1').slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+})();
+</script>

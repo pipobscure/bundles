@@ -1,9 +1,11 @@
 {
-    "name":"@pipobscure/napp",
+    "name": "@pipobscure/bundle",
     "version": "0.0.0",
-    "type":"module",
-    "main":"app.js",
-    "bin": { "napp": "./app.js" },
+    "type": "module",
+    "main": "app.js",
+    "bin": {
+        "bundle": "./app.js"
+    },
     "exports": {
         ".": "./app.js",
         "./manifest": "./manifest.js",
@@ -11,6 +13,8 @@
         "./provider": "./provider.js",
         "./register": "./register.cjs",
         "./recorder": "./recorder.js",
-        "./record": "./record.cjs"
+        "./record": "./record.cjs",
+        "./sigstore": "./sigstore.js",
+        "./oidc": "./oidc.js"
     }
 }
