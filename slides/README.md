@@ -139,6 +139,11 @@ that is still moving, and a slide asserting something the code stopped doing is 
 no slide. The claims most likely to rot are the status table (`0x14`), anything with a
 command in it, and the two "this is built" statements on `0x12` and `0x13`.
 
-The deck is also published as a Claude artifact. It is the same file — the artifact is the
-body-only form, which is exactly what `index.html` already is — so republishing is a
-straight upload of this file, not a conversion.
+The deck is also published as a Claude artifact, linked from the root README:
+
+    https://claude.ai/code/artifact/7860e0a8-3d32-4b9e-b5ce-94a36289bc34
+
+It is the same file — the artifact is the body-only form, which is exactly what
+`index.html` already is — so republishing is a straight upload of this file, not a
+conversion. Republish it whenever you change the deck, or the public link goes stale;
+viewers see the pinned version, so moving the share pin is a separate step.

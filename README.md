@@ -527,7 +527,11 @@ header carries the command that makes it live.
   the audit skill, shipping the tool as a bundle of itself, the self-validating executable,
   and the audit as a build step.
 - **[skills/audit-bundle/SKILL.md](skills/audit-bundle/SKILL.md)** — the review procedure.
-- **[slides/](slides/)** — a talk about the project, from a point in its life.
+- **[slides/](slides/)** — *Ship the Tree*, a talk about the project, kept in step with it.
+  `slides/index.html` opens in any browser with no build step; press <kbd>S</kbd> for the
+  speaker notes, which carry most of the argument.
+  **[Read it here](https://claude.ai/code/artifact/7860e0a8-3d32-4b9e-b5ce-94a36289bc34)** —
+  same deck, published.
 
 ---
 
