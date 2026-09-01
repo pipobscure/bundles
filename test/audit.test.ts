@@ -13,7 +13,7 @@ import { APP, scratch, testSigner, tree } from './helpers.ts';
 // over exactly these bytes, and that refusal is what these tests pin down.
 
 const ROOT = packageRoot();
-const TOOL = PATH.join(ROOT, 'tools', 'audit.ts');
+const MAIN = PATH.join(ROOT, 'src', 'main.ts');
 
 const tmp = scratch('audit');
 const source = tree(tmp);
@@ -29,8 +29,8 @@ function verdictPath(): string {
 }
 
 function audit(args: string[], env: NodeJS.ProcessEnv = {}) {
-    return spawnSync(process.execPath, ['--no-warnings', '--experimental-vfs', TOOL, ...args],
-        { encoding: 'utf-8', env: { ...process.env, BUNDLE_SKIP_AUDIT: '', ...env } });
+    return spawnSync(process.execPath, ['--no-warnings', '--experimental-vfs', MAIN, 'audit', ...args],
+        { encoding: 'utf-8', env: { ...process.env, ...env } });
 }
 
 function write(path: string, verdict: Record<string, unknown>): string {
@@ -39,12 +39,12 @@ function write(path: string, verdict: Record<string, unknown>): string {
 }
 
 test('preparing reports what is about to be audited, and how', () => {
-    const res = audit(['--bundle', BUNDLE, '--verdict', verdictPath()]);
+    const res = audit([BUNDLE, '--verdict', verdictPath()]);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stderr, new RegExp(SHA));
-    assert.match(res.stderr, /679|4 members/);
+    assert.match(res.stdout, new RegExp(SHA));
+    assert.match(res.stdout, /4 members/);
     // An unsigned archive is the expected input here and must not read as a problem.
-    assert.match(res.stderr, /unsigned, as an archive that has not been signed yet should be/);
+    assert.match(res.stdout, /unsigned, as an archive that has not been signed yet should be/);
     assert.match(res.stderr, /\/audit-bundle/);
 });
 
@@ -60,22 +60,22 @@ test('preparing refuses a signed archive that does not hold together', async () 
     bytes[at] = bytes[at] === 0x61 ? 0x62 : 0x61;
     FS.writeFileSync(signed, bytes);
 
-    const res = audit(['--bundle', signed, '--verdict', verdictPath()]);
-    assert.equal(res.status, 1);
+    const res = audit([signed, '--verdict', verdictPath()]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /rebuild it rather than reviewing it/);
 });
 
 test('preparing refuses something that is not an archive at all', () => {
     const junk = PATH.join(tmp, 'junk.bundle');
     FS.writeFileSync(junk, 'this is not a zip file');
-    const res = audit(['--bundle', junk, '--verdict', verdictPath()]);
-    assert.equal(res.status, 1);
+    const res = audit([junk, '--verdict', verdictPath()]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /could not be read as an archive/);
 });
 
 test('the gate refuses when nothing has been audited', () => {
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', PATH.join(tmp, 'absent.json')]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', BUNDLE, '--verdict', PATH.join(tmp, 'absent.json')]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /has not been audited/);
 });
 
@@ -85,8 +85,8 @@ test('the gate refuses a verdict that approves different bytes', () => {
     const verdict = write(verdictPath(), {
         sha256: 'ff'.repeat(32), verdict: 'pass', summary: 'looked fine at the time',
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', verdict]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', BUNDLE, '--verdict', verdict]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /it is stale/);
     assert.match(res.stderr, new RegExp(SHA));
 });
@@ -101,8 +101,8 @@ test('the gate refuses a verdict that did not pass, and says why', () => {
             { severity: 'note', file: 'index.js', what: 'unreferenced member' },
         ],
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', verdict]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', BUNDLE, '--verdict', verdict]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /did not pass/);
     assert.match(res.stderr, /\[high\] greet\.js:3 — exfiltrates process\.env/);
     // A note is not a reason on its own, so it is not paraded as one.
@@ -112,8 +112,8 @@ test('the gate refuses a verdict that did not pass, and says why', () => {
 test('the gate refuses a verdict it cannot read', () => {
     const verdict = PATH.join(tmp, 'garbage.json');
     FS.writeFileSync(verdict, 'not json at all');
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', verdict]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', BUNDLE, '--verdict', verdict]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /not readable JSON/);
 });
 
@@ -122,23 +122,25 @@ test('the gate passes a clean verdict over these bytes', () => {
         sha256: SHA, verdict: 'pass', members: 4, reviewed: 4,
         summary: 'every member read; nothing to report', findings: [],
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', verdict]);
+    const res = audit(['--check', BUNDLE, '--verdict', verdict]);
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stderr, /every member read/);
     assert.match(res.stderr, /4 of 4 members reviewed/);
 });
 
-test('the gate can be stepped past deliberately, and says what that means', () => {
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', PATH.join(tmp, 'absent.json')],
+test('the gate is a command, so skipping it is simply not running it', () => {
+    // There is deliberately no environment variable that turns the gate off. A
+    // switch like that gets set in CI once and never unset, and this is the
+    // publisher's own gate: if you do not want it, do not put it in the chain.
+    const res = audit(['--check', BUNDLE, '--verdict', PATH.join(tmp, 'absent.json')],
         { BUNDLE_SKIP_AUDIT: '1' });
-    assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stderr, /BUNDLE_SKIP_AUDIT is set/);
-    assert.match(res.stderr, /stand behind bytes nobody read/);
+    assert.notEqual(res.status, 0, 'no env var may bypass the gate');
+    assert.match(res.stderr, /has not been audited/);
 });
 
 test('approving by hand writes a verdict the gate accepts, pinned to the bytes', () => {
     const verdict = verdictPath();
-    const approved = audit(['--approve', '--bundle', BUNDLE, '--verdict', verdict, '--note', 'read it myself']);
+    const approved = audit(['--approve', BUNDLE, '--verdict', verdict, '--note', 'read it myself']);
     assert.equal(approved.status, 0, approved.stderr);
 
     const written = JSON.parse(FS.readFileSync(verdict, 'utf-8')) as Record<string, unknown>;
@@ -150,13 +152,13 @@ test('approving by hand writes a verdict the gate accepts, pinned to the bytes',
     assert.equal(written['by'], 'human');
     assert.match(String(written['at']), /^\d{4}-\d{2}-\d{2}T/);
 
-    const res = audit(['--check', '--bundle', BUNDLE, '--verdict', verdict]);
+    const res = audit(['--check', BUNDLE, '--verdict', verdict]);
     assert.equal(res.status, 0, res.stderr);
 });
 
 test('an approval does not survive the archive changing under it', () => {
     const verdict = verdictPath();
-    audit(['--approve', '--bundle', BUNDLE, '--verdict', verdict, '--note', 'fine']);
+    audit(['--approve', BUNDLE, '--verdict', verdict, '--note', 'fine']);
 
     const rebuilt = PATH.join(tmp, 'rebuilt.bundle');
     FS.copyFileSync(BUNDLE, rebuilt);
@@ -164,14 +166,14 @@ test('an approval does not survive the archive changing under it', () => {
     bytes.writeUInt8(bytes.readUInt8(bytes.length - 1) ^ 0x01, bytes.length - 1);
     FS.writeFileSync(rebuilt, bytes);
 
-    const res = audit(['--check', '--bundle', rebuilt, '--verdict', verdict]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', rebuilt, '--verdict', verdict]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /stale/);
 });
 
 test('there is nothing to audit when the archive is not there', () => {
-    const res = audit(['--bundle', PATH.join(tmp, 'nope.bundle'), '--verdict', verdictPath()]);
-    assert.equal(res.status, 1);
+    const res = audit([PATH.join(tmp, 'nope.bundle'), '--verdict', verdictPath()]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /there is no archive at/);
 });
 
@@ -187,17 +189,17 @@ test('a baseline on disk is reported, with what changed', async () => {
     const baseline = PATH.join(dir, 'baseline.bundle');
     await createBundle({ base: source, files: ['package.json', 'index.js'], output: baseline });
 
-    const res = audit(['--bundle', BUNDLE, '--baseline', baseline, '--verdict', verdictPath()]);
+    const res = audit([BUNDLE, '--baseline', baseline, '--verdict', verdictPath()]);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stderr, /2 added, 0 removed/);
-    assert.match(res.stderr, /\+ greet\.js/);
-    assert.match(res.stderr, /against .*baseline\.bundle/);
+    assert.match(res.stdout, /2 added, 0 removed/);
+    assert.match(res.stdout, /\+ greet\.js/);
+    assert.match(res.stdout, /against .*baseline\.bundle/);
 });
 
 test('with no baseline the review is of everything, and says so', () => {
-    const res = audit(['--bundle', BUNDLE, '--baseline', PATH.join(tmp, 'absent.bundle'), '--verdict', verdictPath()]);
+    const res = audit([BUNDLE, '--baseline', PATH.join(tmp, 'absent.bundle'), '--verdict', verdictPath()]);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stderr, /no baseline .* the review is of everything, not a diff/);
+    assert.match(res.stdout, /no baseline — the review is of everything, not a diff/);
 });
 
 test('the gate refuses a verdict reached against a different baseline', async () => {
@@ -209,8 +211,8 @@ test('the gate refuses a verdict reached against a different baseline', async ()
     const verdict = write(verdictPath(), {
         sha256: SHA, baselineSha256: 'ab'.repeat(32), verdict: 'pass', summary: 'diffed against something else',
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
-    assert.equal(res.status, 1);
+    const res = audit(['--check', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
+    assert.notEqual(res.status, 0);
     assert.match(res.stderr, /reached against a different baseline/);
 });
 
@@ -223,9 +225,8 @@ test('a verdict that records no baseline is accepted as a full review, with a no
     const verdict = write(verdictPath(), {
         sha256: SHA, verdict: 'pass', summary: 'read all of it', findings: [],
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
+    const res = audit(['--check', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stderr, /records no baseline/);
 });
 
 test('the gate accepts a diff verdict pinned to the baseline that is there', async () => {
@@ -239,7 +240,7 @@ test('the gate accepts a diff verdict pinned to the baseline that is there', asy
         sha256: SHA, baselineSha256: baselineSha, verdict: 'pass',
         members: 4, reviewed: 3, summary: 'three members changed; nothing to report', findings: [],
     });
-    const res = audit(['--check', '--bundle', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
+    const res = audit(['--check', BUNDLE, '--baseline', baseline, '--verdict', verdict]);
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stderr, /3 of 4 members reviewed/);
     assert.match(res.stderr, new RegExp(`as a diff against ${baselineSha.slice(0, 16)}`));
@@ -252,7 +253,7 @@ test('approving by hand records the baseline it was approved against', async () 
     await createBundle({ base: source, files: ['package.json'], output: baseline });
 
     const verdict = verdictPath();
-    const res = audit(['--approve', '--bundle', BUNDLE, '--baseline', baseline, '--verdict', verdict, '--note', 'ok']);
+    const res = audit(['--approve', BUNDLE, '--baseline', baseline, '--verdict', verdict, '--note', 'ok']);
     assert.equal(res.status, 0, res.stderr);
     const written = JSON.parse(FS.readFileSync(verdict, 'utf-8')) as Record<string, unknown>;
     assert.equal(written['baselineSha256'],

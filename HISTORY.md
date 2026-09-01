@@ -350,15 +350,15 @@ can see rather than something the README asserts.
 "baseline:cli":   "node --experimental-vfs tools/baseline.ts --allow-missing",
 // Fetches the currently published bundle and verifies it, to review the new one
 // *against*. The first release has none, and then the audit reviews everything.
-"audit:cli":      "node --experimental-vfs tools/audit.ts",
+"audit:cli":      "node dist/main.js audit --baseline build/baseline.bundle …",
 // Reports the archive's sha256, its member count and what changed against the baseline,
 // then prints the exact skill invocation. The review needs judgement, so no script
 // performs it.
-"approve:cli":    "node --experimental-vfs tools/audit.ts --approve",
+"approve:cli":    "node dist/main.js audit --approve …",
 // Record a clean verdict reached by a person instead of by the skill.
 
 // --- 4. sign ----------------------------------------------------------------
-"sign:cli":       "node --experimental-vfs tools/audit.ts --check && node dist/main.js sign --prefix shell-base --output bundle.run build/cli.bundle",
+"sign:cli":       "node dist/main.js audit --check … && node dist/main.js sign --launcher --output bundle.run build/cli.bundle",
 // The gate runs first and exits non-zero without a clean verdict pinned to these bytes.
 // Then sigstore — CI identity if there is one, otherwise a GitHub sign-in.
 "sign:cli:local": "… --check && node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem …",
@@ -378,7 +378,7 @@ can see rather than something the README asserts.
 // Refuses to publish a package whose signed CLI is missing, unsigned, or stale.
 ```
 
-**The gate.** `tools/audit.ts --check` is what makes step 3 a step rather than a
+**The gate.** `bundle audit --check` is what makes step 3 a step rather than a
 suggestion. It reads a JSON verdict the skill writes — `verdict: "pass" | "fail"`, the
 findings, the **sha256 of the archive**, and the baseline's sha256 when the review was a
 diff — and refuses unless the verdict passed *and* pins the bytes on disk. That pin is the
@@ -389,12 +389,14 @@ the same way; one naming none is accepted as a full review, with a note saying s
 ```
 $ npm run sign:cli
 error: build/cli.bundle has not been audited — there is no verdict at build/cli.audit.json.
-  run 'npm run audit:cli' to see how, or BUNDLE_SKIP_AUDIT=1 to sign anyway
+  run 'npm run audit:cli' to see how
 ```
 
-`BUNDLE_SKIP_AUDIT=1` steps past it deliberately, and says what that means. It is the
-publisher's own gate, not a runtime policy — the same reason `--identity` is something the
-verifier chooses rather than something the format imposes.
+There is deliberately no environment variable that turns it off: a switch like that gets set
+in CI once and never unset. It is a command you choose to put in your chain, and if you do
+not want it, you do not put it there. That is the publisher's own gate, not a runtime policy
+— the same reason `--identity` is something the verifier chooses rather than something the
+format imposes.
 
 Note the shape of the pipeline: **`create` once, `sign` many times.** `create` never needs a
 key, and the archive it writes is the single input to every signed artifact. Drop `--root`
@@ -1018,7 +1020,7 @@ build step can read. So the skill writes a JSON verdict beside its prose report:
   "summary": "12 members changed since 0.1.3; the sigstore tree is upstream and unmodified" }
 ```
 
-`tools/audit.ts --check` reads it, re-hashes the archive, and exits non-zero unless the
+`bundle audit --check` reads it, re-hashes the archive, and exits non-zero unless the
 verdict passed *and* names those exact bytes. That is the whole gate, and it works the same
 locally and in CI.
 
@@ -1049,7 +1051,7 @@ repository's own skill:
       --allowedTools "Bash,Read,Glob,Grep,Write"
 
 - name: Gate on the audit verdict
-  run: node --experimental-vfs tools/audit.ts --check
+  run: node dist/main.js audit --check --baseline build/baseline.bundle build/cli.bundle
 ```
 
 **Why a diff.** Re-reading 679 unchanged members every release is the kind of review that
@@ -1222,7 +1224,7 @@ happened is a changelog, and the interesting part is usually the gap.
 | **§2 the audit skill** | Built, as `skills/audit-bundle/`. |
 | **§3 the tool as a bundle of itself** | Built. The published package carries its own CLI as one signed archive and the `bundle` command is a launcher for it; the sigstore dependencies became members, as this section said they would have to. |
 | **§4 the self-validating executable** | Built, as `src/sea.ts` and `bundle sea`. The VFS mount that drives a SEA, applied to the archive appended to it. |
-| **§5 the audit as a build step** | Built, as `tools/audit.ts`, `tools/baseline.ts` and `.github/workflows/release.yml.disabled`. The review moves from something you do to an archive you received to something that happens between `create` and `sign`. |
+| **§5 the audit as a build step** | Built, as `bundle audit`, `tools/baseline.ts` and `.github/workflows/release.yml.disabled`. The review moves from something you do to an archive you received to something that happens between `create` and `sign`. |
 
 ---
 
@@ -1711,17 +1713,20 @@ step 4 happen without one, and that requires the audit to leave behind something
 step can read. Hence the verdict file: `verdict: "pass" | "fail"`, the findings with
 severities, and — the load-bearing field — the **sha256 of the archive**.
 
-`tools/audit.ts --check` re-hashes the file and refuses a verdict that names different
+`bundle audit --check` re-hashes the file and refuses a verdict that names different
 bytes. Without that pin the gate is theatre: it would approve any later build on the
 strength of one earlier approval, which is precisely the failure mode of every
 "security review completed" checkbox. Rebuilding invalidates the approval, and it should.
 
 `--approve` exists so a person who read the archive themselves is a first-class auditor; it
 writes the same file with `by: "human"`, so the gate treats both identically while the
-record still says which happened. `BUNDLE_SKIP_AUDIT=1` steps past the gate and says in as
-many words what that means. It is the publisher's own gate, not a runtime policy — the same
-reason `--identity` is something a verifier chooses rather than something the format
-imposes.
+record still says which happened.
+
+It is a *shipped command* rather than build tooling, and that was a correction. The gate
+lived in `tools/` at first, which meant the four-step flow this project preaches was
+available only to this project — the deck had a slide showing `npm run sign:cli` refusing,
+which no reader could reproduce. A pipeline you recommend and cannot hand over is an
+argument, not a tool.
 
 #### Reviewing the diff, not the archive
 

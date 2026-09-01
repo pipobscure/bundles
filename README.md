@@ -5,9 +5,8 @@ been tampered with.
 
 ```sh
 bundle create --base ./app --files app.manifest --output app.bundle   # archive it
-bundle sign --output app.signed.bundle app.bundle                     # sigstore
-node --experimental-vfs -r @pipobscure/bundle/register \
-     --vfs-load --vfs-mount app.signed.bundle --                      # run it, verified
+bundle sign --launcher --output app.run app.bundle                    # sign, via sigstore
+./app.run                                                             # and it is a program
 ```
 
 The archive is a real ZIP with a signature over the whole file. Mounting it through
@@ -101,9 +100,21 @@ Unsigned, and deliberately so. This is the single input to every shape you ship.
 A signature is a claim about bytes you stand behind, so the review belongs *before* it:
 
 ```sh
+bundle audit app.bundle             # what is about to be reviewed, and how
 bundle skill                        # install the audit skill into .claude/skills/
 claude "/audit-bundle app.bundle"   # verify, extract, read every member
+bundle audit --check app.bundle     # exits non-zero without a clean verdict
 ```
+
+`bundle audit` does the two mechanical halves around the review. On its own it reports the
+archive's hash, its members and — with `--baseline <previous>` — what changed since the last
+release you approved. With `--check` it is a **gate**: it reads the JSON verdict the skill
+writes and refuses unless that verdict passed *and* names the sha256 of the bytes on disk,
+so rebuilding invalidates an approval. `--approve --note '<what you checked>'` records a
+verdict you reached by reading the archive yourself.
+
+There is deliberately no environment variable that turns the gate off. It is a command you
+choose to put in your pipeline — if you do not want it, do not put it there.
 
 [`audit-bundle`](skills/audit-bundle/SKILL.md) is a [Claude Code](https://claude.com/claude-code)
 skill that verifies the archive, extracts it, and security-reviews every file — load-time
@@ -119,7 +130,7 @@ repeat-use case.
 ### 4. Sign
 
 ```sh
-bundle sign --output app.signed.bundle app.bundle
+bundle audit --check app.bundle && bundle sign --launcher --output app.run app.bundle
 ```
 
 Through **sigstore** by default: an ambient CI identity when there is one, otherwise a
@@ -135,12 +146,14 @@ bundle sign --key leaf.key --chain chain.pem --output app.signed.bundle app.bund
 Signing is separate from building, and that is what makes one build serve every target:
 
 ```sh
-bundle sign --prefix shell-base --output app.run    app.bundle   # self-executing ZIP
-bundle sea  --output app.sea                        app.bundle   # standalone executable
-bundle sign --output app.signed.bundle              app.bundle   # plain, for a mount
+bundle sign --launcher --output app.run           app.bundle   # a file you can run by name
+bundle sea             --output app.sea           app.bundle   # standalone executable
+bundle sign            --output app.signed.bundle app.bundle   # plain, for a mount
 ```
 
-Each is correctly offset and signed over its own finished bytes.
+Each is correctly offset and signed over its own finished bytes. `--launcher` prepends the
+shell prefix this package ships, so nobody has to know it lives inside `node_modules`;
+`--prefix <file>` takes a launcher of your own, or a node binary.
 
 ---
 
@@ -151,6 +164,7 @@ bundle <command> [options]
 
   create    build an archive from a list of files
   sign      sign an archive into a new file, optionally behind a prefix
+  audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
   sea       wrap an archive in a node runtime that verifies itself and runs it
@@ -184,6 +198,15 @@ through warnings.
 `valid-untrusted`: the signature is genuine, it is simply not the one you asked for. An
 archive signed against an ordinary CA carries no identity claim at all, so it also reads as
 `valid-untrusted` under such a policy rather than passing.
+
+### `audit`
+
+```sh
+bundle audit [--baseline <archive>] [--verdict <file>] [--check|--approve] <archive>
+```
+
+The gate described above. Exits non-zero when `--check` finds no verdict, a verdict over
+different bytes, a verdict reached against a different baseline, or one that failed.
 
 ### `run`
 
@@ -286,6 +309,7 @@ A preload takes no arguments, so the mount is configured through the environment
 | `BUNDLE_IDENTITY` / `BUNDLE_ISSUER` | require a particular sigstore signer at mount time |
 | `BUNDLE_SIGSTORE_ROOT` | the sigstore trust root to check against, instead of the cache |
 | `BUNDLE_NO_BROWSER` | never try to open a browser when signing; use the device flow |
+| `BUNDLE_AUDIT_VERDICT` | where the audit skill writes its verdict, when CI asks for one |
 
 ---
 
@@ -304,6 +328,7 @@ A preload takes no arguments, so the mount is configured through the environment
   "./archive":  "bundling and re-emitting",
   "./files":    "dependency closures",
   "./skill":    "the shipped skills, and installing them",
+  "./audit":    "the audit gate: prepare, check, approve",
   "./sigstore": "the sigstore signer and bundle verification",
   "./oidc":     "identity tokens: CI, browser, or device code"
 }
@@ -468,17 +493,21 @@ npm run sign:cli:local      # 4: now allowed -> bundle.run
 | Script | |
 |---|---|
 | `manifest:cli` | observe a run, close over the dependencies, write the file list |
-| `pack:cli` | create the unsigned archive from that list |
+| `pack:cli` | `bundle create` over that list |
 | `baseline:cli` | fetch and verify the published release, to review against |
-| `audit:cli` | report the diff and print the skill invocation |
-| `approve:cli` | record a verdict reached by reading it yourself |
-| `sign:cli` | gate on the verdict, then sign through sigstore |
+| `audit:cli` | `bundle audit` — report the diff and print the skill invocation |
+| `approve:cli` | `bundle audit --approve` |
+| `sign:cli` | `bundle audit --check`, then `bundle sign --launcher` through sigstore |
 | `release:cli` | steps 1–3, stopping at the gate |
 
-**The gate is real.** `tools/audit.ts --check` runs before signing and reads the JSON verdict
-the skill writes — the findings, and the sha256 of the archive. It refuses unless the verdict
-passed *and* pins the bytes on disk, so rebuilding invalidates an approval. `BUNDLE_SKIP_AUDIT=1`
-steps past it deliberately and says what that means.
+Only `manifest:cli` and `baseline:cli` are scripts of their own; the rest are the CLI. The
+first observes a run and computes a dependency closure, the second fetches this package's
+own published release from npm — both specific to how *this* project is built.
+
+**The gate is real, and it is a shipped command** — `bundle audit --check`, not repo
+tooling. It runs before signing, reads the JSON verdict the skill writes, and refuses unless
+that verdict passed *and* pins the sha256 of the bytes on disk. Everything this repository
+does to release itself is something you can do to your own project.
 
 [`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is the
 whole pipeline as a workflow — CI, pack, fetch the published release, audit the diff, gate,

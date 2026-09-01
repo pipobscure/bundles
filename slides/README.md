@@ -90,13 +90,21 @@ moving window over the recent past, not a complete history. The caption says so.
 
   ```sh
   npm run build && npm run testpki
-  bundle create --base ./app -f app.manifest -o app.bundle
-  bundle sign --key build/certs/leaf.key --chain build/certs/chain.pem \
-      --prefix shell-base -o app.run app.bundle
+  BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
+      -r @pipobscure/bundle/record --vfs-load --vfs-mount ./app -- Ada
+  npx bundle create --base ./app -f app.manifest -o app.bundle
+  npx bundle sign --launcher \
+      --key build/certs/leaf.key --chain build/certs/chain.pem -o app.run app.bundle
   ```
 
   The demo is deliberately two commands — `create` then `sign` — because signing is a
   separate step, and slide `0x0F` shows both.
+- **Every command on a slide is one a user would type in their own project**, not one from
+  this repository: `@pipobscure/bundle/record` rather than a relative path, `npx bundle`
+  rather than `npm run …`, `--launcher` rather than a path into `node_modules`. Keep it
+  that way when you edit — a demo that only works from this checkout is a demo of nothing.
+  The example app is a three-file greeter with one deliberately unused module, so the
+  manifest has something to leave out.
 - **`head -c 89 app.run` on `0x0F` shows the current prefix**, which is a two-line
   `#!/bin/sh` that `exec`s node with `"$0"` and a `--`. If you are tempted to describe it as
   the `env -S` one-liner, don't: that form is prettier and broken, because the user's

@@ -649,6 +649,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <div class="notes" hidden>
     <p><b>Get the credit right here, out loud.</b> <em>node:vfs</em> — the subsystem itself, MemoryProvider, RealFSProvider — is Matteo Collina's, and so is the VFS module loading that makes a mount resolvable. Yours is the zip support in node:zlib, the Zip VFS provider, and these two flags. The status slide breaks it down; don't blur it here.</p>
     <p class="say">"The shebang thing is my favourite accident. The kernel appends the script's path to the interpreter line. If the last flag is a <i>--vfs-mount</i> still waiting for a value… it gets the script itself."</p>
+    <p><b>One honest footnote, if anyone is taking notes:</b> this exact form is not what the tool actually ships as a prefix. The kernel appends the path <i>and then the user's arguments</i>, which leaves nowhere to write the <em>--</em> that stops node claiming them — so <em>app.run --help</em> prints node's help. The shipped prefix is two lines of <em>sh</em> that <em>exec</em> node with <em>"$0"</em> and a <em>--</em>, and slide <span class="mono">0x0F</span> shows it. The trick on this slide is real and is a property of the flag; it is just not sufficient on its own.</p>
     <p><b>Why two flags?</b> Because you may want several mounts and exactly one entry point. Mounting and running are different concerns. Expect this question.</p>
     <p>Note what's <i>absent</i> from this slide: any mention of trust. Mounting an archive is just mounting an archive. Node will happily run an unsigned one, and that's correct behaviour.</p>
   </div>
@@ -837,26 +838,29 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <h2>Observe, bundle, execute.</h2>
   <div class="cols" style="margin-top:24px">
     <div class="stack">
-      <div class="cmd sm"><span class="c"># 1. what does this app ACTUALLY read?</span>
+      <div class="cmd sm"><span class="p">$</span> npm i -D <span class="y">@pipobscure/bundle</span>
+
+<span class="c"># 1. what does this app ACTUALLY read?</span>
 <span class="p">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-   -r bundle/record --vfs-load --vfs-mount ./app
+   <span class="y">-r @pipobscure/bundle/record</span> \
+   --vfs-load --vfs-mount ./app -- Ada
+<span class="g">hello, Ada</span>
 <span class="p">$</span> cat app.manifest
 <span class="o">package.json</span>
-<span class="o">app.js</span>
-<span class="o">manifest.js</span>  <span class="c">…</span></div>
+<span class="o">index.js</span>
+<span class="o">lib/hello.js</span>   <span class="c"># lib/never-used.js: absent</span></div>
       <p class="sub" style="font-size:16px;max-width:42ch">Not static analysis. The app runs behind a
         <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
         which writes down every file it opens.</p>
-      <div class="cmd sm" style="margin-top:4px"><span class="c"># 2. archive it, then sign it behind a shebang</span>
-<span class="p">$</span> bundle create --base ./app \
+      <div class="cmd sm" style="margin-top:4px"><span class="c"># 2. archive exactly that, then sign it</span>
+<span class="p">$</span> npx bundle create --base ./app \
    -f app.manifest -o app.bundle
-<span class="o">+ app.js</span>
-<span class="o">+ package.json</span>  <span class="c">…</span>
-<span class="o">* unsigned archive (10 members)</span>
+<span class="o">+ index.js  + lib/hello.js</span>  <span class="c">…</span>
+<span class="o">* unsigned archive (3 members)</span>
 
-<span class="p">$</span> bundle sign --prefix shell-base \
+<span class="p">$</span> npx bundle sign <span class="y">--launcher</span> \
    -o app.run app.bundle
-<span class="g">* signed: 3c81bb2b0890…</span></div>
+<span class="g">* signed: da9e7604113a…</span></div>
     </div>
     <div class="stack">
       <div class="cmd sm"><span class="c"># 3. what did we just make?</span>
@@ -866,20 +870,19 @@ exec node --experimental-vfs \
   --vfs-load --vfs-mount "$0" -- "$@"</span>
 
 <span class="p">$</span> ls -l app.run
-<span class="o">-rwxr-xr-x  21006  app.run</span></div>
+<span class="o">-rwxr-xr-x  1894  app.run</span></div>
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program.</span>
-<span class="p">$</span> ./app.run help
-<span class="g">usage: &lt;command&gt; [options]</span>
-<span class="o">  create    build an archive</span>
-<span class="o">  verify    check one …</span></div>
-      <p class="sub" style="font-size:16px;max-width:42ch">21 kilobytes. No install, no <code>node_modules</code>,
-        no wrapper. The kernel appended the path; the file mounted itself.</p>
+<span class="p">$</span> ./app.run Grace
+<span class="g">hello, Grace</span></div>
+      <p class="sub" style="font-size:16px;max-width:42ch">Two kilobytes for this one. No install, no
+        <code>node_modules</code>, no wrapper &mdash; the file mounts itself and runs its own main.</p>
     </div>
   </div>
   <div class="kicker"><span class="mono">observe → bundle → ./app.run</span><span>0E</span></div>
   <div class="notes" hidden>
     <p><b>Beat 1 — the manifest (25s).</b> "Static dependency analysis is perennially wrong — dynamic require, data files, conditional imports. So don't analyse. Run it and write down what it touched." Note it records <em>open()</em> too, so streamed files get caught. Also: this is a <i>second</i> provider, which quietly proves the extension point isn't signing-shaped.</p>
-    <p><b>Beat 2 — build (20s).</b> Fast.</p>
+    <p><b>The line to point at is the comment:</b> <em>lib/never-used.js</em> is in the source tree and is not in the manifest, because the run never opened it. That is the whole argument for observation over analysis in one line of output.</p>
+    <p><b>Beat 2 — build (20s).</b> Fast. <em>--launcher</em> is worth half a sentence: it prepends the shell prefix the package ships, so nobody has to know it lives in node_modules. <em>--prefix &lt;file&gt;</em> is still there for your own launcher, or for a node binary.</p>
     <p><b>Beat 3 — head -c (25s). This is the beat people react to.</b> The front of the file is a shebang and nothing else. Let it sit.</p>
     <p><b>Beat 4 — run it (25s).</b> "Twenty-one kilobytes, and it is a program."</p>
     <p><b>Fallback:</b> artifacts are committed — just <em>./app.run help</em> and move on. Do not debug on stage.</p>
@@ -895,17 +898,17 @@ exec node --experimental-vfs \
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># signed via sigstore — identity, not a key file</span>
-<span class="p">$</span> bundle verify app.run
+<span class="p">$</span> npx bundle verify app.run
 <span class="g">VALID</span> — signature good, certificate trusted
   identity: <span class="o">github.com/pipobscure/…  (GitHub Actions)</span></div>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># flip exactly one byte, anywhere</span>
 <span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.run bs=1 seek=9000 \
       conv=notrunc
-<span class="p">$</span> bundle verify app.run
+<span class="p">$</span> npx bundle verify app.run
 <span class="r">INVALID</span> — recorded hash does not match content</div>
       <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
-<span class="p">$</span> ./app.run help
-<span class="o">usage: &lt;command&gt; [options]  …</span>   <span class="c"># ← runs fine</span></div>
+<span class="p">$</span> ./app.run Grace
+<span class="o">hello, Grace</span>   <span class="c"># ← runs fine</span></div>
     </div>
     <div class="stack">
       <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
@@ -941,7 +944,8 @@ exec node --experimental-vfs \
   <div class="cols w" style="margin-top:28px">
     <div class="stack">
       <div class="cmd sm"><span class="p">$</span> unzip -o app.run -d ./inspect
-<span class="o">  inflating: inspect/app.js</span>
+<span class="o">  inflating: inspect/index.js</span>
+<span class="o">  inflating: inspect/lib/hello.js</span>
 <span class="o">  inflating: inspect/package.json</span>
 <span class="o">  inflating: inspect/AUTHORITY.PEM</span>   <span class="c">← who signed it</span>
 
@@ -1008,8 +1012,9 @@ exec node --experimental-vfs \
       <p class="sub" style="font-size:17.5px;max-width:40ch">So the review is a step, not an afterthought &mdash; and it
         sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
         <i>you</i> stand behind.</p>
-      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npm run sign:cli
-<span class="r">error</span>: build/cli.bundle has not been audited</div>
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npx bundle <span class="y">audit --check</span> app.bundle \
+    &amp;&amp; npx bundle sign --launcher …
+<span class="r">error</span>: app.bundle has not been audited</div>
       <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:15px 19px">
         <p style="font-size:15.5px;line-height:1.5">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
           so rebuilding invalidates it. Otherwise the gate approves any later build on the strength of one earlier
@@ -1019,7 +1024,7 @@ exec node --experimental-vfs \
   </div>
   <div class="kicker"><span class="mono">observe → create → audit → sign</span><span>11</span></div>
   <div class="notes" hidden>
-    <p><b>The skill exists</b> (<em>skills/audit-bundle/</em>) and the gate is real (<em>tools/audit.ts&nbsp;--check</em>), so this is a live demo rather than a promise. Plant something findable first — see below. If you are running long, show the refusal and skip the review itself; the refusal is the point.</p>
+    <p><b>The skill exists</b> (<em>skills/audit-bundle/</em>) and the gate is a shipped command (<em>bundle audit --check</em>), so this is a live demo rather than a promise. Plant something findable first — see below. If you are running long, show the refusal and skip the review itself; the refusal is the point.</p>
     <p class="say">"Every attack on the timeline earlier was legitimately signed by a legitimately compromised account. Provenance would have told you it came from the real maintainer — and been completely useless. You need both halves."</p>
     <p><b>The move to make here</b> is that this used to be the last demo — a thing you <i>could</i> do to an archive somebody sent you. It is now step three of four, because the same argument applies pointing inward: if you would not run someone else's bundle without reading it, don't sign your own without reading it either. Same skill, same checklist, run at both ends.</p>
     <p><b>The strong framing:</b> this is why the trust layer being <i>optional and pluggable</i> matters. Signature checking is one policy. "Extract it and read it" is another. "Diff it against the last release" is a third. Same hole, different things plugged into it.</p>

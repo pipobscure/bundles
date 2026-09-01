@@ -110,6 +110,15 @@ export function moduleFiles({ base, files = [], dirs = [], dependencies = [], fi
     return [...new Set(kept)].sort();
 }
 
+/**
+ * The shell launcher this package ships: the prefix that turns an archive into
+ * a file you can run by name. `bundle sign --launcher` uses it, so nobody has
+ * to know it lives inside `node_modules`.
+ */
+export function launcherPath(): string {
+    return PATH.join(packageRoot(), 'shell-base');
+}
+
 /** This package's own root — the directory its `package.json` sits in. */
 export function packageRoot(): string {
     return PATH.resolve(PATH.dirname(fileURLToPath(import.meta.url)), '..');

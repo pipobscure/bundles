@@ -197,6 +197,54 @@ test('skill refuses a name the package does not carry', async () => {
     assert.match(io.stderr.join('\n'), /unknown skill: nonesuch/);
 });
 
+test('sign --launcher uses the packaged prefix, so nobody hunts for it', async () => {
+    const unsigned = PATH.join(tmp, 'launcher.bundle');
+    const output = PATH.join(tmp, 'launcher.run');
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+
+    const io = collector();
+    assert.equal(await main(['sign', '--launcher', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
+        '--output', output, unsigned], io), 0);
+
+    // Same result as naming shell-base by path, without knowing where it lives.
+    assert.deepEqual(FS.readFileSync(output).subarray(0, FS.statSync(SHELL_BASE).size),
+        FS.readFileSync(SHELL_BASE));
+    assert.ok(FS.statSync(output).mode & 0o111);
+    const ran = spawnSync(output, ['x'], { encoding: 'utf-8' });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
+});
+
+test('--launcher and --prefix are alternatives, not a pair', async () => {
+    const io = collector();
+    assert.equal(await main(['sign', '--launcher', '--prefix', SHELL_BASE,
+        PATH.join(tmp, 'bare.bundle')], io), 70);
+    assert.match(io.stderr.join('\n'), /--launcher and --prefix are alternatives/);
+});
+
+test('audit reports what is about to be reviewed, and gates signing on it', async () => {
+    const archive = PATH.join(tmp, 'gated.bundle');
+    const verdict = PATH.join(tmp, 'gated.audit.json');
+    await createBundle({ base: source, files: Object.keys(APP), output: archive });
+
+    const reported = collector();
+    assert.equal(await main(['audit', '--verdict', verdict, archive], reported), 0);
+    assert.match(reported.stdout.join('\n'), /4 members/);
+    assert.match(reported.stdout.join('\n'), /unsigned, as an archive that has not been signed yet should be/);
+
+    // Nothing recorded yet, so the gate refuses.
+    const refused = collector();
+    assert.equal(await main(['audit', '--check', '--verdict', verdict, archive], refused), 70);
+    assert.match(refused.stderr.join('\n'), /has not been audited/);
+
+    // Approve it by hand, and the gate lets it through.
+    const approved = collector();
+    assert.equal(await main(['audit', '--approve', '--verdict', verdict, '--note', 'read it', archive], approved), 0);
+    const passed = collector();
+    assert.equal(await main(['audit', '--check', '--verdict', verdict, archive], passed), 0);
+    assert.match(passed.stderr.join('\n'), /read it/);
+});
+
 test('sea needs both an archive and somewhere to put the result', async () => {
     const missingArchive = collector();
     assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea')], missingArchive), 70);

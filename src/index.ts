@@ -73,11 +73,25 @@ export {
     walk,
     moduleFiles,
     dependencyFiles,
+    launcherPath,
     packageRoot,
     moduleDir,
     type WalkOptions,
     type ModuleFilesOptions,
 } from './files.ts';
+
+// The audit gate — step 3 of building a bundle, and the thing that makes it a
+// step rather than a suggestion.
+export {
+    prepare as prepareAudit,
+    check as checkAudit,
+    approve as approveAudit,
+    verdictPath,
+    type Verdict,
+    type Finding,
+    type AuditOptions,
+    type Preparation,
+} from './audit.ts';
 
 // Installing the auditing skill into a project.
 export {

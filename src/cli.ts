@@ -3,6 +3,8 @@ import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members } from './archive.ts';
+import { launcherPath } from './files.ts';
+import * as AUDIT from './audit.ts';
 import { message, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
 
 // Re-exported because this is where a CLI consumer looks for it; it is defined
@@ -21,6 +23,7 @@ export const USAGE = `usage: bundle <command> [options]
 commands:
   create    build an archive from a list of files
   sign      sign an archive into a new file, optionally behind a prefix
+  audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
   sea       wrap an archive in a node runtime that verifies itself and runs it
@@ -40,9 +43,11 @@ create options:
 
 sign options:                       usage: sign [options] <archive>
   -o, --output <file>   write the signed archive here (default: stdout)
-  -p, --prefix <file>   prefix prepended before the archive: a '#!' launcher or a
-                        node binary; omit for a plain mountable archive
-  -x, --executable      make the output executable (implied by --prefix)
+  -l, --launcher        prepend this package's shell launcher, so the result runs
+                        by name — the usual way to make a self-executing archive
+  -p, --prefix <file>   prepend some other prefix: a launcher of your own, or a
+                        node binary; omit both for a plain mountable archive
+  -x, --executable      make the output executable (implied by --launcher/--prefix)
       --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
       --sign <alg>      digest the signature over that hash uses (default: sha256)
 
@@ -59,6 +64,19 @@ sign options:                       usage: sign [options] <archive>
   or, to sign against a certificate authority of your own:
   -k, --key <file>      leaf private key (PEM)
   -c, --chain <file>    full certificate chain (PEM, leaf first)
+
+audit options:                      usage: audit [options] <archive>
+  -b, --baseline <file> a previously approved archive to review against, so the
+                        review is of what changed rather than of everything
+  -v, --verdict <file>  where the verdict is (default: <archive>.audit.json)
+      --check           exit non-zero unless a clean verdict pins these bytes
+      --approve         record a clean verdict you reached by reading it yourself
+  -n, --note <text>     what you checked, recorded with --approve
+
+  with none of those it reports what is about to be reviewed and how. The review
+  itself needs judgement, so no command performs it: install the skill with
+  'bundle skill' and run /audit-bundle, or read the archive yourself and
+  --approve. Signing is not gated unless you run --check before it.
 
 verify options:                     usage: verify [options] <archive>
   -a, --archive <file>  archive to verify (or pass it as a positional argument)
@@ -114,7 +132,7 @@ const CONSOLE: Console = {
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, verify: check, run, sea, trust, skill,
+    create, sign, audit, verify: check, run, sea, trust, skill,
 };
 
 /**
@@ -183,6 +201,7 @@ async function sign(args: string[], io: Console): Promise<number> {
         allowPositionals: true,
         options: {
             output:     { type: 'string',  short: 'o' },
+            launcher:   { type: 'boolean', short: 'l' },
             prefix:     { type: 'string',  short: 'p' },
             executable: { type: 'boolean', short: 'x' },
             key:        { type: 'string',  short: 'k' },
@@ -201,14 +220,19 @@ async function sign(args: string[], io: Console): Promise<number> {
     const source = positionals[0];
     if (!source) throw new Error('sign: an archive path is required');
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('sign: --key and --chain must be given together');
+    if (values.launcher && values.prefix) throw new Error('sign: --launcher and --prefix are alternatives');
+
+    // `--launcher` is `--prefix <this package's shell-base>`, spelled so that
+    // nobody has to know the prefix ships inside node_modules.
+    const prefix = values.launcher ? launcherPath() : values.prefix;
 
     for (const name of members(source)) io.err(`+ ${name}`);
-    if (values.prefix) io.err(`* prefix ${values.prefix} (${FS.statSync(values.prefix).size} bytes)`);
+    if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
 
     const signer = await chooseSigner(values, io);
 
     const res = await signBundle({
-        source, output: values.output, prefix: values.prefix, executable: values.executable,
+        source, output: values.output, prefix, executable: values.executable,
         hashAlg: values.hash, signAlg: values.sign, signer,
     });
     io.err(`* signed: ${res.hash}`);
@@ -299,6 +323,70 @@ function run(args: string[], io: Console): number {
     }
     if (res.signal) process.kill(process.pid, res.signal);
     return res.status ?? 70;
+}
+
+// The audit gate. The review itself needs judgement, so this command does the
+// two mechanical halves around it: say what is about to be reviewed, and refuse
+// to let signing proceed without a clean verdict over exactly these bytes.
+function audit(args: string[], io: Console): number {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            baseline: { type: 'string',  short: 'b' },
+            verdict:  { type: 'string',  short: 'v' },
+            note:     { type: 'string',  short: 'n' },
+            check:    { type: 'boolean' },
+            approve:  { type: 'boolean' },
+        },
+    });
+    const bundle = positionals[0];
+    if (!bundle) throw new Error('audit: an archive path is required');
+    if (values.check && values.approve) throw new Error('audit: --check and --approve are alternatives');
+    const options = { bundle, verdict: values.verdict, baseline: values.baseline };
+
+    if (values.check) {
+        const verdict = AUDIT.check(options);
+        const notes = (verdict.findings ?? []).length;
+        io.err(`* audited: ${verdict.summary ?? 'pass'}`);
+        io.err(`  ${verdict.reviewed ?? '?'} of ${verdict.members ?? '?'} members reviewed, ` +
+            `${notes} finding${notes === 1 ? '' : 's'}`);
+        if (verdict.baselineSha256) io.err(`  as a diff against ${verdict.baselineSha256.slice(0, 16)}…`);
+        return 0;
+    }
+
+    if (values.approve) {
+        const verdict = AUDIT.approve({ ...options, note: values.note });
+        io.err(`* recorded a pass over ${verdict.sha256!.slice(0, 16)}… in ${AUDIT.verdictPath(bundle, values.verdict)}`);
+        return 0;
+    }
+
+    const found = AUDIT.prepare(options);
+    io.out(`${found.bundle}: ${STATES[found.state as VerificationState]?.label ?? found.state}, ${found.members.length} members`);
+    io.out(`  sha256: ${found.sha256}`);
+    if (found.state === 'unsigned') {
+        io.out('  unsigned, as an archive that has not been signed yet should be');
+    }
+    if (found.baseline) {
+        io.out(`  against ${found.baseline.path} (${found.baseline.sha256.slice(0, 16)}…)`);
+        io.out(`  ${found.baseline.added.length} added, ${found.baseline.removed.length} removed, ` +
+            `${found.baseline.carried} carried over`);
+        for (const name of found.baseline.added.slice(0, 10)) io.out(`    + ${name}`);
+        for (const name of found.baseline.removed.slice(0, 10)) io.out(`    - ${name}`);
+    } else {
+        io.out('  no baseline — the review is of everything, not a diff');
+    }
+
+    io.err('');
+    io.err('* review it, then record the verdict:');
+    io.err(`    BUNDLE_AUDIT_VERDICT=${found.verdict} \\`);
+    io.err(found.baseline
+        ? `      claude "/audit-bundle ${bundle} against ${found.baseline.path}"`
+        : `      claude "/audit-bundle ${bundle}"`);
+    io.err('  or, having read it yourself:');
+    io.err(`    bundle audit --approve --note '<what you checked>' ${bundle}`);
+    io.err("* then gate signing on it: bundle audit --check ... && bundle sign ...");
+    return 0;
 }
 
 // Wrap an archive in a node runtime that verifies itself before running it.

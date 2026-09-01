@@ -167,7 +167,7 @@
 #       # The gate. Fails the run — before anything is signed — unless the verdict
 #       # passed and names the bytes on disk and the baseline that was fetched.
 #       - name: Gate on the audit verdict
-#         run: node --no-warnings --experimental-vfs tools/audit.ts --check
+#         run: node --no-warnings --experimental-vfs dist/main.js audit --check --baseline build/baseline.bundle --verdict build/cli.audit.json build/cli.bundle
 #
 #       # Kept whether the gate passed or not, so a refused release leaves its
 #       # reasoning behind rather than only a red X.
