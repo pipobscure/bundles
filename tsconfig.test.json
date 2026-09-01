@@ -1,0 +1,10 @@
+{
+  // The same settings over the tests and the build tools, which live outside `rootDir`
+  // and are never emitted — `npm run typecheck` is what holds them to the same bar.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "test/**/*.ts", "tools/**/*.ts"]
+}

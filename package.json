@@ -13,42 +13,58 @@
   ],
   "license": "EUPL-1.2",
   "author": "Philipp Dunkel <pip@pipobscure.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pipobscure/bundles.git"
+  },
   "type": "module",
-  "main": "lib/app.js",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/main.js",
   "bin": {
-    "bundle": "lib/app.js"
+    "bundle": "./dist/bin.js"
   },
   "exports": {
-    ".": "./lib/app.js",
-    "./manifest": "./lib/manifest.js",
-    "./archive": "./lib/archive.js",
-    "./provider": "./lib/provider.js",
-    "./register": "./lib/register.cjs",
-    "./recorder": "./lib/recorder.js",
-    "./record": "./lib/record.cjs",
-    "./sigstore": "./lib/sigstore.js",
-    "./oidc": "./lib/oidc.js"
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js",
+    "./provider": "./dist/provider.js",
+    "./register": "./dist/register.js",
+    "./recorder": "./dist/recorder.js",
+    "./record": "./dist/record.js",
+    "./sea": "./dist/sea.js",
+    "./manifest": "./dist/manifest.js",
+    "./archive": "./dist/archive.js",
+    "./skill": "./dist/skill.js",
+    "./files": "./dist/files.js",
+    "./sigstore": "./dist/sigstore.js",
+    "./oidc": "./dist/oidc.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "skills/",
+    "shell-base",
+    "README.md",
+    "docs/"
+  ],
+  "engines": {
+    "node": ">=26.0.0"
   },
   "scripts": {
-    "sea": "node --no-warnings --build-sea sea.json",
-    "manifest": "BUNDLE_MANIFEST=app.manifest node --no-warnings --experimental-vfs -r ./lib/record.cjs --vfs-load --vfs-mount lib/ help > /dev/null && printf 'provider.js\\nregister.cjs\\nrecorder.js\\nrecord.cjs\\n' >> app.manifest",
-    "create": "node --no-warnings lib/app.js create --base lib/ --files app.manifest --output app.bundle",
-    "sign": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --output app.signed.bundle app.bundle",
-    "archive": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --prefix shell-base --output app.run app.bundle",
-    "executable": "node --no-warnings lib/app.js sign --key certs/leaf.key --chain certs/chain.pem --prefix node-base --output app.sea app.bundle",
-    "sigstore": "node --no-warnings lib/app.js sign --prefix shell-base --output app.run app.bundle",
-    "trust": "node --no-warnings lib/app.js trust",
-    "verify": "node --no-warnings lib/app.js verify --root certs/root.pem",
-    "build": "npm run manifest && npm run create && npm run sign && npm run archive",
-    "start": "BUNDLE_ROOTS=certs/root.pem node --no-warnings --experimental-vfs -r ./lib/register.cjs --vfs-load --vfs-mount app.signed.bundle",
-    "test": "node --no-warnings --experimental-vfs --test test/*.test.js"
+    "build": "tsc && chmod +x dist/main.js dist/bin.js",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "npm run build && npm run typecheck && node --no-warnings --experimental-vfs --test test/*.test.ts",
+    "trust": "node --no-warnings dist/main.js trust"
   },
-  "private": true,
   "dependencies": {
     "@sigstore/bundle": "^3.1.0",
     "@sigstore/protobuf-specs": "^0.4.3",
     "@sigstore/sign": "^3.1.0",
     "@sigstore/tuf": "^3.1.1",
     "@sigstore/verify": "^2.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
   }
 }

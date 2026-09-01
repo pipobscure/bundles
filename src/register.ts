@@ -1,4 +1,5 @@
-'use strict';
+import { preload, sibling } from './preload.ts';
+import type * as Provider from './provider.ts';
 
 // The preload entry point: registering the signed-archive provider is all this
 // does, so `--vfs-mount` finds it already in place when it picks a provider for
@@ -14,18 +15,16 @@
 // Configure it through the environment — a preload takes no arguments:
 //
 //   BUNDLE_ROOTS            extra trusted root certificates, as a
-//                         path-delimiter-separated list of PEM files
+//                           path-delimiter-separated list of PEM files
 //   BUNDLE_ALLOW_UNTRUSTED  accept a good signature whose chain is not anchored
-//                         in the trust store
+//                           in the trust store
+//   BUNDLE_IDENTITY         require this sigstore signing identity
+//   BUNDLE_ISSUER           require this sigstore OIDC issuer
+//   BUNDLE_SIGSTORE_ROOT    path to the sigstore trust root to check against
 //
 // For anything more, import `@pipobscure/bundle/provider` and call `register()`
 // with options from a preload module of your own.
 
-try {
-    require('./provider.js').register();
-} catch (err) {
-    if (err && (err.code === 'ERR_UNKNOWN_BUILTIN_MODULE' || err.code === 'MODULE_NOT_FOUND') && /node:vfs/.test(err.message)) {
-        throw new Error('bundle: node:vfs is unavailable — run node with --experimental-vfs', { cause: err });
-    }
-    throw err;
-}
+preload(() => {
+    sibling<typeof Provider>(import.meta.filename, 'provider').register();
+});

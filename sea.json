@@ -1,9 +1,0 @@
-{
-  "main": "sea.js",
-  "output": "node-base",
-  "disableExperimentalSEAWarning": true,
-  "useSnapshot": false,
-  "useCodeCache": false,
-  "execArgv": ["--no-warnings", "--experimental-vfs" ],
-  "execArgvExtension": "none"
-}

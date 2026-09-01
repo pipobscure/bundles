@@ -1,4 +1,5 @@
-'use strict';
+import { preload, sibling } from './preload.ts';
+import type * as Recorder from './recorder.ts';
 
 // The preload that puts manifest recording back where `--vfs-manifest` used to
 // be: registering a recording provider is all it does, so `--vfs-mount` finds
@@ -19,11 +20,6 @@
 // existing list), import `@pipobscure/bundle/recorder` and call `register()` or
 // `recording()` from a preload module of your own.
 
-try {
-    require('./recorder.js').register();
-} catch (err) {
-    if (err && (err.code === 'ERR_UNKNOWN_BUILTIN_MODULE' || err.code === 'MODULE_NOT_FOUND') && /node:vfs/.test(err.message)) {
-        throw new Error('bundle: node:vfs is unavailable — run node with --experimental-vfs', { cause: err });
-    }
-    throw err;
-}
+preload(() => {
+    sibling<typeof Recorder>(import.meta.filename, 'recorder').register();
+});

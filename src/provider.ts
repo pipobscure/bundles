@@ -3,7 +3,7 @@ import * as ZLIB from 'node:zlib';
 import * as CRYPTO from 'node:crypto';
 import * as PATH from 'node:path';
 import * as FS from 'node:fs';
-import { AUTHORITY, signatureOf, verifySync } from './manifest.js';
+import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
 
 // A `node:vfs` file provider for signed archives — `.bundle` files — layered on
 // the built-in `ZipProvider`. It is what turns "this archive is signed" into
@@ -35,9 +35,58 @@ export const EXTENSION = '.bundle';
 const READ_FLAGS = FS.constants.O_WRONLY | FS.constants.O_RDWR | FS.constants.O_CREAT |
     FS.constants.O_TRUNC | FS.constants.O_APPEND | FS.constants.O_EXCL;
 
-// Verify `path` and return a provider that serves it, or throw. `options` are
-// the same as `register()`'s.
-export function open(path, options) {
+export interface ProviderOptions {
+    /** File suffixes claimed outright (default: ['.bundle']). */
+    extensions?: string[] | undefined;
+    /**
+     * Also claim any file carrying our signature marker, whatever it is named
+     * (default: true). This is what keeps a renamed archive from falling
+     * through to the built-in ZIP provider, which checks nothing.
+     */
+    claimSigned?: boolean | undefined;
+    /**
+     * Extra trusted roots, as PEM text or paths to PEM files (default: the
+     * `BUNDLE_ROOTS` environment variable, a path-delimiter-separated list).
+     */
+    roots?: string[] | undefined;
+    /**
+     * Accept a good signature whose chain is not anchored in the trust store
+     * (default: the `BUNDLE_ALLOW_UNTRUSTED` environment variable).
+     */
+    allowUntrusted?: boolean | undefined;
+    /**
+     * Recompute every member digest at mount instead of on fetch
+     * (default: false — fetches check them anyway).
+     */
+    deep?: boolean | undefined;
+    /** Require this sigstore signing identity (default: `BUNDLE_IDENTITY`). */
+    identity?: string | undefined;
+    /** Require this sigstore OIDC issuer (default: `BUNDLE_ISSUER`). */
+    issuer?: string | undefined;
+    /** Path to the sigstore trust root (default: `BUNDLE_SIGSTORE_ROOT`). */
+    trustedRoot?: string | undefined;
+    /** Identifier reported in diagnostics (default: 'bundle'). */
+    name?: string | undefined;
+}
+
+interface Settings {
+    [kSettings]: true;
+    name: string;
+    extensions: string[];
+    claimSigned: boolean;
+    extraRoots: string[];
+    allowUntrusted: boolean;
+    deep: boolean;
+    identity: string | undefined;
+    issuer: string | undefined;
+    trustedRoot: string | undefined;
+}
+
+/**
+ * Verify `path` and return a provider that serves it, or throw. `options` are
+ * the same as `register()`'s.
+ */
+export function open(path: string, options?: ProviderOptions | Settings): BundleProvider {
     const opts = settings(options);
     const resolved = PATH.resolve(path);
 
@@ -51,9 +100,7 @@ export function open(path, options) {
             trustedRoot: opts.trustedRoot, identity: opts.identity, issuer: opts.issuer,
         });
         const acceptable = res.state === 'valid' || (opts.allowUntrusted && res.state === 'valid-untrusted');
-        if (!acceptable) {
-            throw refusal(resolved, res);
-        }
+        if (!acceptable) throw refusal(resolved, res);
         return new BundleProvider(archive, { hashAlg: res.hashAlg, digests: res.digests });
     } catch (err) {
         archive.closeSync();
@@ -61,32 +108,14 @@ export function open(path, options) {
     }
 }
 
-// Register this provider with `node:vfs` so the `--vfs-mount` startup flag selects it
-// for signed archives. Meant to be preloaded, before `--vfs-mount` picks a provider:
-//
-//   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
-//
-// options.extensions     - file suffixes claimed outright (default: ['.bundle'])
-// options.claimSigned    - also claim any file carrying our signature marker,
-//                          whatever it is named (default: true)
-// options.roots          - extra trusted roots, as PEM text or paths to PEM
-//                          files (default: the BUNDLE_ROOTS environment
-//                          variable, a path-delimiter-separated list)
-// options.allowUntrusted - accept a good signature whose chain is not anchored
-//                          in the trust store (default: the BUNDLE_ALLOW_UNTRUSTED
-//                          environment variable)
-// options.deep           - recompute every member digest at mount instead of on
-//                          fetch (default: false — fetches check them anyway)
-// options.identity       - require this sigstore signing identity, for an
-//                          archive signed that way (default: the BUNDLE_IDENTITY
-//                          environment variable)
-// options.issuer         - require this sigstore OIDC issuer (default: the
-//                          BUNDLE_ISSUER environment variable)
-// options.trustedRoot    - path to the sigstore trust root (default: the
-//                          BUNDLE_SIGSTORE_ROOT environment variable, else the
-//                          cache `bundle trust` maintains)
-// options.name           - identifier reported in diagnostics (default: 'bundle')
-export function register(options) {
+/**
+ * Register this provider with `node:vfs` so the `--vfs-mount` startup flag
+ * selects it for signed archives. Meant to be preloaded, before `--vfs-mount`
+ * picks a provider:
+ *
+ *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
+ */
+export function register(options?: ProviderOptions): Settings {
     const opts = settings(options);
     VFS.registerProvider({
         name: opts.name,
@@ -96,17 +125,24 @@ export function register(options) {
     return opts;
 }
 
-// A read-only `ZipProvider` that will not hand out a member's content until
-// that content has been hashed and matched against the digest recorded for it.
+/**
+ * A read-only `ZipProvider` that will not hand out a member's content until
+ * that content has been hashed and matched against the digest recorded for it.
+ */
 export class BundleProvider extends VFS.ZipProvider {
-    #archive;
-    #hashAlg;
-    #digests;
-    #verified;
+    #archive: ZLIB.ZipFile;
+    #hashAlg: string;
+    #digests: Map<string, string>;
+    #verified: VFS.MemoryProvider;
 
-    // `digests` is the member-name -> hex-digest map from a `verifySync()` of
-    // this very archive; `hashAlg` the algorithm those digests are in.
-    constructor(archive, { hashAlg = 'sha256', digests = new Map() } = {}) {
+    /**
+     * `digests` is the member-name -> hex-digest map from a `verifySync()` of
+     * this very archive; `hashAlg` the algorithm those digests are in.
+     */
+    constructor(archive: ZLIB.ZipFile, { hashAlg = 'sha256', digests = new Map<string, string>() }: {
+        hashAlg?: string | undefined;
+        digests?: Map<string, string> | undefined;
+    } = {}) {
         super(archive);
         this.#archive = archive;
         this.#hashAlg = hashAlg;
@@ -126,15 +162,15 @@ export class BundleProvider extends VFS.ZipProvider {
     // A signed archive is a fixed artifact: any write would invalidate the
     // signature it was mounted on, so the mount is read-only regardless of how
     // the underlying archive was opened.
-    get readonly() { return true; }
+    override get readonly(): boolean { return true; }
 
-    async open(path, flags, mode) {
+    override async open(path: string, flags?: string | number, mode?: number) {
         const name = normalize(path);
         if (reads(flags) && this.#check(name)) return this.#verified.open(path, flags, mode);
         return super.open(path, flags, mode);
     }
 
-    openSync(path, flags, mode) {
+    override openSync(path: string, flags?: string | number, mode?: number) {
         const name = normalize(path);
         if (reads(flags) && this.#check(name)) return this.#verified.openSync(path, flags, mode);
         return super.openSync(path, flags, mode);
@@ -144,7 +180,7 @@ export class BundleProvider extends VFS.ZipProvider {
     // it on first use. `false` means this is not a member with a recorded
     // digest (a directory, or nothing at all) and the base provider should
     // answer — including with the ENOENT/EISDIR it would normally raise.
-    #check(name) {
+    #check(name: string): boolean {
         if (this.#verified.existsSync(`/${name}`)) return true;
         const recorded = this.#digests.get(name);
         if (recorded === undefined) return false;
@@ -161,7 +197,7 @@ export class BundleProvider extends VFS.ZipProvider {
         return true;
     }
 
-    #keep(name, content, mode) {
+    #keep(name: string, content: Buffer, mode: number): void {
         const dir = PATH.posix.dirname(`/${name}`);
         if (dir !== '/' && dir !== '.') this.#verified.mkdirSync(dir, { recursive: true });
         this.#verified.writeFileSync(`/${name}`, content, { mode: mode || 0o444 });
@@ -170,16 +206,14 @@ export class BundleProvider extends VFS.ZipProvider {
 
 // Whether this provider should back `resolvedPath` (already known to be a
 // file): by name for the extensions it owns, and by content for anything
-// carrying our signature marker. The second test is what keeps a renamed
-// archive from falling through to the built-in ZIP provider, which would mount
-// it without checking anything.
-function claims(resolvedPath, opts) {
+// carrying our signature marker.
+function claims(resolvedPath: string, opts: Settings): boolean {
     const lower = resolvedPath.toLowerCase();
     if (opts.extensions.some((ext) => lower.endsWith(ext))) return true;
     return opts.claimSigned && signatureOf(resolvedPath) !== null;
 }
 
-function refusal(path, res) {
+function refusal(path: string, res: VerificationResult): Error {
     const detail = res.subject ? `${res.reason} [${res.subject.replace(/\n/g, ', ')}]` : res.reason;
     return Object.assign(new Error(`bundle: refusing to mount '${path}': ${res.state} — ${detail}`),
         { code: 'ERR_BUNDLE_UNTRUSTED', state: res.state });
@@ -187,7 +221,7 @@ function refusal(path, res) {
 
 // VFS paths are normalized to `/`-rooted POSIX paths; ZIP member names
 // have no leading slash.
-function normalize(path) {
+function normalize(path: string): string {
     return path.startsWith('/') ? path.slice(1) : path;
 }
 
@@ -195,41 +229,42 @@ function normalize(path) {
 // answer. Anything else goes to the base provider, which refuses it (EROFS)
 // because this provider is read-only. Mirrors how `node:fs` itself reads flags:
 // a string means what it says, a number is a bitmask, anything else is 'r'.
-function reads(flags) {
+function reads(flags: string | number | undefined): boolean {
     if (typeof flags === 'string') return flags === 'r';
     if (typeof flags !== 'number') return true;
     return (flags & READ_FLAGS) === 0;
 }
 
-const kSettings = Symbol('bundle.settings');
+const kSettings: unique symbol = Symbol('bundle.settings');
 
-function settings(options = {}) {
-    if (options?.[kSettings]) return options;
+function settings(options: ProviderOptions | Settings = {}): Settings {
+    if ((options as Settings)[kSettings]) return options as Settings;
+    const opts = options as ProviderOptions;
     return {
         [kSettings]: true,
-        name: options.name ?? 'bundle',
-        extensions: (options.extensions ?? [EXTENSION]).map((ext) => ext.toLowerCase()),
-        claimSigned: options.claimSigned ?? true,
-        extraRoots: pems(options.roots ?? envList('BUNDLE_ROOTS')),
-        allowUntrusted: options.allowUntrusted ?? envFlag('BUNDLE_ALLOW_UNTRUSTED'),
-        deep: options.deep ?? false,
-        identity: options.identity ?? (process.env.BUNDLE_IDENTITY || undefined),
-        issuer: options.issuer ?? (process.env.BUNDLE_ISSUER || undefined),
-        trustedRoot: options.trustedRoot ?? (process.env.BUNDLE_SIGSTORE_ROOT || undefined),
+        name: opts.name ?? 'bundle',
+        extensions: (opts.extensions ?? [EXTENSION]).map((ext) => ext.toLowerCase()),
+        claimSigned: opts.claimSigned ?? true,
+        extraRoots: pems(opts.roots ?? envList('BUNDLE_ROOTS')),
+        allowUntrusted: opts.allowUntrusted ?? envFlag('BUNDLE_ALLOW_UNTRUSTED'),
+        deep: opts.deep ?? false,
+        identity: opts.identity ?? (process.env['BUNDLE_IDENTITY'] || undefined),
+        issuer: opts.issuer ?? (process.env['BUNDLE_ISSUER'] || undefined),
+        trustedRoot: opts.trustedRoot ?? (process.env['BUNDLE_SIGSTORE_ROOT'] || undefined),
     };
 }
 
 // Accepts roots as PEM text or as paths to PEM files, so a caller can pass
 // either and `BUNDLE_ROOTS` can name files.
-function pems(roots) {
-    return (roots ?? []).map((root) => root.includes('-----BEGIN') ? root : FS.readFileSync(root, 'utf-8'));
+function pems(roots: string[] | undefined): string[] {
+    return (roots ?? []).map((root) => (root.includes('-----BEGIN') ? root : FS.readFileSync(root, 'utf-8')));
 }
 
-function envList(name) {
+function envList(name: string): string[] {
     return (process.env[name] ?? '').split(PATH.delimiter).filter(Boolean);
 }
 
-function envFlag(name) {
+function envFlag(name: string): boolean {
     const value = process.env[name];
     return value !== undefined && value !== '' && value !== '0' && value !== 'false';
 }

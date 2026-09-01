@@ -37,65 +37,100 @@ export const DEFAULT_ISSUER = 'https://oauth2.sigstore.dev/auth';
 export const DEFAULT_CLIENT_ID = 'sigstore';
 const DEFAULT_SCOPE = 'openid email';
 
+/** How an identity token was obtained. */
+export type IdentityFlow = 'supplied' | 'ci' | 'browser' | 'device';
+
+/** What the caller may ask for; 'auto' picks by looking at the environment. */
+export type RequestedFlow = 'auto' | 'ci' | 'browser' | 'device';
+
+export interface IdentityTokenOptions {
+    /** A token supplied by the caller; returned as-is. */
+    token?: string | undefined;
+    /** OIDC issuer base URL (default: sigstore's Dex). */
+    issuer?: string | undefined;
+    /** OAuth client id (default: 'sigstore'). */
+    clientID?: string | undefined;
+    /** Dex connector to jump straight to (default: 'github'). */
+    connector?: string | undefined;
+    flow?: RequestedFlow | undefined;
+    /** Audience to request for the CI token (default: 'sigstore'). */
+    audience?: string | undefined;
+    log?: ((line: string) => void) | undefined;
+}
+
+export interface IdentityTokenResult {
+    token: string;
+    flow: IdentityFlow;
+}
+
 // Dex identifies a connector by the upstream issuer's URL, not by a short name,
 // and rejects the request outright if handed something it does not recognise.
 // These are the three sigstore's instance offers; the short names are a
 // convenience this module translates, so `--connector github` works and an
 // unrecognised value is still passed through verbatim for another deployment.
-const CONNECTORS = {
+const CONNECTORS: Record<string, string> = {
     github: 'https://github.com/login/oauth',
     google: 'https://accounts.google.com',
     microsoft: 'https://login.microsoftonline.com',
 };
 
-// Resolve a connector name to what Dex expects. An empty value means "do not
-// preselect", which lands the user on the provider chooser.
-export function connectorId(name) {
+/**
+ * Resolve a connector name to what Dex expects. An empty value means "do not
+ * preselect", which lands the user on the provider chooser.
+ */
+export function connectorId(name: string | undefined): string | undefined {
     if (!name || name === 'none') return undefined;
     return CONNECTORS[name.toLowerCase()] ?? name;
 }
 
-// The audience Fulcio expects to find in the token it is handed.
+/** The audience Fulcio expects to find in the token it is handed. */
 export const FULCIO_AUDIENCE = 'sigstore';
 
-// Obtain an identity token.
-//
-// options.token      - a token supplied by the caller; returned as-is
-// options.issuer     - OIDC issuer base URL (default: sigstore's Dex)
-// options.clientID   - OAuth client id (default: 'sigstore')
-// options.connector  - Dex connector to jump straight to (default: 'github')
-// options.flow       - 'auto' | 'ci' | 'browser' | 'device' (default: 'auto')
-// options.audience   - audience to request for the CI token (default: 'sigstore')
-// options.log        - where progress is reported (default: process.stderr)
-export async function identityToken(options = {}) {
+/** Obtain an identity token, by whichever route fits where this is running. */
+export async function identityToken(options: IdentityTokenOptions = {}): Promise<IdentityTokenResult> {
     const opts = {
         issuer: options.issuer ?? DEFAULT_ISSUER,
         clientID: options.clientID ?? DEFAULT_CLIENT_ID,
         connector: connectorId(options.connector ?? 'github'),
         audience: options.audience ?? FULCIO_AUDIENCE,
-        log: options.log ?? ((line) => process.stderr.write(`${line}\n`)),
+        log: options.log ?? ((line: string) => { process.stderr.write(`${line}\n`); }),
     };
     const flow = options.flow ?? 'auto';
 
     if (options.token) return { token: options.token, flow: 'supplied' };
 
     if (flow === 'ci' || (flow === 'auto' && inCI())) {
-        const token = await ciToken(opts.audience);
-        return { token, flow: 'ci' };
+        if (!inCI()) throw new Error('no CI OIDC token endpoint in the environment');
+        return { token: await ciToken(opts.audience), flow: 'ci' };
     }
-    if (flow === 'ci') throw new Error('no CI OIDC token endpoint in the environment');
 
-    const chosen = flow === 'auto' ? (canOpenBrowser() ? 'browser' : 'device') : flow;
+    const chosen: 'browser' | 'device' = flow === 'auto' ? (canOpenBrowser() ? 'browser' : 'device') : flow;
     const config = await discover(opts.issuer);
     const token = chosen === 'device' ? await deviceFlow(config, opts) : await browserFlow(config, opts);
     return { token, flow: chosen };
 }
 
-// Whether an ambient CI identity is available. Only GitHub's shape is
-// implemented, since that is what the `--connector github` path mirrors, but
-// this is the hook other providers would land on.
-export function inCI() {
-    return Boolean(process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
+/**
+ * Whether an ambient CI identity is available. Only GitHub's shape is
+ * implemented, since that is what the `--connector github` path mirrors, but
+ * this is the hook other providers would land on.
+ */
+export function inCI(): boolean {
+    return Boolean(process.env['ACTIONS_ID_TOKEN_REQUEST_URL'] && process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']);
+}
+
+interface OIDCConfig {
+    authorization_endpoint: string;
+    token_endpoint: string;
+    device_authorization_endpoint?: string;
+}
+
+interface ResolvedOptions {
+    issuer: string;
+    clientID: string;
+    connector: string | undefined;
+    audience: string;
+    log: (line: string) => void;
 }
 
 // GitHub Actions' OIDC endpoint. The workflow must ask for it:
@@ -104,31 +139,31 @@ export function inCI() {
 //     id-token: write
 //
 // Without that the variables are simply absent, which is what `inCI()` reads.
-async function ciToken(audience) {
-    const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+async function ciToken(audience: string): Promise<string> {
+    const url = new URL(process.env['ACTIONS_ID_TOKEN_REQUEST_URL']!);
     url.searchParams.set('audience', audience);
     const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+        headers: { Authorization: `Bearer ${process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}` },
     });
     if (!res.ok) throw new Error(`CI OIDC token request failed: ${res.status} ${res.statusText}`);
-    const body = await res.json();
+    const body = await res.json() as { value?: string };
     if (!body.value) throw new Error('CI OIDC token response carried no token');
     return body.value;
 }
 
 // The OIDC discovery document, so endpoints are read from the issuer rather
 // than hard-coded next to it.
-async function discover(issuer) {
+async function discover(issuer: string): Promise<OIDCConfig> {
     const url = `${issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`OIDC discovery failed for ${issuer}: ${res.status} ${res.statusText}`);
-    return res.json();
+    return await res.json() as OIDCConfig;
 }
 
 // Authorization code + PKCE against a loopback redirect. The server is bound
 // to 127.0.0.1 on an ephemeral port and lives exactly as long as the one
 // request it is waiting for.
-async function browserFlow(config, opts) {
+async function browserFlow(config: OIDCConfig, opts: ResolvedOptions): Promise<string> {
     const verifier = base64url(CRYPTO.randomBytes(32));
     const challenge = base64url(CRYPTO.createHash('sha256').update(verifier).digest());
     const state = base64url(CRYPTO.randomBytes(16));
@@ -170,7 +205,7 @@ async function browserFlow(config, opts) {
 // Resolves with the `code` from the single callback request, or rejects with
 // whatever the provider reported instead. `state` is checked before the code is
 // accepted, so a request that did not originate from this flow is rejected.
-function awaitCode(server, state) {
+function awaitCode(server: HTTP.Server, state: string): Promise<string> {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             reject(new Error('timed out waiting for the browser sign-in to complete'));
@@ -178,7 +213,7 @@ function awaitCode(server, state) {
         timer.unref?.();
 
         server.on('request', (req, res) => {
-            const url = new URL(req.url, 'http://localhost');
+            const url = new URL(req.url ?? '/', 'http://localhost');
             if (url.pathname !== '/auth/callback') return respond(res, 404, 'Not found.');
             clearTimeout(timer);
 
@@ -210,7 +245,7 @@ function awaitCode(server, state) {
 // PKCE is required here as well as on the browser flow — Dex rejects a device
 // request without it — even though the device flow's own security does not
 // depend on it.
-async function deviceFlow(config, opts) {
+async function deviceFlow(config: OIDCConfig, opts: ResolvedOptions): Promise<string> {
     const endpoint = config.device_authorization_endpoint
         ?? `${opts.issuer.replace(/\/+$/, '')}/device/code`;
     const verifier = base64url(CRYPTO.randomBytes(32));
@@ -230,7 +265,10 @@ async function deviceFlow(config, opts) {
         const detail = await res.text().catch(() => '');
         throw new Error(`device authorization failed: ${res.status} ${detail || res.statusText}`);
     }
-    const grant = await res.json();
+    const grant = await res.json() as {
+        device_code: string; user_code?: string; verification_uri?: string;
+        verification_uri_complete?: string; expires_in?: number; interval?: number;
+    };
 
     opts.log(`  open ${grant.verification_uri_complete ?? grant.verification_uri}`);
     if (grant.user_code) opts.log(`  and enter the code: ${grant.user_code}`);
@@ -250,8 +288,9 @@ async function deviceFlow(config, opts) {
         } catch (err) {
             // These two are the flow working as designed: still waiting for the
             // user, or told to back off. Anything else is a real failure.
-            if (err.oauthError === 'authorization_pending') continue;
-            if (err.oauthError === 'slow_down') { interval += 5000; continue; }
+            const oauthError = (err as { oauthError?: string }).oauthError;
+            if (oauthError === 'authorization_pending') continue;
+            if (oauthError === 'slow_down') { interval += 5000; continue; }
             throw err;
         }
     }
@@ -260,13 +299,13 @@ async function deviceFlow(config, opts) {
 // Token endpoint exchange, shared by both interactive flows. Dex treats
 // `sigstore` as a public client, so the empty client_secret is what it expects
 // rather than an omission.
-async function exchange(config, params) {
+async function exchange(config: OIDCConfig, params: Record<string, string>): Promise<string> {
     const res = await fetch(config.token_endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ client_secret: '', ...params }).toString(),
     });
-    const body = await res.json().catch(() => ({}));
+    const body = await res.json().catch(() => ({})) as { id_token?: string; error?: string; error_description?: string };
     if (!res.ok) {
         throw Object.assign(new Error(`token exchange failed: ${body.error_description || body.error || res.statusText}`),
             { oauthError: body.error });
@@ -275,13 +314,17 @@ async function exchange(config, params) {
     return body.id_token;
 }
 
-function listen() {
+function listen(): Promise<{ server: HTTP.Server; port: number }> {
     const server = HTTP.createServer();
     server.listen(0, '127.0.0.1');
-    return once(server, 'listening').then(() => ({ server, port: server.address().port }));
+    return once(server, 'listening').then(() => {
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('loopback server did not bind a port');
+        return { server, port: address.port };
+    });
 }
 
-function respond(res, status, message) {
+function respond(res: HTTP.ServerResponse, status: number, message: string): void {
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(`${message}\n`);
 }
@@ -289,36 +332,36 @@ function respond(res, status, message) {
 // Whether launching a browser is plausible. A headless Linux box has no
 // DISPLAY, and an SSH session should not try to open one on the far end — in
 // both cases the device flow is the honest answer.
-function canOpenBrowser() {
-    if (process.env.BUNDLE_NO_BROWSER) return false;
-    if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return false;
+function canOpenBrowser(): boolean {
+    if (process.env['BUNDLE_NO_BROWSER']) return false;
+    if (process.env['SSH_CONNECTION'] || process.env['SSH_TTY']) return false;
     if (process.platform === 'darwin' || process.platform === 'win32') return true;
-    return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+    return Boolean(process.env['DISPLAY'] || process.env['WAYLAND_DISPLAY']);
 }
 
 // Best effort: if this fails the URL has already been printed, and the flow
 // still completes when the user opens it themselves.
-function openBrowser(url) {
+function openBrowser(url: string): void {
     const [cmd, ...args] = process.platform === 'darwin' ? ['open', url]
         : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url]
         : ['xdg-open', url];
     try {
-        spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+        spawn(cmd!, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
     } catch {
         // ignored — the URL is on screen
     }
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-function base64url(buf) {
+function base64url(buf: Buffer): string {
     return buf.toString('base64url');
 }
 
 // A connector URL, said the way a person would.
-function label(connector) {
+function label(connector: string | undefined): string {
     if (!connector) return '';
     const name = Object.keys(CONNECTORS).find((key) => CONNECTORS[key] === connector);
     return name ? `${name} ` : '';

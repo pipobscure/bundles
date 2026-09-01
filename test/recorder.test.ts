@@ -1,26 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
-import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import * as VFS from 'node:vfs';
-import { Manifest, recording, register } from '../lib/recorder.js';
+import { Manifest, recording, register } from '../src/recorder.ts';
+import { scratch } from './helpers.ts';
 
 // The recording provider that replaces the `--vfs-manifest` flag. These mount a
-// VFS directly rather than going through `--vfs-mount`, so they exercise the
-// provider itself without depending on which startup flags the running node
-// has — see the note in the README about the hook a directory mount needs
-// before node will select this provider on its own.
+// VFS directly rather than going through `--vfs-mount`, because node consults
+// registered providers for a mounted *file* and mounts a directory with its own
+// `RealFSProvider` without asking — so a directory mount cannot be influenced
+// from a preload, and the mount has to be made here.
 
-const FILES = {
-    'index.js': "export const main = true;\n",
+const FILES: Record<string, string> = {
+    'index.js': 'export const main = true;\n',
     'data.txt': 'payload\n',
     'unused.js': 'export const nope = true;\n',
     'sub/nested.txt': 'nested\n',
 };
 
-function fixture() {
-    const dir = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-record-'));
+const tmp = scratch('recorder');
+test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
+
+let counter = 0;
+function fixture(): string {
+    const dir = PATH.join(tmp, `fixture-${counter++}`);
     for (const [name, content] of Object.entries(FILES)) {
         const file = PATH.join(dir, name);
         FS.mkdirSync(PATH.dirname(file), { recursive: true });
@@ -29,16 +33,12 @@ function fixture() {
     return dir;
 }
 
-// Mounts `dir` behind a recording RealFSProvider, runs `body` to completion,
-// and returns the recorded lines. `body` is awaited before the unmount: a
-// stream opens on a later tick, and a VFS that is no longer mounted resolves
-// paths against the real filesystem instead.
-//
-// `mount()` chooses the mount point rather than taking one, and returns it, so
-// `body` is handed that path: reads have to go through the mount to be seen by
-// the provider, and `dir` itself is just where the provider gets its bytes.
-async function record(dir, body, options) {
-    const out = PATH.join(dir, '..', `${PATH.basename(dir)}.manifest`);
+// Mounts `dir` behind a recording RealFSProvider, runs `body` to completion, and
+// returns the recorded lines. `body` is awaited before the unmount: a stream
+// opens on a later tick, and a VFS that is no longer mounted resolves paths
+// against the real filesystem instead.
+async function record(dir: string, body: (mount: string) => unknown, options: { truncate?: boolean } = {}) {
+    const out = `${dir}.manifest`;
     const manifest = new Manifest(out, { truncate: true, ...options });
     const Recording = recording(VFS.RealFSProvider, manifest);
     const vfs = VFS.create(new Recording(dir), { emitExperimentalWarning: false });
@@ -78,12 +78,20 @@ test('a file read repeatedly is recorded once', async () => {
 
 test('a streamed read is recorded too', async () => {
     const dir = fixture();
-    const lines = await record(dir, (mount) => new Promise((resolve, reject) => {
+    const lines = await record(dir, (mount) => new Promise<void>((resolve, reject) => {
         FS.createReadStream(PATH.join(mount, 'data.txt'))
             .on('data', () => {})
             .on('error', reject)
-            .on('end', resolve);
+            .on('end', () => resolve());
     }));
+    assert.deepEqual(lines, ['data.txt']);
+});
+
+test('an async read is recorded too', async () => {
+    const dir = fixture();
+    const lines = await record(dir, async (mount) => {
+        await FS.promises.readFile(PATH.join(mount, 'data.txt'));
+    });
     assert.deepEqual(lines, ['data.txt']);
 });
 
@@ -108,13 +116,30 @@ test('a manifest starts fresh, or appends when told to', () => {
     assert.deepEqual(FS.readFileSync(out, 'utf-8').split('\n').filter(Boolean), ['fresh.js']);
 });
 
+test('a manifest reports what it has seen without re-reading the file', () => {
+    const dir = fixture();
+    const manifest = new Manifest(PATH.join(dir, 'seen.txt'), { truncate: true });
+    manifest.record('/a.js');
+    manifest.record('/a.js');
+    manifest.record('/b.js');
+    assert.deepEqual(manifest.paths, ['a.js', 'b.js']);
+});
+
+test('recording never breaks the read it is bookkeeping for', () => {
+    const dir = fixture();
+    // A destination that cannot be written to must not turn a good read into a
+    // failure — the file list is a build artefact, not the program's business.
+    const manifest = new Manifest(PATH.join(dir, 'sub'), { truncate: false });
+    assert.doesNotThrow(() => manifest.record('/index.js'));
+});
+
 test('recording is skipped entirely when no destination is configured', () => {
-    const previous = process.env.BUNDLE_MANIFEST;
-    delete process.env.BUNDLE_MANIFEST;
+    const previous = process.env['BUNDLE_MANIFEST'];
+    delete process.env['BUNDLE_MANIFEST'];
     try {
         assert.equal(register(), null);
     } finally {
-        if (previous !== undefined) process.env.BUNDLE_MANIFEST = previous;
+        if (previous !== undefined) process.env['BUNDLE_MANIFEST'] = previous;
     }
 });
 

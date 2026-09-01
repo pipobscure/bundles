@@ -2,7 +2,7 @@ import * as ZLIB from 'node:zlib';
 import * as CRYPTO from 'node:crypto';
 import * as TLS from 'node:tls';
 import * as FS from 'node:fs';
-import * as SIGSTORE from './sigstore.js';
+import * as SIGSTORE from './sigstore.ts';
 
 // The signature is staged so a verifier can gate cheaply before doing more:
 //
@@ -18,7 +18,7 @@ import * as SIGSTORE from './sigstore.js';
 //
 //   * Per-member integrity — every member also carries the hex digest of its
 //     own content in its ZIP entry comment, the same guarantee applied one file
-//     at a time. This is what `provider.js` re-checks on each member fetch, so
+//     at a time. This is what `provider.ts` re-checks on each member fetch, so
 //     content handed to a running program is verified as it is read and not
 //     merely at the moment the archive was mounted.
 //
@@ -59,28 +59,105 @@ export const AUTHORITY = 'AUTHORITY.PEM';
 const SIG_EOCD = 0x06054b50;
 const CHUNK = 1 << 20;
 
+/** What a verification concluded, in increasing order of confidence. */
+export type VerificationState = 'unsigned' | 'invalid' | 'valid-untrusted' | 'valid';
+
+/** The archive-side surface of `AUTHORITY.PEM`. */
+export interface ManifestFields {
+    /** Format version, absent when the member was not a manifest at all. */
+    version?: string | undefined;
+    /** Digest used for the whole-file hash and for member digests. */
+    hashAlg: string;
+    /** Digest the signature over the whole-file hash uses; absent when unsigned. */
+    signAlg?: string | undefined;
+    /** The certificate chain, leaf first; empty when unsigned. */
+    chain: CRYPTO.X509Certificate[];
+}
+
+/** A parsed `SIGNED:<hash>:<sig>[:<NAME>=<value>]*` marker. */
+export interface SignatureMarker {
+    hash: string;
+    sig: string;
+    /** The trailing unsigned attributes, keyed by upper-case name. */
+    fields: Map<string, string>;
+}
+
+export interface VerificationResult {
+    state: VerificationState;
+    reason: string;
+    /** Subject of the leaf certificate, when the archive named one. */
+    subject?: string | undefined;
+    /** True for anything but `unsigned` — the archive claimed a signature. */
+    signed: boolean;
+    /** True only for `valid`. */
+    trusted: boolean;
+    hashAlg?: string | undefined;
+    /** Member name -> recorded hex digest, from the archive that was hashed. */
+    digests?: Map<string, string> | undefined;
+    /** True when the archive was signed through sigstore. */
+    sigstore?: boolean | undefined;
+    /** The sigstore signing identity (a SAN), once established. */
+    identity?: string | undefined;
+    /** The sigstore OIDC issuer, once established. */
+    issuer?: string | undefined;
+    /** When the signature was witnessed, per the transparency log. */
+    signedAt?: Date | undefined;
+}
+
+export interface VerifyOptions {
+    /** Additional trusted PEM roots, besides system + NODE_EXTRA_CA_CERTS. */
+    extraRoots?: string[] | undefined;
+    /**
+     * Reference time for certificate validity (default: now). Ignored on the
+     * sigstore path, which derives the signing time from the archive's own log
+     * entry instead.
+     */
+    now?: number | undefined;
+    /**
+     * Also recompute every member's content digest (default: true). With
+     * `false` only the presence of the digests is checked; the whole-file hash
+     * already covers the members' bytes, so this is the right trade for a mount
+     * that re-checks each member as it is actually read.
+     */
+    deep?: boolean | undefined;
+    /**
+     * An already-open archive over `source` to read entries from. When given it
+     * is left open for the caller; otherwise one is opened and closed here.
+     */
+    archive?: ZLIB.ZipFile | ZLIB.ZipBuffer | undefined;
+    /**
+     * Path to a sigstore trust root, for sigstore-signed archives
+     * (default: BUNDLE_SIGSTORE_ROOT, else the TUF cache, else the seed).
+     */
+    trustedRoot?: string | undefined;
+    /** Require this sigstore signing identity (SAN). */
+    identity?: string | undefined;
+    /** Require this sigstore OIDC issuer. */
+    issuer?: string | undefined;
+}
+
+/** An archive to be built or verified: a path on disk, or the bytes themselves. */
+export type ArchiveSource = string | Buffer;
+
 // Build the manifest content from the algorithms and (when signing) the
-// certificate chain. Returns a Buffer.
-//
-//   buildManifest({ hashAlg, signAlg, chain })
-//     hashAlg - digest for the whole-file hash and member digests (default 'sha256')
-//     signAlg - digest the signature over that hash uses; omit for an unsigned
-//               manifest
-//     chain   - full PEM certificate chain, leaf first; omit for unsigned
-export function buildManifest({ hashAlg = 'sha256', signAlg, chain } = {}) {
+// certificate chain.
+export function buildManifest({ hashAlg = 'sha256', signAlg, chain }: {
+    hashAlg?: string | undefined;
+    signAlg?: string | undefined;
+    chain?: string | undefined;
+} = {}): Buffer {
     let body = `!${MAGIC} ${VERSION}\n!hash ${hashAlg}\n`;
-    const signing = Boolean(signAlg && chain);
-    if (signing) body += `!sign ${signAlg}\n\n` + String(chain).replace(/\s*$/, '') + '\n';
+    if (signAlg && chain) body += `!sign ${signAlg}\n\n` + String(chain).replace(/\s*$/, '') + '\n';
     return Buffer.from(body, 'utf-8');
 }
 
 // Split manifest bytes into { version, hashAlg, signAlg, chain }.
-export function parseManifest(content) {
+export function parseManifest(content: Buffer | string): ManifestFields {
     const text = Buffer.isBuffer(content) ? content.toString('utf-8') : String(content);
     const split = text.indexOf('\n\n');
     const head = split >= 0 ? text.slice(0, split) : text;
     const pem = split >= 0 ? text.slice(split + 2) : '';
-    const directives = {};
+    const directives: Record<string, string> = {};
     for (const line of head.split('\n')) {
         if (!line || line[0] !== '!') continue;
         const sp = line.indexOf(' ');
@@ -88,68 +165,65 @@ export function parseManifest(content) {
         else directives[line.slice(1, sp)] = line.slice(sp + 1);
     }
     const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [];
-    const chain = blocks.map((block) => new CRYPTO.X509Certificate(block));
     return {
         version: directives[MAGIC],
-        hashAlg: directives.hash || 'sha256',
-        signAlg: directives.sign,
-        chain,
+        hashAlg: directives['hash'] || 'sha256',
+        signAlg: directives['sign'],
+        chain: blocks.map((block) => new CRYPTO.X509Certificate(block)),
     };
 }
 
-// Verify an archive. `source` is a filesystem path (opened read-only and read
-// in chunks) or a Buffer of the whole file. Returns
-// { state, reason, subject, signed, trusted, hashAlg, digests } where state is
-// one of:
-//   'unsigned'        - no manifest, or a manifest without a signature
-//   'invalid'         - signature fails, or a member's digest is missing/wrong
-//   'valid-untrusted' - signature + digests sound, chain not in the trust store
-//   'valid'           - signature + digests sound and the chain is trusted
-//
-// `digests` is the member-name -> hex-digest map read from the entry comments
-// of the very archive that was just hashed. A caller that goes on to serve
-// those members (see provider.js) should keep this map rather than re-reading
-// the comments later, so what it checks content against is what the signature
-// covered.
-//
-// opts.extraRoots  - additional trusted PEM roots (besides system + NODE_EXTRA_CA_CERTS)
-// opts.now         - reference time for certificate validity (default: now).
-//                    Ignored on the sigstore path, which derives the signing
-//                    time from the archive's own log entry instead.
-// opts.deep        - also recompute every member's content digest (default: true).
-//                    With `false` only the presence of the digests is checked;
-//                    the whole-file hash already covers the members' bytes, so
-//                    this is the right trade for a mount that re-checks each
-//                    member as it is actually read.
-// opts.archive     - an already-open ZipFile/ZipBuffer over `source` to read
-//                    entries from. When given it is left open for the caller;
-//                    otherwise one is opened and closed internally.
-// opts.trustedRoot - path to a sigstore trust root, for sigstore-signed
-//                    archives (default: BUNDLE_SIGSTORE_ROOT, else the TUF cache)
-// opts.identity    - require this sigstore signing identity (SAN); optional
-// opts.issuer      - require this sigstore OIDC issuer; optional
-export function verifySync(source, { extraRoots, now = Date.now(), deep = true, archive, trustedRoot, identity, issuer } = {}) {
+/**
+ * Verify an archive. `source` is a filesystem path (opened read-only and read
+ * in chunks) or a Buffer of the whole file.
+ *
+ * `digests` on the result is the member-name -> hex-digest map read from the
+ * entry comments of the very archive that was just hashed. A caller that goes
+ * on to serve those members (see provider.ts) should keep this map rather than
+ * re-reading the comments later, so what it checks content against is what the
+ * signature covered.
+ */
+export function verifySync(source: ArchiveSource, options: VerifyOptions = {}): VerificationResult {
     const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
-    const zf = archive ?? io.open();
+    const opened = options.archive ?? io.open();
+    const reader = readerFor(opened);
     try {
-        return inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer });
+        return inspect(reader, io, options);
     } finally {
-        if (!archive && typeof zf.closeSync === 'function') zf.closeSync();
+        if (!options.archive) reader.close();
     }
 }
 
-// Promise-returning wrapper around `verifySync`, kept for callers that treat
-// verification as an asynchronous step. Hashing is CPU-bound either way, so the
-// work still runs to completion synchronously.
-export async function verify(source, opts) {
-    return verifySync(source, opts);
+/**
+ * Promise-returning wrapper around `verifySync`, for callers that treat
+ * verification as an asynchronous step. Hashing is CPU-bound either way, so the
+ * work still runs to completion synchronously.
+ */
+export async function verify(source: ArchiveSource, options?: VerifyOptions): Promise<VerificationResult> {
+    return verifySync(source, options);
+}
+
+// A reader over either archive flavour. `ZipFile` and `ZipBuffer` expose the
+// same information under different names — `entriesSync()` against `entries()`,
+// `getSync()` against `get()` — and only one of them can be closed.
+interface ArchiveReader {
+    entries(): Iterable<[string, ZLIB.ZipEntry]>;
+    close(): void;
+}
+
+function readerFor(archive: ZLIB.ZipFile | ZLIB.ZipBuffer): ArchiveReader {
+    if (archive instanceof ZLIB.ZipBuffer) {
+        return { entries: () => archive.entries(), close: () => {} };
+    }
+    return { entries: () => archive.entriesSync(), close: () => archive.closeSync() };
 }
 
 // The staged check itself. Split out so `verifySync` owns only the lifetime of
-// the ZipFile it may have opened.
-function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer }) {
-    const present = new Map();
-    for (const [name, entry] of zf.entriesSync()) present.set(name, entry);
+// the archive it may have opened.
+function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): VerificationResult {
+    const { extraRoots, now = Date.now(), deep = true, trustedRoot, identity, issuer } = options;
+    const present = new Map<string, ZLIB.ZipEntry>();
+    for (const [name, entry] of reader.entries()) present.set(name, entry);
 
     const authority = present.get(AUTHORITY);
     if (!authority) return result('unsigned', 'no manifest entry');
@@ -167,7 +241,7 @@ function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer 
 
     // 1. Integrity (the cheap pre-mount gate): recompute the whole-file hash
     //    and confirm it matches the hash recorded in the comment. No certs yet.
-    let digest;
+    let digest: string | null;
     try {
         const hash = CRYPTO.createHash(hashAlg);
         io.feed(hash, regionEnd);
@@ -179,9 +253,10 @@ function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer 
 
     // 2. Authenticity: the recorded hash must be signed by the leaf certificate.
     //    Because the signature is over the hash, this needs no re-read of the file.
+    const leaf = chain[0]!;
     let signatureOk = false;
     try {
-        signatureOk = CRYPTO.verify(signAlg, Buffer.from(marker.hash, 'hex'), chain[0].publicKey, Buffer.from(marker.sig, 'hex'));
+        signatureOk = CRYPTO.verify(signAlg, Buffer.from(marker.hash, 'hex'), leaf.publicKey, Buffer.from(marker.sig, 'hex'));
     } catch {
         signatureOk = false;
     }
@@ -191,14 +266,14 @@ function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer 
     //    content, and — when `deep` — that digest must match what the member
     //    actually decompresses to. (The whole-file hash already fixes every
     //    member; this checks each file on its own terms, as a member fetch will.)
-    const digests = new Map();
+    const digests = new Map<string, string>();
     for (const [name, entry] of present) {
         if (name === AUTHORITY || entry.isDirectory) continue;
         const recorded = entry.comment || '';
         if (!/^[0-9a-f]+$/i.test(recorded)) return result('invalid', `member carries no digest: ${name}`, chain, { hashAlg });
         digests.set(name, recorded.toLowerCase());
         if (!deep) continue;
-        let memberDigest;
+        let memberDigest: string;
         try {
             memberDigest = CRYPTO.createHash(hashAlg).update(entry.contentSync()).digest('hex');
         } catch {
@@ -213,6 +288,18 @@ function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer 
     const sigstoreField = marker.fields.get(SIGSTORE.FIELD);
     if (sigstoreField) {
         return sigstoreTrust(sigstoreField, marker, chain, { hashAlg, digests, trustedRoot, identity, issuer });
+    }
+
+    // A demanded identity is a demand about *who signed this*, and only the
+    // sigstore path can answer it. An archive signed against an ordinary CA
+    // carries no such claim, so the policy cannot be satisfied — and reporting
+    // it as trusted anyway would turn `--identity` into a no-op exactly where
+    // it is being relied on. Untrusted rather than invalid: the signature is
+    // genuine, it just is not the one that was asked for.
+    if (identity || issuer) {
+        return result('valid-untrusted',
+            'a sigstore identity was required but this archive is not sigstore-signed',
+            chain, { hashAlg, digests });
     }
 
     const roots = trustRoots(extraRoots);
@@ -230,9 +317,20 @@ function inspect(zf, io, { extraRoots, now, deep, trustedRoot, identity, issuer 
 // evidence needed to ask whether it was in date *when the signature was made*,
 // and `@sigstore/verify` is what checks that end to end: certificate to the
 // Fulcio root, SCT, log inclusion, timestamps, and the signature itself.
-function sigstoreTrust(encoded, marker, chain, { hashAlg, digests, trustedRoot, identity, issuer }) {
+function sigstoreTrust(
+    encoded: string,
+    marker: SignatureMarker,
+    chain: CRYPTO.X509Certificate[],
+    { hashAlg, digests, trustedRoot, identity, issuer }: {
+        hashAlg: string;
+        digests: Map<string, string>;
+        trustedRoot?: string | undefined;
+        identity?: string | undefined;
+        issuer?: string | undefined;
+    },
+): VerificationResult {
     const extra = { hashAlg, digests, sigstore: true };
-    const undecided = (reason) => result('valid-untrusted', reason, chain, extra);
+    const undecided = (reason: string) => result('valid-untrusted', reason, chain, extra);
 
     // Not being able to check is not the same answer as checking and finding it
     // forged, so a missing library or trust root degrades rather than fails.
@@ -252,11 +350,11 @@ function sigstoreTrust(encoded, marker, chain, { hashAlg, digests, trustedRoot, 
     // identity could be pinned to an archive whose extractable manifest claims
     // a different signer — the signature would check out and the inspectable
     // file would be a lie.
-    let cert;
+    let cert: CRYPTO.X509Certificate | null;
     try {
         cert = SIGSTORE.bundleCertificate(encoded);
     } catch (err) {
-        return result('invalid', `sigstore bundle could not be read: ${err.message}`, chain, extra);
+        return result('invalid', `sigstore bundle could not be read: ${message(err)}`, chain, extra);
     }
     if (!cert) return result('invalid', 'sigstore bundle carries no certificate', chain, extra);
     if (!chain[0] || cert.fingerprint256 !== chain[0].fingerprint256) {
@@ -271,31 +369,40 @@ function sigstoreTrust(encoded, marker, chain, { hashAlg, digests, trustedRoot, 
     } catch (err) {
         // A policy failure means the signature is genuine and the signer is
         // simply not the one that was demanded — untrusted, not tampered.
-        if (err.name === 'PolicyError') return undecided(`sigstore identity does not match the required policy: ${err.message}`);
-        return result('invalid', `sigstore verification failed: ${err.message}`, chain, extra);
+        if (err instanceof Error && err.name === 'PolicyError') {
+            return undecided(`sigstore identity does not match the required policy: ${err.message}`);
+        }
+        return result('invalid', `sigstore verification failed: ${message(err)}`, chain, extra);
     }
 }
 
-// Parse an EOCD comment of the form
-// `SIGNED:<hash-hex>:<signature-hex>[:<NAME>=<value>]*` into
-// { hash, sig, fields }, or null when the archive is unsigned (no such marker).
-// `fields` is a Map of the trailing unsigned attributes; values never contain a
-// `:`, which is what keeps splitting on it unambiguous (base64 does not use one).
-export function parseSignature(comment) {
+/**
+ * Parse an EOCD comment of the form
+ * `SIGNED:<hash-hex>:<signature-hex>[:<NAME>=<value>]*`, or null when the
+ * archive is unsigned (no such marker). Field values never contain a `:`, which
+ * is what keeps splitting on it unambiguous (base64 does not use one).
+ */
+export function parseSignature(comment: string): SignatureMarker | null {
     const m = /^SIGNED:([0-9a-f]+):([0-9a-f]+)((?::[A-Za-z0-9_]+=[^:]*)*)$/.exec(String(comment).trim());
     if (!m) return null;
-    const fields = new Map();
-    for (const part of m[3].split(':')) {
+    const fields = new Map<string, string>();
+    for (const part of m[3]!.split(':')) {
         if (!part) continue;
         const eq = part.indexOf('=');
         fields.set(part.slice(0, eq).toUpperCase(), part.slice(eq + 1));
     }
-    return { hash: m[1].toLowerCase(), sig: m[2].toLowerCase(), fields };
+    return { hash: m[1]!.toLowerCase(), sig: m[2]!.toLowerCase(), fields };
 }
 
-// The inverse: render a marker for the EOCD comment. Field order is fixed by
-// insertion, and a field whose value is empty or absent is left out entirely.
-export function formatSignature({ hash, sig, fields }) {
+/**
+ * The inverse: render a marker for the EOCD comment. Field order is fixed by
+ * insertion, and a field whose value is empty or absent is left out entirely.
+ */
+export function formatSignature({ hash, sig, fields }: {
+    hash: string;
+    sig: string;
+    fields?: Record<string, string | undefined | null> | undefined;
+}): string {
     const parts = [`SIGNED:${hash}:${sig}`];
     for (const [name, value] of Object.entries(fields ?? {})) {
         if (value === undefined || value === null || value === '') continue;
@@ -306,11 +413,13 @@ export function formatSignature({ hash, sig, fields }) {
     return parts.join(':');
 }
 
-// The signature marker carried by `source` (a path or Buffer), or null when it
-// carries none — including when it is not a ZIP at all. Reads only the tail of
-// the file, so it is cheap enough to use as a "does this claim to be one of
-// ours?" test before committing to a full verification.
-export function signatureOf(source) {
+/**
+ * The signature marker carried by `source`, or null when it carries none —
+ * including when it is not a ZIP at all. Reads only the tail of the file, so it
+ * is cheap enough to use as a "does this claim to be one of ours?" test before
+ * committing to a full verification.
+ */
+export function signatureOf(source: ArchiveSource): SignatureMarker | null {
     try {
         const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
         return parseSignature(locateEocd(io.tail(), io.size).comment.toString('ascii'));
@@ -319,9 +428,17 @@ export function signatureOf(source) {
     }
 }
 
-// A path-backed source: statable size, a tail read for the EOCD, a chunked
-// hash feed for the signed region, and a ZipFile opener.
-function pathSource(path) {
+// Where the bytes come from, abstracted over "a path" and "a Buffer": a
+// statable size, a tail read for the EOCD, a chunked hash feed for the signed
+// region, and an archive opener.
+interface Source {
+    size: number;
+    tail(): Buffer;
+    feed(sink: CRYPTO.Hash, end: number): void;
+    open(): ZLIB.ZipFile | ZLIB.ZipBuffer;
+}
+
+function pathSource(path: string): Source {
     const size = FS.statSync(path).size;
     return {
         size,
@@ -351,8 +468,7 @@ function pathSource(path) {
     };
 }
 
-// A Buffer-backed source: the whole file is already in memory.
-function bufferSource(buf) {
+function bufferSource(buf: Buffer): Source {
     return {
         size: buf.length,
         tail: () => buf.subarray(Math.max(0, buf.length - (22 + 0xffff))),
@@ -364,9 +480,9 @@ function bufferSource(buf) {
 // Find the end-of-central-directory record in `tail` (the last bytes of a file
 // of total length `size`) and return { start, comment } with `start` absolute.
 // The EOCD must be the last structure in the file, so its comment runs to EOF.
-function locateEocd(tail, size) {
+function locateEocd(tail: Buffer, size: number): { start: number; comment: Buffer } {
     const floor = Math.max(0, tail.length - (22 + 0xffff));
-    const scan = (exact) => {
+    const scan = (exact: boolean) => {
         for (let pos = tail.length - 22; pos >= floor; pos--) {
             if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
             const end = pos + 22 + tail.readUInt16LE(pos + 20);
@@ -382,7 +498,7 @@ function locateEocd(tail, size) {
     return { start: size - tail.length + pos, comment: tail.subarray(pos + 22, pos + 22 + clen) };
 }
 
-function openArchive(path) {
+function openArchive(path: string): ZLIB.ZipFile {
     try {
         return ZLIB.ZipFile.openSync(path);
     } catch (err) {
@@ -401,7 +517,12 @@ function openArchive(path) {
     }
 }
 
-function result(state, reason, chain, extra) {
+function result(
+    state: VerificationState,
+    reason: string,
+    chain?: CRYPTO.X509Certificate[],
+    extra?: Partial<VerificationResult>,
+): VerificationResult {
     return {
         state,
         reason,
@@ -412,12 +533,12 @@ function result(state, reason, chain, extra) {
     };
 }
 
-function trustRoots(extra) {
+function trustRoots(extra: string[] | undefined): CRYPTO.X509Certificate[] {
     const pems = [...cas('system'), ...cas('extra'), ...(extra || [])];
     return pems.map((pem) => new CRYPTO.X509Certificate(pem));
 }
 
-function cas(type) {
+function cas(type: 'system' | 'extra'): string[] {
     try {
         return TLS.getCACertificates(type) || [];
     } catch {
@@ -425,22 +546,28 @@ function cas(type) {
     }
 }
 
-function within(cert, now) {
+function within(cert: CRYPTO.X509Certificate, now: number): boolean {
     return Date.parse(cert.validFrom) <= now && now <= Date.parse(cert.validTo);
 }
 
 // Path validation: every link in the supplied chain must be issuer-signed and
 // in-date, and the top of the chain must be, or be issued by, a trusted root.
-function anchored(chain, roots, now) {
+function anchored(chain: CRYPTO.X509Certificate[], roots: CRYPTO.X509Certificate[], now: number): boolean {
     for (const cert of chain) if (!within(cert, now)) return false;
     for (let i = 0; i < chain.length - 1; i++) {
-        if (!chain[i].checkIssued(chain[i + 1])) return false;
-        if (!chain[i].verify(chain[i + 1].publicKey)) return false;
+        if (!chain[i]!.checkIssued(chain[i + 1]!)) return false;
+        if (!chain[i]!.verify(chain[i + 1]!.publicKey)) return false;
     }
     const top = chain[chain.length - 1];
+    if (!top) return false;
     for (const root of roots) {
         if (top.fingerprint256 === root.fingerprint256) return true;
         if (top.checkIssued(root) && top.verify(root.publicKey) && within(root, now)) return true;
     }
     return false;
+}
+
+/** An error's message, for errors that arrive as `unknown`. */
+export function message(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
 }

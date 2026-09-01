@@ -1,0 +1,38 @@
+{
+  // The sources are written in erasable syntax only, so `node src/main.ts` runs them
+  // directly through node's type stripping — which is what lets the test suite import the
+  // sources rather than the build, and lets a preload be `-r ./src/register.ts`.
+  // `allowImportingTsExtensions` + `rewriteRelativeImportExtensions` is the pair that makes
+  // that work: the source says `./manifest.ts`, the emit says `./manifest.js`.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "moduleDetection": "force",
+    "rootDir": "src",
+    "outDir": "dist",
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": false,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"]
+}

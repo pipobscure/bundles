@@ -1,10 +1,6 @@
-app
-app.manifest
-app.run
-app.sea
-node-base
-app.bundle
-app.signed.bundle
 node_modules/
-.claude/
+dist/
+build/
+*.tsbuildinfo
 package-lock.json
+.claude/
