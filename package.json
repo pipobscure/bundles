@@ -43,6 +43,7 @@
     "dist/",
     "src/",
     "skills/",
+    "bundle.bundle",
     "shell-base",
     "README.md",
     "docs/"
@@ -54,7 +55,14 @@
     "build": "tsc && chmod +x dist/main.js dist/bin.js",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "npm run build && npm run typecheck && node --no-warnings --experimental-vfs --test test/*.test.ts",
-    "trust": "node --no-warnings dist/main.js trust"
+    "manifest:cli": "node --no-warnings --experimental-vfs tools/manifest.ts",
+    "pack:cli": "node --no-warnings dist/main.js create --base . --files build/cli.manifest --output build/cli.bundle",
+    "sign:cli": "node --no-warnings dist/main.js sign --output bundle.bundle build/cli.bundle",
+    "sign:cli:local": "node --no-warnings dist/main.js sign --key certs/leaf.key --chain certs/chain.pem --output bundle.bundle build/cli.bundle",
+    "verify:cli": "node --no-warnings dist/main.js verify bundle.bundle",
+    "release:cli": "npm run build && npm run manifest:cli && npm run pack:cli",
+    "trust": "node --no-warnings dist/main.js trust",
+    "prepublishOnly": "node --no-warnings --experimental-vfs tools/prepublish.ts"
   },
   "dependencies": {
     "@sigstore/bundle": "^3.1.0",
