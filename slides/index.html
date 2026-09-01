@@ -860,9 +860,10 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
     </div>
     <div class="stack">
       <div class="cmd sm"><span class="c"># 3. what did we just make?</span>
-<span class="p">$</span> head -c 90 app.run
-<span class="y">#!/usr/bin/env -S node --no-warnings \
-   --experimental-vfs --vfs-load --vfs-mount</span>
+<span class="p">$</span> head -c 89 app.run
+<span class="y">#!/bin/sh
+exec node --experimental-vfs \
+  --vfs-load --vfs-mount "$0" -- "$@"</span>
 
 <span class="p">$</span> ls -l app.run
 <span class="o">-rwxr-xr-x  21006  app.run</span></div>
@@ -975,48 +976,106 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <h2>Provenance says <i>who</i>.<br>Now ask <i>what</i>.</h2>
   <div class="cols n" style="margin-top:24px">
     <figure>
-      <svg viewBox="0 0 470 236" role="img" aria-label="A pipeline: verify, extract, then review the extracted tree for malicious code">
+      <svg viewBox="0 0 470 236" role="img" aria-label="The four steps of building a bundle: observe, create, audit, sign — with the audit gating the signature">
         <defs><marker id="ar3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
           <path d="M0 0 L7 3.5 L0 7 z" fill="#5C6B87"/></marker></defs>
-        <rect x="0" y="6" width="470" height="42" rx="5" fill="#151D2B" stroke="#26334C"/>
-        <text x="16" y="24" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">1 · VERIFY</text>
-        <text x="16" y="40" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">check the signature and the identity — stop if it doesn't hold</text>
-        <line x1="235" y1="52" x2="235" y2="64" stroke="#5C6B87" marker-end="url(#ar3)"/>
-        <rect x="0" y="70" width="470" height="42" rx="5" fill="#151D2B" stroke="#26334C"/>
-        <text x="16" y="88" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">2 · EXTRACT</text>
-        <text x="16" y="104" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">unzip to a scratch dir — a closed, finite set of files</text>
-        <line x1="235" y1="116" x2="235" y2="128" stroke="#5C6B87" marker-end="url(#ar3)"/>
-        <rect x="0" y="134" width="470" height="96" rx="5" fill="rgba(240,169,59,.08)" stroke="#8C6220"/>
-        <text x="16" y="152" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">3 · REVIEW EVERY FILE</text>
-        <text x="16" y="170" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">install hooks · obfuscated or minified payloads</text>
-        <text x="16" y="186" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">outbound network in odd places · env and credential reads</text>
-        <text x="16" y="202" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">child_process · eval · CI tokens · cloud metadata</text>
-        <text x="16" y="222" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10.5">→ a report over a fixed set of bytes</text>
+
+        <rect x="0" y="2" width="470" height="34" rx="5" fill="#151D2B" stroke="#26334C"/>
+        <text x="16" y="17" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">1 · OBSERVE</text>
+        <text x="16" y="30" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="10">run it; write down every file it reads</text>
+        <line x1="235" y1="38" x2="235" y2="46" stroke="#5C6B87" marker-end="url(#ar3)"/>
+
+        <rect x="0" y="50" width="470" height="34" rx="5" fill="#151D2B" stroke="#26334C"/>
+        <text x="16" y="65" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">2 · CREATE</text>
+        <text x="16" y="78" fill="#5C6B87" font-family="JetBrains Mono, monospace" font-size="10">archive exactly that &mdash; unsigned</text>
+        <line x1="235" y1="86" x2="235" y2="94" stroke="#5C6B87" marker-end="url(#ar3)"/>
+
+        <rect x="0" y="98" width="470" height="80" rx="5" fill="rgba(240,169,59,.08)" stroke="#8C6220"/>
+        <text x="16" y="114" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11">3 · AUDIT &mdash; read every member</text>
+        <text x="16" y="131" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">load-time hooks · encoded payloads · odd network</text>
+        <text x="16" y="147" fill="#B6C2D6" font-family="JetBrains Mono, monospace" font-size="10.5">env and credential reads · CI tokens · eval</text>
+        <text x="16" y="169" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="10.5">→ a verdict, pinned to the archive's sha256</text>
+        <line x1="235" y1="180" x2="235" y2="190" stroke="#8C6220" marker-end="url(#ar3)"/>
+
+        <rect x="0" y="194" width="470" height="40" rx="5" fill="rgba(79,191,139,.07)" stroke="#2C5F46"/>
+        <text x="16" y="210" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="11">4 · SIGN</text>
+        <text x="16" y="226" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10.5">refuses without a clean verdict over these bytes</text>
       </svg>
     </figure>
     <div class="stack">
       <p class="lead" style="max-width:32ch">A bundle is a <b style="color:var(--ink)">closed set</b>. Nothing resolves
         later; nothing is fetched at install. That is the shape a review can actually be complete over.</p>
-      <p class="sub" style="font-size:17.5px;max-width:40ch">So: a Claude Code skill that verifies, extracts, and audits
-        every file that will run &mdash; hunting the patterns from slide
-        <span class="mono" style="color:var(--accent)">0x02</span>.</p>
+      <p class="sub" style="font-size:17.5px;max-width:40ch">So the review is a step, not an afterthought &mdash; and it
+        sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
+        <i>you</i> stand behind.</p>
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npm run sign:cli
+<span class="r">error</span>: build/cli.bundle has not been audited</div>
       <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:15px 19px">
-        <p style="font-size:15.5px;line-height:1.5"><b style="color:var(--ok)">Status:</b> built &mdash;
-          <span class="mono">/audit-bundle app.run</span>. Verify and extract are the existing CLI;
-          the skill is the review on top, plus a diff mode against the last archive you approved.</p>
+        <p style="font-size:15.5px;line-height:1.5">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
+          so rebuilding invalidates it. Otherwise the gate approves any later build on the strength of one earlier
+          approval &mdash; which is every &ldquo;review completed&rdquo; checkbox ever.</p>
       </div>
     </div>
   </div>
-  <div class="kicker"><span class="mono">verify → extract → audit</span><span>11</span></div>
+  <div class="kicker"><span class="mono">observe → create → audit → sign</span><span>11</span></div>
   <div class="notes" hidden>
-    <p><b>The skill exists</b> (<em>skills/audit-bundle/</em>), so this is a live demo rather than a promise. Plant something findable first — see below. If you are running long, describe it in one sentence instead and move on; the argument does not depend on the demo landing.</p>
+    <p><b>The skill exists</b> (<em>skills/audit-bundle/</em>) and the gate is real (<em>tools/audit.ts&nbsp;--check</em>), so this is a live demo rather than a promise. Plant something findable first — see below. If you are running long, show the refusal and skip the review itself; the refusal is the point.</p>
     <p class="say">"Every attack on the timeline earlier was legitimately signed by a legitimately compromised account. Provenance would have told you it came from the real maintainer — and been completely useless. You need both halves."</p>
-    <p><b>The strong framing:</b> this is why the trust layer being <i>optional and pluggable</i> matters. Signature checking is one policy. "Extract it and read it" is another. "Diff it against the last version you approved" is a third. Same hole, different things plugged into it.</p>
+    <p><b>The move to make here</b> is that this used to be the last demo — a thing you <i>could</i> do to an archive somebody sent you. It is now step three of four, because the same argument applies pointing inward: if you would not run someone else's bundle without reading it, don't sign your own without reading it either. Same skill, same checklist, run at both ends.</p>
+    <p><b>The strong framing:</b> this is why the trust layer being <i>optional and pluggable</i> matters. Signature checking is one policy. "Extract it and read it" is another. "Diff it against the last release" is a third. Same hole, different things plugged into it.</p>
+    <p><b>On the diff:</b> in the release pipeline the baseline is the currently published bundle, verified before use — because a diff makes everything the baseline already contained read as "unchanged" and therefore go unread. Worth one sentence if someone asks why not just review the source tree: what ships is the archive, and whether the <i>set</i> is right isn't visible until the bundle exists.</p>
     <p>If demoing live: plant something obvious in the tree (an env read plus an outbound POST) so there's something to find.</p>
   </div>
 </section>
 
 <!-- ═══ 12 ═══ -->
+<section class="slide" data-act="III · the optional layer" data-t="70">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Demo 06</div>
+  <h2>The tool ships as<br>a bundle of itself.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># package.json — the whole bin entry</span>
+<span class="o">"bin": { "bundle":</span> <span class="y">"./bundle.run"</span> <span class="o">}</span>
+
+<span class="c"># so npm links the artifact itself</span>
+<span class="p">$</span> ls -l node_modules/.bin/bundle
+<span class="o">bundle -&gt; ../@pipobscure/bundle/</span><span class="y">bundle.run</span>
+
+<span class="p">$</span> head -c 89 node_modules/.bin/bundle
+<span class="y">#!/bin/sh
+exec node … --vfs-mount "$0" -- "$@"</span></div>
+      <p class="sub" style="font-size:16px;max-width:44ch">No wrapper script. 677 members, sigstore included &mdash;
+        the dependency tree stops being something you fetch and becomes a fixed set
+        <span class="mono" style="color:var(--accent)">/audit-bundle</span> can read in full.</p>
+    </div>
+    <div class="stack">
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+        <p style="font-size:18px;line-height:1.48;color:var(--ink)">If the model doesn't hold for
+          <b style="color:var(--accent)">this</b> tool, it doesn't hold for anything. So it doesn't get an exemption.</p>
+      </div>
+      <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># version N verifies version N+1</span>
+<span class="p">$</span> bundle verify \
+    <span class="y">--identity</span> <span class="o">'…/release.yml@refs/heads/main'</span> \
+    <span class="y">--issuer</span>   <span class="o">'token.actions.githubusercontent.com'</span> \
+    bundle.run</div>
+      <p class="sub" style="font-size:16px;max-width:44ch">Pinned to the release <b style="color:var(--ink)">workflow</b>,
+        not to me. Running it doesn't check it &mdash; a <span class="mono">#!</span> carries no preload. Checking is
+        a separate act, with a copy you already trust.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">no lock file. there is no install.</span><span></span></div>
+  <div class="notes" hidden>
+    <p><b>This is the dog-food slide, and as of this build it is true rather than aspirational.</b> It used to be a prepared Q&amp;A answer that ended "it isn't built yet". It is built: <em>npm run manifest:cli</em> → <em>pack:cli</em> → audit → <em>sign:cli</em>, and the published package carries the result.</p>
+    <p class="say">"Everything I've asked you to do to somebody else's artifact, this tool does to itself. It arrives as one signed file. The command you run is a launcher that verifies that file, mounts it, and re-hashes every member as it reads it. There is no install step to compromise, because there is no install step."</p>
+    <p><b>If someone asks about the lock file</b> — and they will — the answer is on the kicker. A lock file pins the bytes of a tree that is still fetched and executed at install time. A signed bundle removes the step rather than pinning it. "The same bytes" stops being a claim about versions and becomes literally the same bytes. The lock file stays useful for contributors reproducing a build; that's a different question.</p>
+    <p><b>There is no launcher, and that is the interesting bit.</b> An earlier version put a small JS shim in front that verified the archive before mounting it. It got deleted: the shim was unsigned code installed <i>beside</i> the thing it vouched for, so anyone who could swap the archive could swap the shim — it detected corruption, not an adversary — and it put an opaque step in front of the one file you want people reading. <em>bin</em> now points straight at the artifact.</p>
+    <p><b>Say the honest half out loud:</b> running it does not verify it. Checking is a separate act with a copy you already trust — <em>bundle verify bundle.run</em>, or <em>bundle run bundle.run</em> to execute it through the verifying mount. Same opt-in story as slide <span class="mono">0x10</span>, applied to the tool itself.</p>
+    <p><b>Cut this slide first</b> if you are running long. It is the most satisfying beat in Act III and the least load-bearing — the argument survives without it.</p>
+  </div>
+</section>
+
+<!-- ═══ 13 ═══ -->
 <section class="slide" data-act="IV · close" data-t="65">
   <div class="gutter"><span class="off">0x12</span><span class="act">IV · close</span></div>
   <div class="eyebrow">Status</div>
@@ -1036,10 +1095,13 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
       <tr><td><b>Signing, verifying, recording</b><br><span style="font-size:14.5px;color:var(--muted)">the optional layer &mdash; and deliberately so</span></td>
         <td><span class="tag acc">userland</span></td><td class="mono" style="font-size:14px">@pipobscure/bundle</td></tr>
+      <tr><td><b>SEA assets behind a VFS mount</b><br><span style="font-size:14.5px;color:var(--muted)">what makes a self-verifying executable tidy</span></td>
+        <td><span class="tag warn">proposed</span></td><td>Matteo Collina</td></tr>
     </tbody>
   </table></div>
-  <p class="sub" style="margin-top:20px;font-size:18px;color:var(--ink-dim);max-width:78ch">
-    Still behind <code style="color:var(--accent)">--experimental-vfs</code>. Flags and names can move before it settles.</p>
+  <p class="sub" style="margin-top:16px;font-size:18px;color:var(--ink-dim);max-width:78ch">
+    Still behind <code style="color:var(--accent)">--experimental-vfs</code>. Flags and names can move before it settles.
+    The userland half is a TypeScript ESM package: four entry points &mdash; record, register, the API, and the SEA driver.</p>
   <div class="kicker"><span class="mono">mechanism landed. policy is yours.</span><span></span></div>
   <div class="notes" hidden>
     <p><b>⚠ Check every row the week of the talk.</b> As of Aug 2026 the bottom two Node rows were still in flight — the Zip VFS provider expected within ~2 weeks, the mount/load flags within ~4–6 weeks. If either slipped, change that row rather than glossing it; the credibility you built in Act I is worth more than a tidy table.</p>
@@ -1048,7 +1110,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 13 ═══ -->
+<!-- ═══ 14 ═══ -->
 <section class="slide" data-act="IV · close" data-t="55">
   <div class="gutter"><span class="off">0x13</span><span class="act">IV · close</span></div>
   <div class="eyebrow">Before anyone else says it</div>
@@ -1081,7 +1143,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 14 ═══ -->
+<!-- ═══ 15 ═══ -->
 <section class="slide" data-act="IV · close" data-t="45">
   <div class="gutter"><span class="off">0x14</span><span class="act">IV · close</span></div>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
@@ -1114,7 +1176,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 15 ═══ -->
+<!-- ═══ 16 ═══ -->
 <section class="slide" data-act="IV · close" data-t="120">
   <div class="gutter"><span class="off">0x15</span><span class="act">IV · close</span></div>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center;align-items:flex-start">
@@ -1136,10 +1198,10 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
       <li><b>"Isn't this just a .jar?"</b> Same shape, deliberately. Differences: jar signs a manifest of per-entry digests, so entries can be added after signing and the archive structure isn't covered — this hashes the whole file including the central directory. And the JVM verifies jars; here nothing verifies unless you ask it to.</li>
       <li><b>"Why not containers?"</b> Different granularity. A container ships an OS to run one CLI. This is one file on the machine you're already on — and inspectable with <em>unzip</em> on a locked-down laptop.</li>
       <li><b>"npm has provenance attestations now."</b> Yes, and they're good, and they're a neighbouring problem: provenance for packages you're about to install. This is the artifact you already built. Sigstore is the common substrate; they compose.</li>
-      <li><b>"How do I get the tool, and why would I trust <i>it</i>?"</b> The intended answer is that it ships as a signed bundle of itself — one file, verified by the copy you already have, pinned to the release workflow's identity rather than to me. Version N verifies version N+1. Be straight that it isn't built yet, and that the first copy is trust-on-first-use however you dress it up — the mitigation being that it's TOFU over an artifact you can read completely, which is the whole argument. It also dog-foods every claim in the talk: if the model doesn't hold for this tool, it doesn't hold for anything. <em>docs/design-notes.md</em> §3.</li>
+      <li><b>"How do I get the tool, and why would I trust <i>it</i>?"</b> Covered on <span class="mono">0x12</span> — point back at it rather than re-explaining. It ships as a signed bundle of itself, verified by the copy you already have, pinned to the release workflow's identity rather than to mine. The two honest caveats: the first copy is trust-on-first-use however you dress it up (mitigated by it being TOFU over an artifact you can read completely), and the launcher verifying the signed CLI with the unsigned code beside it is circular — it catches a substituted archive, not a compromised install. <em>HISTORY.md</em>, implementation notes §3.</li>
       <li><b>"Reproducible builds?"</b> Orthogonal and worth having. This says the bytes are signed by a known identity; it doesn't say those bytes correspond to that source.</li>
-      <li><b>"Sigstore certs only live ten minutes — how does verification work later?"</b> Good question, and it's the next thing to fix in the tool. The signature has to be checked against the certificate's validity <i>at signing time</i>, which means the archive must carry a trustworthy signing timestamp — a Rekor entry or an RFC 3161 token — rather than a self-asserted date. Say it's an open implementation detail; it doesn't touch the argument of the talk.</li>
-      <li><b>"What about no Node on the target?"</b> There's a path where the same archive rides on a self-contained binary. Genuinely a different talk — one sentence, move on.</li>
+      <li><b>"Sigstore certs only live ten minutes — how does verification work later?"</b> Solved, and worth a sentence because it is a nice bit of design. The signature is checked against the certificate's validity <i>at signing time</i>, so the archive carries the evidence of when that was: a full sigstore bundle — Rekor entry and RFC 3161 timestamps — in the EOCD comment beside the signature. It has to live outside the hash, because it is produced <i>after</i> the signature exists; that is the same placement RFC 3161 gives timestamp tokens in CMS unsignedAttrs.</li>
+      <li><b>"What about no Node on the target?"</b> The same archive rides on a Node SEA — <em>bundle sea</em> — and that one <i>does</i> verify itself before running, because the container carries its own bootstrap rather than relying on a preload the kernel won't give it. ~155 MB, which is the honest floor for zero-dependency distribution. One sentence unless they push; it is a different talk.</li>
       <li><b>"Windows?"</b> Be straight: the shebang route is POSIX. Mounting a plain archive is the portable answer. <b>Check the current state before you present</b> rather than guessing on stage.</li>
     </ul>
   </div>
@@ -1149,7 +1211,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
 
 <div id="bar"></div>
 <div id="hud">
-  <span id="pos">01 / 23</span><span class="sep"></span>
+  <span id="pos"></span><span class="sep"></span>
   <span id="clock" title="press T to start/pause">0:00</span><span class="sep"></span>
   <button id="bN" type="button" title="speaker notes (S)">notes</button>
   <button id="bO" type="button" title="overview (O)">grid</button>
@@ -1172,8 +1234,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </dl>
   <p style="margin:18px 0 0;font-size:13.5px;color:var(--muted);line-height:1.5">
     The timer turns <b style="color:var(--bad)">red</b> when you are behind the planned pace for the current slide and
-    <b style="color:var(--ok)">green</b> when you are ahead. Planned runtime is about 26 minutes, leaving room for
-    two questions.</p>
+    <b style="color:var(--ok)">green</b> when you are ahead. Planned runtime is about 28 minutes; see the deck README for the cut order.</p>
 </div></div>
 
 <script>
