@@ -4,13 +4,23 @@ Design that was decided-enough to write down before it was built. This file is k
 the reasoning, which is worth more than the diff; where an implementation departed from
 its plan, that is recorded inline.
 
+For using the tool see [README.md](../README.md); for the long-form argument about Node
+packaging and supply chains that all of this sits inside, see [HISTORY.md](../HISTORY.md).
+
 - **§1 signing-time attestation** — built. The marker grammar is extensible, and the
   evidence rides in a `SIGSTORE=` field carrying a full sigstore bundle (transparency-log
-  entry *and* RFC 3161 token) rather than a bare TSA token. See `lib/sigstore.js` and
-  the "Signing with sigstore" section of the README.
+  entry *and* RFC 3161 token) rather than a bare TSA token. See `src/sigstore.ts` and
+  the "Signing with sigstore" section of HISTORY.md.
 - **§2 the audit skill** — built, as `skills/audit-bundle/`.
-- **§3 shipping the tool as a bundle of itself** — **not built.** The distribution model
-  the whole thing is arguing for, applied to itself.
+- **§3 shipping the tool as a bundle of itself** — built. The published package carries its
+  own CLI as one signed archive and the `bundle` command is a launcher for it; the sigstore
+  dependencies became members, as this section said they had to.
+- **§4 the self-validating single executable** — built, as `src/sea.ts` and `bundle sea`.
+  The VFS mount that drives a SEA, applied to the archive appended to it.
+- **§5 the audit as a build step** — built, as `tools/audit.ts`, `tools/baseline.ts` and
+  `.github/workflows/release.yml.disabled`. The review moves from something you do to an
+  archive you received to something that happens between `create` and `sign` — and it is
+  read as a diff against the release that is already published.
 
 ---
 
@@ -223,8 +233,8 @@ Output is a per-file report over a fixed, finite set of bytes.
 
 ## 3. Shipping the tool as a bundle of itself
 
-> **Not built.** This is the intended end state, recorded now because it is what the rest
-> of the design is for.
+> **Built.** What follows is the reasoning; see the note at the end of this section for
+> where the implementation differs.
 
 ### The claim
 
@@ -232,7 +242,7 @@ Output is a per-file report over a fixed, finite set of bytes.
 everyone else to distribute: **one signed file**, verifiable by a copy of `bundle` you
 already have, and auditable as a closed set before you run it.
 
-That makes the tool its own best demonstration. Every property the README claims — a file
+That makes the tool its own best demonstration. Every property this project claims — a file
 list discovered by observation, a whole-file signature, a mount that refuses what does not
 verify, a closed set an audit can be complete over — is exercised by the way the tool
 itself arrives on your machine. If the model does not hold up for `bundle`, it does not
@@ -328,3 +338,275 @@ section is what fixes.
   library, and it should be explicit that the npm package is the *library* and the signed
   bundle is the *tool*, rather than pretending the registry copy does not exist.
 
+### What was actually built
+
+The chain-of-custody argument survived intact. Three things landed differently, all of them
+about the *npm* copy rather than about the model.
+
+- **npm publication continues, and carries the signed bundle inside it.** The open question
+  resolved into "both, in one package": the registry copy is the library (an `exports` map
+  of ESM entry points, typed), and beside it sits `bundle.bundle` — the CLI as one signed
+  archive, 679 members including the whole sigstore dependency tree. The `bundle` command
+  npm installs is a launcher (`src/bin.ts`) that verifies that archive and mounts it through
+  the verifying provider, so `npx @pipobscure/bundle` runs the signed artifact, not the loose
+  files. That keeps the model honest without pretending the registry does not exist.
+- **The member list is computed, not observed.** The section assumed the manifest run would
+  simply cover `node_modules` once the mount did. It does not, and the reason is the thing
+  worth recording: `sigstore.ts` requires `@sigstore/verify` only when it meets an archive
+  carrying a `SIGSTORE=` field, so an observation run that signs with a local key never
+  loads it — and the resulting bundle could not check a sigstore signature it later met.
+  Observation cannot see a path it did not take. So `src/files.ts` computes the dependency
+  closure through `node_modules`, and the observation run is kept as the *check* on it:
+  anything read that the closure missed stops the build. Both mechanisms, each doing what it
+  is good at.
+- **Unanchored is not a refusal, for the launcher specifically.** A sigstore-signed release
+  is `valid-untrusted` on a machine that has never run `bundle trust`, and refusing there
+  would make `npx` fail out of the box for a correct artifact. The launcher warns and
+  continues on `valid-untrusted`, refuses outright on `invalid` or `unsigned`, and takes
+  `BUNDLE_STRICT=1` to make the middle case fatal. (`trustedRootSync()` also falls back to
+  the trust root `@sigstore/tuf` ships as a seed, so the common case needs no network.)
+
+One thing the section did not anticipate: the identity policy had a hole. `--identity` and
+`BUNDLE_IDENTITY` were only consulted on the sigstore path, so an archive signed against an
+ordinary CA — which carries no identity claim at all — passed a policy demanding one. A
+machine configured to run *only* releases from a workflow would have mounted anything
+key-signed. It now reports `valid-untrusted`: the signature is genuine and simply is not the
+one demanded.
+
+The downgrade question is still open and still, deliberately, unanswered: a correctly signed
+old release stays valid forever, and whether to carry a version floor is a policy, which is
+the thing this project keeps insisting does not belong in the mechanism.
+
+---
+
+## 4. The self-validating single executable
+
+> **Built**, as `src/sea.ts` and `bundle sea`.
+
+### The claim
+
+Every shape this tool produces gates on something outside itself. A `.bundle` needs the
+verifying provider preloaded; a shebang launcher has no preload at all and hands straight
+off to the application. The SEA is the shape that can carry its own gate, because the
+container *is* the runtime — and the interesting property is that the gate can be inside
+what it gates.
+
+### The shape
+
+```
+[ node runtime | SEA blob: stub + verifier.bundle ] [ app.bundle ]
+  \____________________ the prefix, and part of ___/
+   \___________ the archive's signed region ______/
+```
+
+The application is an ordinary signed archive appended to a node binary — the same
+`sign --prefix` that produces a shebang launcher, pointed at a different prefix. The
+whole-file hash covers the prefix, so the runtime and the verifier inside it are signed by
+the same signature that covers the application. There is nothing to check the checker
+against because the checker is inside what is checked.
+
+### Why the verifier is a mount rather than an inlined copy
+
+The bootstrap runs before anything is mounted, so it cannot import the library the ordinary
+way. The previous `sea.js` solved that by copying `manifest.js` into itself — about 180 lines
+of duplicated verification logic, which promptly drifted: its marker regex was still the
+two-field form, so it read every sigstore-signed container as *unsigned*.
+
+The fix is to make the verifier reachable before the application is: this package's own
+files ride in the SEA blob as one `.bundle` asset, and a fifteen-line CommonJS stub mounts
+*that* with `node:vfs` and requires the real library out of it. Two mounts, in order: the
+verifier's from the blob, then the application's from the archive at the end of the file.
+Nothing is duplicated, and the verifier the container runs is the one the test suite tests.
+
+This is the userland form of [nodejs/node#65675](https://github.com/nodejs/node/pull/65675)
+(`"useVfs": true`), which puts a SEA's own assets behind a VFS mount and runs the main script
+from its root. That work is not merged and is in no released node — `--build-sea` accepts the
+key and ignores it — so it is done here by hand, with the difference that matters: the mount
+that runs the *application* is the signed archive appended to the file, not the blob. When
+`useVfs` lands, the generated stub is the only piece that changes.
+
+### What runs before the check
+
+The stub and the verifier execute before the signature has been verified, and that is worth
+being explicit about rather than glossing. It is where the trust has to start: both live
+inside the prefix, which is inside the hashed region, so tampering with either invalidates
+the signature over the application — and an attacker who could rewrite the executable's own
+runtime could equally rewrite a verifier that ran first. The application never runs until
+the check passes.
+
+The gain over the old arrangement is real, though: because the mount is the *verifying*
+provider rather than a plain `ZipProvider`, every member is re-hashed against its signed
+digest as it is first read, for the life of the process — the per-member guarantee the old
+`sea.js` explicitly could not offer.
+
+### Configuration, and where policy lives
+
+An executable run by its own name has no flags and no preload, so `createSeaBase()` bakes
+the bootstrap options into the generated stub — trusted roots, a required sigstore identity
+and issuer, whether an unanchored chain is acceptable. Leave them off and the same
+`BUNDLE_ROOTS` / `BUNDLE_IDENTITY` / `BUNDLE_ALLOW_UNTRUSTED` variables the mount honours
+apply, so one build can be decided about later. Both are legitimate; which one you want is
+whether the policy belongs to the publisher or to the deployment.
+
+### Open questions
+
+- **Cross-compilation.** `createSeaBase({ node })` takes the binary to embed, so building a
+  container for another platform is a matter of having that platform's node to hand. Whether
+  the tool should fetch one is a packaging decision it has so far declined to make.
+- **Size, again.** The verifier asset is about a megabyte inside a 155 MB runtime, so the
+  sigstore libraries are not what makes a SEA large. A verify-only verifier would save
+  little and cost a build variant; `sigstore: false` exists for anyone who disagrees.
+
+
+
+---
+
+## 5. The audit as a build step, and a gate that can act on it
+
+> **Built**, as `tools/audit.ts`, the verdict contract in `skills/audit-bundle/SKILL.md`,
+> and `.github/workflows/release.yml`.
+
+### The claim
+
+§2 built the audit as something you do to an archive somebody sent you. That is half of it.
+The other half is that a signature is a claim about bytes you stand behind, so the review
+belongs *before* the signature, not only after it:
+
+```
+observe → create → AUDIT → sign → … ship … → AUDIT → run
+```
+
+Both ends are the same review. Treating them as different tasks would be the mistake: if
+you would not run someone else's bundle without reading it, you should not sign your own
+without reading it either, and the standard is the one that survives being applied to
+yourself.
+
+### Why the ordering has to be create-then-audit, not audit-then-create
+
+The tempting alternative is to review the source tree and then bundle it. That reviews the
+wrong thing. What ships is the archive, and the archive's member list came from an
+observation run — so the interesting question is not "is this source good" but "is this
+*set* the right set, and does everything in it belong". A dependency that arrived through
+the closure, a file the observation pulled in that nobody expected, a member nothing
+references: none of those are visible until the bundle exists. So the archive is built
+first, unsigned, and the review is over the thing that will actually be signed.
+
+This also makes the failure cheap. An unsigned archive costs nothing to throw away, which
+is what makes this the right place to catch things — a finding here is "rebuild it", not
+"decide whether to accept a risk in something already published".
+
+### The gate
+
+An audit needs judgement, so no script performs it. What a script can do is refuse to let
+step 4 happen without one, and that requires the audit to leave behind something a build
+step can read. Hence the verdict file: `verdict: "pass" | "fail"`, the findings with
+severities, and — the load-bearing field — the **sha256 of the archive**.
+
+`tools/audit.ts --check` re-hashes the file and refuses a verdict that names different
+bytes. Without that pin the gate is theatre: it would approve any later build on the
+strength of one earlier approval, which is precisely the failure mode of every
+"security review completed" checkbox. Rebuilding invalidates the approval, and it should.
+
+`--approve` exists so a person who read the archive themselves is a first-class auditor; it
+writes the same file with `by: "human"`, so the gate treats both identically while the
+record still says which happened. `BUNDLE_SKIP_AUDIT=1` steps past the gate and says in as
+many words what that means. It is the publisher's own gate, not a runtime policy — the same
+reason `--identity` is something a verifier chooses rather than something the format
+imposes.
+
+### Reviewing the diff, not the archive
+
+Reviewing 679 members from scratch every release is expensive and, worse, is the same
+reading over the same unchanged dependency tree — the kind of review that decays into a
+rubber stamp precisely because nothing ever changes in most of it. What deserves attention
+is the difference: which members appeared, which vanished, and what changed inside the ones
+that stayed.
+
+So the baseline is the **currently published release**, fetched with `npm pack` (which
+downloads without installing or running anything, which is the property the whole project
+is about) and verified before it is used. That verification is not ceremony. A diff makes
+everything the baseline already contained read as "unchanged", and therefore go unread — so
+a baseline that cannot be placed makes the review lie by omission rather than merely being
+less useful. `tools/baseline.ts` refuses an `unsigned` or `invalid` baseline outright, and
+can be told to require the release workflow's own signing identity.
+
+This is the §3 chain of custody used for a second purpose. There, version *N* verifies
+version *N+1* to establish trust; here *N* is what *N+1* is read *against*. Same edge,
+different question.
+
+Two states the design has to admit rather than paper over. The first release has no
+baseline: `--allow-missing` says so and the audit reviews everything. And a diff inherits
+every earlier verdict — an unchanged member is exactly as trustworthy as the review that
+cleared it last time, which is worth stating in the report rather than leaving implied.
+
+### Running the review in CI
+
+`anthropics/claude-code-action@v1` runs Claude Code in *automation mode* when the workflow
+supplies a `prompt` rather than waiting for an `@claude` mention, and a prompt can be a
+skill invocation. So the release workflow installs the skill with the tool's own
+`bundle skill` command — into `.claude/skills/`, where the action looks — and invokes
+`/audit-bundle` over the freshly packed archive.
+
+The action reports into the workflow log; it does not hand the job a structured result. That
+is why the gate is a separate step reading a file rather than a condition on the action's
+output, and why the verdict contract lives in the skill rather than in the workflow. The
+verdict is uploaded as a run artifact `if: always()`, so a refused release leaves its
+reasoning behind rather than only a red X.
+
+Step 4 then signs through sigstore with the workflow's ambient OIDC identity, so the
+release is signed *as the workflow* — which is the identity §3 says a consumer should pin,
+and it closes the loop: the thing that was audited, the thing that was signed, and the
+thing whose identity you can check are all the same bytes. `npm publish --provenance` files
+its attestation from the same token, so the registry copy and the signed artifact inside it
+trace to one identity rather than two.
+
+### Pinning the actions
+
+Every action is pinned to a full commit SHA rather than a tag. A tag is a mutable pointer,
+and whoever can move `v1` can change what runs inside a job that holds an OIDC token able
+to sign releases and publish to npm. That is not a hypothetical class of attack here; it is
+the same class HISTORY.md's opening argument is about, and a workflow that publishes *this*
+project while being open to it would be self-refuting.
+
+The cost is real and worth naming: pinned SHAs do not pick up security fixes on their own,
+so they have to be updated deliberately, with the diff read. That is the trade, and it is
+the right one for a release pipeline specifically — less obviously so for ordinary CI.
+
+### Why it ships disabled
+
+None of this can run. `node:vfs`, the ZIP support in `node:zlib` and the `--vfs-mount`
+loader are unmerged, so there is no `node-version` GitHub Actions can install that would
+make the workflow pass, and shipping it live would produce a permanently red workflow and a
+repository that looks broken.
+
+It is kept anyway, at `.github/workflows/release.yml.disabled`: the file does not end in
+`.yml`, so GitHub never parses it, and the body is commented out on top of that. The header
+carries the one command that turns it back into a live workflow, and the result round-trips
+to valid YAML. The reasoning is the part worth keeping — this file *is* the argument, made
+concrete, and a design note that described a pipeline nobody could read would be worth
+less.
+
+### What this does not claim
+
+An LLM review is a reviewer, not a proof. It raises the cost of slipping something past a
+release and does not reduce it to zero, and a gate that implied otherwise would be worse
+than no gate — which is what the `severity` and `summary` fields are for: they leave a
+record of what was judged acceptable and by what reasoning, so a later reader can disagree
+with it.
+
+The gate also protects the publisher's pipeline only. A consumer who wants the same
+assurance runs the same skill over what they received. That is not a gap being papered
+over; it is the reason the skill is one review at two points rather than a build-only step.
+
+### Open questions
+
+- **Whether a `fail` should open an issue** rather than only failing the run. Probably yes,
+  and it is a workflow concern rather than a tool one.
+- **How far back a diff should reach.** The baseline is `@latest`, which is right for a
+  normal release and wrong after a release that was itself under-reviewed — the diff would
+  inherit that. A periodic full review, or diffing against the last *fully* reviewed
+  release rather than the last one, would close it. Both need a record of which releases
+  got which treatment, which the verdict file could carry but does not yet.
+- **Whether the gate belongs in `prepublishOnly` too.** Today it gates signing, which is
+  the step that makes the claim. Publishing an already-signed artifact is arguably a
+  separate decision, and arguably not.

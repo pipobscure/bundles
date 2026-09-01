@@ -838,7 +838,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <div class="cols" style="margin-top:24px">
     <div class="stack">
       <div class="cmd sm"><span class="c"># 1. what does this app ACTUALLY read?</span>
-<span class="p">$</span> npm run manifest
+<span class="p">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
+   -r bundle/record --vfs-load --vfs-mount ./app
 <span class="p">$</span> cat app.manifest
 <span class="o">package.json</span>
 <span class="o">app.js</span>
@@ -847,12 +848,14 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
         which writes down every file it opens.</p>
       <div class="cmd sm" style="margin-top:4px"><span class="c"># 2. archive it, then sign it behind a shebang</span>
-<span class="p">$</span> npm run create
+<span class="p">$</span> bundle create --base ./app \
+   -f app.manifest -o app.bundle
 <span class="o">+ app.js</span>
 <span class="o">+ package.json</span>  <span class="c">…</span>
 <span class="o">* unsigned archive (10 members)</span>
 
-<span class="p">$</span> npm run archive
+<span class="p">$</span> bundle sign --prefix shell-base \
+   -o app.run app.bundle
 <span class="g">* signed: 3c81bb2b0890…</span></div>
     </div>
     <div class="stack">
@@ -891,13 +894,13 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># signed via sigstore — identity, not a key file</span>
-<span class="p">$</span> npm run verify -- app.run
+<span class="p">$</span> bundle verify app.run
 <span class="g">VALID</span> — signature good, certificate trusted
   identity: <span class="o">github.com/pipobscure/…  (GitHub Actions)</span></div>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># flip exactly one byte, anywhere</span>
 <span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.run bs=1 seek=9000 \
       conv=notrunc
-<span class="p">$</span> npm run verify -- app.run
+<span class="p">$</span> bundle verify app.run
 <span class="r">INVALID</span> — recorded hash does not match content</div>
       <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
 <span class="p">$</span> ./app.run help
