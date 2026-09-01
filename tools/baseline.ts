@@ -21,8 +21,8 @@ import { STATES } from '../src/cli.ts';
 // The baseline has to be worth trusting for that to mean anything, so this
 // verifies it before handing it over, and can require it to carry the signing
 // identity a release is supposed to have. Version N is what version N+1 is read
-// against, which is the same chain of custody `docs/design-notes.md` §3
-// describes, used here for review rather than for trust.
+// against, which is the same chain of custody HISTORY.md's implementation
+// notes §3 describe, used here for review rather than for trust.
 //
 //   node tools/baseline.ts --identity <san> --issuer <url>
 //

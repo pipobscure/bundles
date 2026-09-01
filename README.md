@@ -477,10 +477,12 @@ header carries the command that makes it live.
 ## Reading further
 
 - **[HISTORY.md](HISTORY.md)** — why this exists, what changed in Node and why those changes
-  make sense, and the experiment that produced the tool. The long-form argument.
-- **[docs/design-notes.md](docs/design-notes.md)** — design decided before it was built, and
-  what departed from the plan: signing-time attestation, the audit skill, shipping the tool
-  as a bundle of itself, the self-validating executable, and the audit as a build step.
+  make sense, and the experiment that produced the tool. The long-form argument, with the
+  implementation notes at the end.
+- **[HISTORY.md § Implementation notes](HISTORY.md#implementation-notes)** — design
+  decided before it was built, and what departed from the plan: signing-time attestation,
+  the audit skill, shipping the tool as a bundle of itself, the self-validating executable,
+  and the audit as a build step.
 - **[skills/audit-bundle/SKILL.md](skills/audit-bundle/SKILL.md)** — the review procedure.
 - **[slides/](slides/)** — a talk about the project, from a point in its life.
 

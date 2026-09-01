@@ -46,8 +46,7 @@
     "bundle.bundle",
     "shell-base",
     "README.md",
-    "HISTORY.md",
-    "docs/"
+    "HISTORY.md"
   ],
   "engines": {
     "node": ">=26.0.0"

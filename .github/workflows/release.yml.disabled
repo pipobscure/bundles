@@ -28,7 +28,7 @@
 ## What this is a record of: the release pipeline this project argues for, applied
 ## to itself — observe, create, audit against the last release, sign, publish —
 ## with the audit as a gate rather than a suggestion, and every action pinned by
-## commit SHA. See docs/design-notes.md §5.
+## commit SHA. See HISTORY.md, "Implementation notes" §5.
 ## -----------------------------------------------------------------------------
 ##
 # name: Release

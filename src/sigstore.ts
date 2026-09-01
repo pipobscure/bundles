@@ -53,7 +53,7 @@ import type * as SigstoreTuf from '@sigstore/tuf';
 // The bundle carrying that material rides in the EOCD comment as the
 // `SIGSTORE=` field: it is produced after the signature, so it cannot live in
 // the hashed region — the same reason RFC 3161 puts timestamp tokens in CMS
-// `unsignedAttrs`. See `docs/design-notes.md`.
+// `unsignedAttrs`. See HISTORY.md, "Implementation notes" §1.
 
 const require = createRequire(import.meta.url);
 
