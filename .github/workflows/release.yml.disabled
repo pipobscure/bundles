@@ -1,0 +1,214 @@
+## =============================================================================
+## THIS WORKFLOW CANNOT RUN YET. It is here to be read, not to fire.
+## =============================================================================
+##
+## Everything below depends on a node that does not exist outside a fork:
+## `node:vfs`, the ZIP support in `node:zlib`, and the `--vfs-mount` /
+## `--vfs-load` loader are all unmerged (see HISTORY.md, "What changed in node").
+## There is no `node-version` GitHub Actions can install that would make this pass,
+## so shipping it live would produce a permanently red workflow and a repository
+## that looks broken.
+##
+## It is disabled two ways over, deliberately:
+##
+##   * the file does not end in `.yml`/`.yaml`, so GitHub never parses it and no
+##     "invalid workflow" annotation appears; and
+##   * the workflow itself is commented out.
+##
+## Lines in this header begin with `##`; the workflow below begins with `# `. To
+## enable it once the node work lands:
+##
+##     grep -v '^##' .github/workflows/release.yml.disabled \
+##       | sed 's/^# \?//' > .github/workflows/release.yml
+##     git rm .github/workflows/release.yml.disabled
+##
+## and set the repository variable BUNDLE_NODE_VERSION plus the ANTHROPIC_API_KEY
+## and NPM_TOKEN secrets. The uncommented body is valid YAML exactly as it stands.
+##
+## What this is a record of: the release pipeline this project argues for, applied
+## to itself — observe, create, audit against the last release, sign, publish —
+## with the audit as a gate rather than a suggestion, and every action pinned by
+## commit SHA. See docs/design-notes.md §5.
+## -----------------------------------------------------------------------------
+##
+# name: Release
+#
+# # Publishing a release, as the four steps this project says a bundle is built in
+# # — with the audit as a real gate, and reviewed as a diff against the release
+# # that is already out there rather than from scratch every time.
+# #
+# #   1. CI            everything must pass before anything is packaged
+# #   2. create        the unsigned CLI bundle
+# #   3. baseline      fetch the currently published bundle, and verify it
+# #      audit         review the new one *against* it; a JSON verdict, pinned to bytes
+# #      gate          refuse to go on without a clean verdict over exactly those bytes
+# #   4. sign          sigstore, with this workflow's own OIDC identity
+# #      publish       npm, with provenance from the same identity
+# #
+# # Every action is pinned to a full commit SHA rather than a tag. A tag is a
+# # mutable pointer: whoever can move `v1` can change what runs inside a job that
+# # holds an OIDC token able to sign releases. That is the supply-chain attack this
+# # whole project is about, so the workflow that publishes it should not be
+# # vulnerable to it. Update the SHAs deliberately, and read the diff when you do.
+#
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       publish:
+#         description: Publish to npm after the gate passes
+#         type: boolean
+#         default: false
+#   push:
+#     tags: ['v*']
+#
+# permissions:
+#   contents: read
+#
+# concurrency:
+#   group: release
+#   cancel-in-progress: false
+#
+# env:
+#   # The identity a release carries, and the one a consumer pins. Both the
+#   # baseline check and the post-sign verification use it.
+#   RELEASE_ISSUER: https://token.actions.githubusercontent.com
+#
+# jobs:
+#   release:
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 60
+#     permissions:
+#       contents: read
+#       # Fulcio takes the signing identity from this token, and npm takes its
+#       # provenance attestation from the same one. Without it there is nothing to
+#       # sign as, and no provenance to publish.
+#       id-token: write
+#     steps:
+#       - name: Check out
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#         with:
+#           persist-credentials: false
+#
+#       # The archive format needs node:vfs and the --vfs-mount loader, so a
+#       # released node will not do until that work lands upstream. This is the one
+#       # thing standing between this workflow and being able to run at all.
+#       - name: Set up node
+#         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+#         with:
+#           node-version: ${{ vars.BUNDLE_NODE_VERSION }}
+#           registry-url: https://registry.npmjs.org
+#
+#       - name: Install dependencies
+#         run: npm ci
+#
+#       # ---- 1. CI: nothing gets packaged that does not pass -------------------
+#       - name: Build
+#         run: npm run build
+#
+#       - name: Typecheck
+#         run: npm run typecheck
+#
+#       - name: Test
+#         run: node --no-warnings --experimental-vfs --test test/*.test.ts
+#
+#       # ---- 2. the unsigned bundle -------------------------------------------
+#       - name: Manifest — observe what the CLI reads, and close over it
+#         run: npm run manifest:cli
+#
+#       - name: Pack — the unsigned bundle
+#         run: npm run pack:cli
+#
+#       # ---- 3. baseline, audit, gate -----------------------------------------
+#       # The published release becomes the comparison basis. It is verified before
+#       # it is used: a baseline that cannot be placed would make the diff lie by
+#       # omission, since everything it already contained would read as unchanged.
+#       #
+#       # --allow-missing covers the first release, and any release published
+#       # before the CLI shipped as a signed member. The audit then reviews
+#       # everything, which is slower and no less correct.
+#       - name: Baseline — the release that is already out there
+#         run: |
+#           npm run trust
+#           node --no-warnings --experimental-vfs tools/baseline.ts \
+#             --identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}" \
+#             --issuer "$RELEASE_ISSUER" \
+#             --allow-missing
+#
+#       # Installed by the tool itself, into the directory Claude Code looks in —
+#       # so there is one copy of the skill in the repository and CI uses the same
+#       # one a contributor would.
+#       - name: Install the audit skill
+#         run: node --no-warnings dist/main.js skill
+#
+#       - name: Audit — review the difference before signing
+#         uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1
+#         env:
+#           BUNDLE_AUDIT_VERDICT: build/cli.audit.json
+#         with:
+#           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+#           prompt: >-
+#             /audit-bundle build/cli.bundle against build/baseline.bundle
+#
+#             This is a pre-signing audit. build/cli.bundle is the unsigned bundle this
+#             workflow just built for ${{ github.repository }} and is about to sign;
+#             build/baseline.bundle is the currently published release, already verified
+#             as genuinely signed by this workflow. If the baseline file is absent, review
+#             every member instead and say so.
+#
+#             Use diff mode: review what changed, and call out every member added or
+#             removed even when each individual diff looks harmless. Write the
+#             machine-readable verdict to build/cli.audit.json, including baselineSha256
+#             when you reviewed a diff. The build gates on that file and will not sign
+#             without a pass pinned to this archive's sha256.
+#           claude_args: |
+#             --max-turns 120
+#             --allowedTools "Bash,Read,Glob,Grep,Write"
+#
+#       # The gate. Fails the run — before anything is signed — unless the verdict
+#       # passed and names the bytes on disk and the baseline that was fetched.
+#       - name: Gate on the audit verdict
+#         run: node --no-warnings --experimental-vfs tools/audit.ts --check
+#
+#       # Kept whether the gate passed or not, so a refused release leaves its
+#       # reasoning behind rather than only a red X.
+#       - name: Keep the verdict with the run
+#         if: always()
+#         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+#         with:
+#           name: audit-verdict
+#           path: build/cli.audit.json
+#           if-no-files-found: warn
+#
+#       # ---- 4. sign, and publish ---------------------------------------------
+#       # No --key: sigstore takes the identity from the ambient OIDC token, so the
+#       # release is signed as this workflow rather than as a person.
+#       - name: Sign — sigstore, as this workflow
+#         run: npm run sign:cli
+#
+#       - name: Verify what was just signed
+#         run: |
+#           node --no-warnings dist/main.js verify --json bundle.bundle
+#           node --no-warnings dist/main.js verify \
+#             --identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}" \
+#             --issuer "$RELEASE_ISSUER" \
+#             bundle.bundle
+#
+#       - name: Keep the artifacts with the run
+#         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+#         with:
+#           name: bundle
+#           path: |
+#             bundle.bundle
+#             build/cli.manifest
+#             build/cli.audit.json
+#
+#       # --provenance publishes an npm attestation from the same OIDC identity
+#       # that Fulcio certified a step earlier. Two attestations over one artifact,
+#       # from one identity: npm's, for the registry copy, and ours, over the bytes
+#       # inside it. prepublishOnly refuses a package whose signed CLI is missing,
+#       # unsigned, or stale relative to this tree.
+#       - name: Publish to npm, with provenance
+#         if: inputs.publish || startsWith(github.ref, 'refs/tags/v')
+#         run: npm publish --provenance --access public
+#         env:
+#           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
