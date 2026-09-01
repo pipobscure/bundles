@@ -1,1 +1,2 @@
-#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs-load --vfs-mount
+#!/bin/sh
+exec node --no-warnings --experimental-vfs --vfs-load --vfs-mount "$0" -- "$@"

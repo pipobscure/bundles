@@ -133,11 +133,21 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
     assert.match(checked.stdout, /^VALID/);
 
     // A prefixed output is made executable, and the prefix is a working
-    // shebang — so the archive runs by being run, with no flags to remember.
+    // launcher — so the archive runs by being run, with no flags to remember.
     assert.ok(FS.statSync(output).mode & 0o111);
     const ran = spawnSync(output, ['x'], { encoding: 'utf-8' });
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
+
+    // And the application gets its own arguments, including ones that look like
+    // node flags. The obvious prefix — a bare `env -S node … --vfs-mount` — puts
+    // the kernel-appended path last, so there is nowhere to write the `--` that
+    // stops node claiming `--help`, and every dash argument goes to the runtime
+    // instead of the program.
+    const dashed = spawnSync(output, ['--help', '-v'], { encoding: 'utf-8' });
+    assert.equal(dashed.status, 0, dashed.stderr);
+    assert.match(dashed.stdout, /hello from a signed bundle \[sub\] --help,-v/);
+    assert.doesNotMatch(dashed.stdout, /Usage: node/);
 });
 
 test('run mounts a valid archive, and refuses one it cannot vouch for', async () => {

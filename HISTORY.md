@@ -284,7 +284,6 @@ the tests import the sources rather than the build for exactly that reason.
 | `src/api.ts` | The programmatic drive — `createBundle`, `signBundle`, `verifyBundle`, `inspectBundle`, `runBundle` — with the file plumbing the CLI would otherwise be the only user of. |
 | `src/cli.ts` | Argument parsing and reporting, and nothing else. `main(argv, io)` returns an exit code instead of exiting, so it is callable in-process; most of the CLI test suite does exactly that. |
 | `src/main.ts` | The executable entry: `process.exitCode = await main(process.argv.slice(2))`. Also the package's `main`, which is what `--vfs-load` runs out of a mounted bundle. |
-| `src/bin.ts` | What npm installs as `bundle`: a launcher that verifies and mounts the package's own signed CLI archive rather than running the loose files beside it. |
 | `src/provider.ts` | The verifying VFS provider: verifies an archive before it becomes a filesystem, then hashes each member as it is fetched. `register()` installs it with `node:vfs`. |
 | `src/register.ts` | The `-r` preload entry point — one call to `register()`, configured through the environment. |
 | `src/recorder.ts` | The recording provider: wraps a provider class so every read through it is appended to a manifest. Replaces the `--vfs-manifest` flag. |
@@ -334,7 +333,7 @@ The four steps are four scripts, each runnable on its own, so the order is somet
 can see rather than something the README asserts.
 
 ```jsonc
-"build":          "tsc && chmod +x dist/main.js dist/bin.js",
+"build":          "tsc && chmod +x dist/main.js",
 // TypeScript to ESM in dist/, with .d.ts and declaration maps beside it.
 
 // --- 1. observe -------------------------------------------------------------
@@ -359,7 +358,7 @@ can see rather than something the README asserts.
 // Record a clean verdict reached by a person instead of by the skill.
 
 // --- 4. sign ----------------------------------------------------------------
-"sign:cli":       "node --experimental-vfs tools/audit.ts --check && node dist/main.js sign --output bundle.bundle build/cli.bundle",
+"sign:cli":       "node --experimental-vfs tools/audit.ts --check && node dist/main.js sign --prefix shell-base --output bundle.run build/cli.bundle",
 // The gate runs first and exits non-zero without a clean verdict pinned to these bytes.
 // Then sigstore — CI identity if there is one, otherwise a GitHub sign-in.
 "sign:cli:local": "… --check && node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem …",
@@ -369,7 +368,7 @@ can see rather than something the README asserts.
 // Steps 1-3, stopping at the gate. Step 4 is deliberately not chained on: it needs a
 // verdict, and a verdict is not a script's to give.
 
-"verify:cli":     "node dist/main.js verify bundle.bundle",
+"verify:cli":     "node dist/main.js verify bundle.run",
 "trust":          "node dist/main.js trust",
 // Refresh the sigstore trust root (over TUF) into the local cache. Verification never
 // reaches for the network, so this is the explicit step that feeds it.
@@ -427,12 +426,18 @@ code of its own at all. (The `--` matters: without it node claims any argument t
 like one of its own flags, and the application never sees it.)
 
 **`app.run` — the shebang archive (the same ZIP plus a one-line header; needs Node installed).**
-It is literally the `shell-base` shebang line followed by the ZIP. When executed, the kernel
-runs `env node --vfs-load --vfs-mount` and appends the file's own path, which becomes that
-trailing flag's value — so it mounts **itself** as a read-only ZIP, whose `package.json`
-main becomes the entry point. The archive's `baseOffset` was seeded to skip the shebang
-bytes, so it stays a valid ZIP even though it doesn't start at byte 0. A whole application
-in a file you can email — provided the recipient has a compatible Node.
+It is the `shell-base` prefix — `#!/bin/sh` and one `exec node … --vfs-mount "$0" -- "$@"`
+line — followed by the ZIP. `exec` replaces the shell before it reads past that line, so the
+archive bytes are never parsed as script; `"$0"` is the file's own path, so it mounts
+**itself** and its `package.json` main becomes the entry point. The archive's `baseOffset`
+was seeded past the prefix, so it stays a valid ZIP even though it doesn't start at byte 0.
+A whole application in a file you can email — provided the recipient has a compatible Node.
+
+> The obvious prefix is `#!/usr/bin/env -S node … --vfs-load --vfs-mount`, letting the
+> kernel's appended path become the trailing flag's value. That is prettier and it works,
+> but the user's arguments land after that path with nowhere to put a `--`, so every
+> dash-leading argument goes to node rather than to the program — `app.run --help` prints
+> node's help. The shell line exists to place that `--`.
 
 > **Note:** this needs a Node whose provider selection recognizes a ZIP by locating its
 > end-of-central-directory record rather than by sniffing `PK\x03\x04` at byte 0 — a
@@ -505,9 +510,9 @@ npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at th
 
 npm run sign:cli:local      # 4: refuses, because nothing has been audited yet
 BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
-npm run sign:cli:local      # 4: now allowed -> bundle.bundle
+npm run sign:cli:local      # 4: now allowed -> bundle.run
 
-node dist/bin.js --help     # the launcher verifies it, mounts it, and runs it
+./bundle.run --help         # the artifact runs itself; this is what npm links as `bundle`
 ```
 
 To sign through sigstore instead — this opens a browser, or uses the CI identity when there
@@ -515,13 +520,13 @@ is one:
 
 ```sh
 npm run trust               # fetch the sigstore trust root, once
-npm run sign:cli            # -> bundle.bundle, signed by whoever you signed in as
+npm run sign:cli            # -> bundle.run, signed by whoever you signed in as
 npm run verify:cli          # -> VALID, with the identity that signed it
 ```
 
-A launcher archive (`app.run`) cannot verify **itself** by its own path — the mount covers
-that path, so it resolves to the archive's *interior*, not the raw bytes. Verify it under a
-different name, or use the SEA, which mounts at a generated path and *can* self-verify.
+A launcher archive can verify **itself**: `--vfs-mount` leaves the container's own path
+readable, so from inside, `process.argv[1]` is the real file and reading it yields the raw
+bytes rather than the mounted tree. `./app.run verify app.run` works.
 
 ---
 
@@ -1050,7 +1055,7 @@ repository's own skill:
 **Why a diff.** Re-reading 679 unchanged members every release is the kind of review that
 decays into a rubber stamp; a small diff gets read properly. `tools/baseline.ts` fetches the
 currently published package with `npm pack` — which downloads without installing or running
-anything — pulls its `bundle.bundle` out, and **verifies it before using it**, optionally
+anything — pulls its `bundle.run` out, and **verifies it before using it**, optionally
 requiring the release workflow's own identity. A baseline that cannot be placed would make
 the diff lie by omission: everything it already contained would read as "unchanged" and
 therefore go unread. With no baseline at all — the first release — it says so and the audit
@@ -1153,7 +1158,6 @@ bundles/
     api.ts          the programmatic drive the CLI is a wrapper over
     cli.ts          parseArgs and reporting; main(argv, io) -> exit code
     main.ts         the executable entry, and the package `main` --vfs-load runs
-    bin.ts          what npm installs as `bundle`: a launcher for the signed CLI archive
     archive.ts      bundle() builds unsigned from a directory; rebundle() re-emits behind a
                     new prefix and signs; keySigner() is the offline-CA signer
     manifest.ts     buildManifest() / parseManifest() / verifySync(): the format and its check
@@ -1186,7 +1190,7 @@ bundles/
   package.json    the build / pack:cli / sign:cli / verify:cli / trust / test scripts
 ```
 
-Build outputs — `dist/`, `build/cli.bundle` and the signed `bundle.bundle` — are generated
+Build outputs — `dist/`, `build/cli.bundle` and the signed `bundle.run` — are generated
 by those scripts and are not in the repository.
 
 **Environment variables**
@@ -1483,7 +1487,7 @@ a workflow ref rather than a person:
 ```sh
 bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/release.yml@refs/heads/main' \
               --issuer   'https://token.actions.githubusercontent.com' \
-              bundle.bundle
+              bundle.run
 ```
 
 `--identity` and `--issuer` already exist and already report a mismatch as
@@ -1543,11 +1547,18 @@ about the *npm* copy rather than about the model.
 
 - **npm publication continues, and carries the signed bundle inside it.** The open question
   resolved into "both, in one package": the registry copy is the library (an `exports` map
-  of ESM entry points, typed), and beside it sits `bundle.bundle` — the CLI as one signed
-  archive, 679 members including the whole sigstore dependency tree. The `bundle` command
-  npm installs is a launcher (`src/bin.ts`) that verifies that archive and mounts it through
-  the verifying provider, so `npx @pipobscure/bundle` runs the signed artifact, not the loose
-  files. That keeps the model honest without pretending the registry does not exist.
+  of ESM entry points, typed), and beside it sits `bundle.run` — the CLI as one signed
+  archive, 677 members including the whole sigstore dependency tree. `bin` points *straight
+  at it*: it carries a `#!/bin/sh` prefix that mounts and runs itself, so
+  `npx @pipobscure/bundle` executes the signed artifact with nothing in between. That keeps
+  the model honest without pretending the registry does not exist.
+
+  A first attempt put a small JavaScript launcher in front, which verified the archive
+  before mounting it. Removing it was the right call and worth recording why: the launcher
+  was unsigned code installed beside the thing it vouched for, so anybody able to swap the
+  archive could equally swap the launcher — it detected corruption, not an adversary — and
+  it put an opaque step in front of the one file a reader should be looking at. Inspectability
+  was the thing being traded away, and inspectability is the argument.
 - **The member list is computed, not observed.** The section assumed the manifest run would
   simply cover `node_modules` once the mount did. It does not, and the reason is the thing
   worth recording: `sigstore.ts` requires `@sigstore/verify` only when it meets an archive

@@ -37,7 +37,7 @@ const { values } = parseArgs({
     options: {
         spec:     { type: 'string' },
         output:   { type: 'string', default: PATH.join('build', 'baseline.bundle') },
-        member:   { type: 'string', default: 'bundle.bundle' },
+        member:   { type: 'string', default: 'bundle.run' },
         identity: { type: 'string' },
         issuer:   { type: 'string' },
         'allow-missing': { type: 'boolean' },

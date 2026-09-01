@@ -139,6 +139,21 @@ export interface VerifyOptions {
 /** An archive to be built or verified: a path on disk, or the bytes themselves. */
 export type ArchiveSource = string | Buffer;
 
+/**
+ * How each state is reported, and the exit code that goes with it.
+ *
+ * The codes are part of the CLI's contract — a script branching on
+ * `bundle verify` depends on them — so they live here with the states they
+ * describe rather than in `cli.ts`. That also keeps the `bundle` launcher from
+ * having to load the CLI to find out what exit code a refusal deserves.
+ */
+export const STATES: Record<VerificationState, { code: number; label: string; note: string }> = {
+    'unsigned':        { code: 3, label: 'UNSIGNED',          note: 'archive carries no signature' },
+    'invalid':         { code: 2, label: 'INVALID',           note: 'manifest is wrong or does not cover the whole archive' },
+    'valid-untrusted': { code: 1, label: 'VALID (UNTRUSTED)', note: 'signature is good but the certificate is not trusted' },
+    'valid':           { code: 0, label: 'VALID',             note: 'signature is good and the certificate is trusted' },
+};
+
 // Build the manifest content from the algorithms and (when signing) the
 // certificate chain.
 export function buildManifest({ hashAlg = 'sha256', signAlg, chain }: {
@@ -502,10 +517,12 @@ function openArchive(path: string): ZLIB.ZipFile {
     try {
         return ZLIB.ZipFile.openSync(path);
     } catch (err) {
-        // When run from the `--vfs-mount` shebang launcher, the container mounts its
-        // own path as a live filesystem, so that path resolves to the archive's
-        // interior (a directory) rather than the raw container bytes. Opening it
-        // as a ZIP then fails deep inside with a confusing message.
+        // A path that is itself a mount point resolves to the mounted tree
+        // rather than to bytes, and opening a directory as a ZIP fails deep
+        // inside with a confusing message. (A container's *own* path is not one
+        // of these: `--vfs-mount` leaves it readable, which is what lets a
+        // launcher verify itself. This is for a directory mount, or a mount
+        // deliberately placed over an archive.)
         let isDir = false;
         try { isDir = FS.statSync(path).isDirectory(); } catch { /* fall through */ }
         if (isDir) {

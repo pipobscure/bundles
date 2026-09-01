@@ -3,7 +3,12 @@ import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members } from './archive.ts';
-import { message, type VerificationResult, type VerificationState } from './manifest.ts';
+import { message, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
+
+// Re-exported because this is where a CLI consumer looks for it; it is defined
+// in the format layer so the `bundle` launcher can report an exit code without
+// loading the whole CLI.
+export { STATES };
 import * as SKILLS from './skill.ts';
 
 // Argument parsing and reporting, and nothing else. Every command below is a
@@ -92,14 +97,6 @@ skill options:                      usage: skill [options] [name]
   -l, --list            list the skills this package carries and stop
 
   -h, --help            show this help`;
-
-/** How each verification state is reported, and what it exits with. */
-export const STATES: Record<VerificationState, { code: number; label: string; note: string }> = {
-    'unsigned':        { code: 3, label: 'UNSIGNED',          note: 'archive carries no signature' },
-    'invalid':         { code: 2, label: 'INVALID',           note: 'manifest is wrong or does not cover the whole archive' },
-    'valid-untrusted': { code: 1, label: 'VALID (UNTRUSTED)', note: 'signature is good but the certificate is not trusted' },
-    'valid':           { code: 0, label: 'VALID',             note: 'signature is good and the certificate is trusted' },
-};
 
 /** Where a command's output goes. Swappable so tests need no subprocess. */
 export interface Console {

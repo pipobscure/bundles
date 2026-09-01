@@ -7,16 +7,20 @@ import { STATES } from '../src/cli.ts';
 
 // The gate on `npm publish`.
 //
-// The published package carries its own CLI as one signed archive, and the
-// `bundle` command runs *that* rather than the loose files beside it. So the
-// one thing publishing must not do is ship a package whose signed artifact is
-// missing, stale or unsigned — the bin entry would refuse to run, and the claim
-// the whole project makes about how software should arrive would be false of
-// the way this software arrived.
+// The published package's `bundle` command *is* the signed archive: `bin`
+// points straight at `bundle.run`, a shebang-prefixed container that mounts and
+// runs itself. There is no wrapper in between, which is the point — nothing
+// unsigned stands between somebody typing `npx @pipobscure/bundle` and the
+// artifact this project asks them to check.
+//
+// It also means publishing must not ship a package whose artifact is missing,
+// stale or unsigned: the bin entry would be a broken file, and the claim the
+// whole project makes about how software should arrive would be false of the
+// way this software arrived.
 //
 // What is checked:
 //
-//   1. `bundle.bundle` exists and carries a signature.
+//   1. `bundle.run` exists and carries a signature.
 //   2. It verifies — integrity and the signature over it. Trust is reported but
 //      not required: a sigstore-signed release is `valid-untrusted` on a
 //      machine with no trust root yet, and that is a property of the machine.
@@ -24,7 +28,7 @@ import { STATES } from '../src/cli.ts';
 //      signed archive from two commits ago cannot ride along unnoticed.
 
 const ROOT = packageRoot();
-const ARCHIVE = PATH.join(ROOT, 'bundle.bundle');
+const ARCHIVE = PATH.join(ROOT, 'bundle.run');
 const FRESH = PATH.join(ROOT, 'build', 'cli.bundle');
 
 if (!FS.existsSync(ARCHIVE)) {

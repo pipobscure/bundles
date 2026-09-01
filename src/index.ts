@@ -59,6 +59,7 @@ export {
     signatureOf,
     verify,
     verifySync,
+    STATES,
     type ArchiveSource,
     type ManifestFields,
     type SignatureMarker,
@@ -90,7 +91,7 @@ export {
 
 // The CLI, as a function — so a host can offer the same commands without
 // spawning anything.
-export { main as cli, USAGE, STATES, type Console as CliConsole } from './cli.ts';
+export { main as cli, USAGE, type Console as CliConsole } from './cli.ts';
 
 // Signing through sigstore, and the OIDC flows that identity comes from. Both
 // are namespaced: they are a signer implementation and its plumbing, not part

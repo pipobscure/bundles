@@ -39,10 +39,24 @@ npm install @pipobscure/bundle      # the library
 npx @pipobscure/bundle --help       # the CLI, without installing
 ```
 
-The `bundle` command npm installs is a launcher for this package's own CLI, which ships
-inside the package as one signed archive. Running it verifies that archive, mounts it, and
-runs it — so the tool arrives the way it tells you to ship, and using it exercises the whole
-mechanism. See [the tool as a bundle of itself](HISTORY.md#where-this-ends-up-the-tool-as-a-bundle-of-itself).
+The `bundle` command npm installs **is** the signed archive. `bin` points straight at
+`bundle.run` — the CLI, its skill and its whole dependency tree in one file, behind a two-line
+`#!/bin/sh` prefix that mounts it and runs it. There is no wrapper script in between, which
+is the point: nothing unsigned stands between you and the artifact, and
+
+```sh
+head -c 100 "$(npm root)/@pipobscure/bundle/bundle.run"   # what it will do
+unzip -l    "$(npm root)/@pipobscure/bundle/bundle.run"   # everything it contains
+bundle verify "$(npm root)/@pipobscure/bundle/bundle.run" # who signed it
+```
+
+answer every question about it without running anything. See
+[the tool as a bundle of itself](HISTORY.md#where-this-ends-up-the-tool-as-a-bundle-of-itself).
+
+Running it by name does not verify it — the kernel gives a `#!` launcher no preload to carry
+a provider, and this package says so rather than pretending otherwise. Verification is a
+separate act, done with a copy of `bundle` you already trust: `bundle verify bundle.run` to
+check it, or `bundle run bundle.run -- <args>` to execute it through the verifying mount.
 
 ---
 
@@ -448,7 +462,7 @@ Building the tool the way the tool says to build things — the same four steps:
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
 npm run sign:cli:local      # 4: refuses — nothing has been audited yet
 BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
-npm run sign:cli:local      # 4: now allowed -> bundle.bundle
+npm run sign:cli:local      # 4: now allowed -> bundle.run
 ```
 
 | Script | |
