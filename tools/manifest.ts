@@ -4,6 +4,7 @@ import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { moduleFiles, packageRoot } from '../src/files.ts';
+import { ensureTestPki } from './testpki.ts';
 
 // Step 1 of building a bundle: work out what goes in it.
 //
@@ -75,14 +76,15 @@ function observe(): string[] {
         FS.writeFileSync(list, 'package.json\n');
         const archive = PATH.join(scratch, 'observed.bundle');
         const signed = PATH.join(scratch, 'observed.signed.bundle');
-        const certs = PATH.join(ROOT, 'certs');
+        // The observation has to take the signing and verifying paths to be worth
+        // anything, and that needs a credential; a throwaway one, generated here.
+        const pki = ensureTestPki();
 
         const runs: string[][] = [
             ['help'],
             ['create', '--base', ROOT, '--files', list, '--output', archive],
-            ['sign', '--key', PATH.join(certs, 'leaf.key'), '--chain', PATH.join(certs, 'chain.pem'),
-                '--output', signed, archive],
-            ['verify', '--root', PATH.join(certs, 'root.pem'), '--json', signed],
+            ['sign', '--key', pki.key, '--chain', pki.chain, '--output', signed, archive],
+            ['verify', '--root', pki.root, '--json', signed],
             ['skill', '--list'],
             ['skill', '--dir', PATH.join(scratch, 'skills')],
         ];

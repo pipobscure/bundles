@@ -46,6 +46,7 @@
     "bundle.bundle",
     "shell-base",
     "README.md",
+    "HISTORY.md",
     "docs/"
   ],
   "engines": {
@@ -61,11 +62,12 @@
     "audit:cli": "node --no-warnings --experimental-vfs tools/audit.ts",
     "approve:cli": "node --no-warnings --experimental-vfs tools/audit.ts --approve",
     "sign:cli": "node --no-warnings --experimental-vfs tools/audit.ts --check && node --no-warnings dist/main.js sign --output bundle.bundle build/cli.bundle",
-    "sign:cli:local": "node --no-warnings --experimental-vfs tools/audit.ts --check && node --no-warnings dist/main.js sign --key certs/leaf.key --chain certs/chain.pem --output bundle.bundle build/cli.bundle",
+    "sign:cli:local": "npm run testpki && node --no-warnings --experimental-vfs tools/audit.ts --check && node --no-warnings dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem --output bundle.bundle build/cli.bundle",
     "verify:cli": "node --no-warnings dist/main.js verify bundle.bundle",
     "release:cli": "npm run build && npm run manifest:cli && npm run pack:cli && npm run baseline:cli && npm run audit:cli",
     "trust": "node --no-warnings dist/main.js trust",
-    "prepublishOnly": "node --no-warnings --experimental-vfs tools/prepublish.ts"
+    "prepublishOnly": "node --no-warnings --experimental-vfs tools/prepublish.ts",
+    "testpki": "node --no-warnings --experimental-vfs tools/testpki.ts"
   },
   "dependencies": {
     "@sigstore/bundle": "^3.1.0",
