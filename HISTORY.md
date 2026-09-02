@@ -67,18 +67,22 @@ has been tampered with — either as a plain `.bundle` archive, as a small self-
 that runs on any installed Node, or as a fully self-contained native executable that needs
 no Node at all.
 
-It is driven by a modified Node.js, in three additions on top of Node's existing
-experimental **virtual file system** (`node:vfs`, by Matteo Collina):
+It is driven by Node.js itself, in three additions on top of Node's existing experimental
+**virtual file system** (`node:vfs`, by Matteo Collina). The first has landed since this was
+written; the other two are one open pull request, so running any of this still means a Node
+built from `main` with that applied:
 
-1. **ZIP archive support in `node:zlib`** plus a **`ZipProvider`** that mounts such an
-   archive through VFS as a file tree — proposed upstream as
-   [nodejs/node#64339](https://github.com/nodejs/node/pull/64339).
+1. **ZIP archive support in `node:zlib`** — merged as
+   [nodejs/node#64339](https://github.com/nodejs/node/pull/64339), released in **v26.8.0** —
+   plus a **`ZipProvider`** that mounts such an archive through VFS as a file tree, merged as
+   [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) and due in the next release.
 2. A **`--vfs-mount` / `--vfs-load` module loader** that mounts directories and archives
    and resolves a program's entry point and all its `require()`/`import` against them —
-   prepared as a follow-on in [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
+   open as [nodejs/node#65748](https://github.com/nodejs/node/pull/65748).
 3. **`vfs.registerProvider()`**, the extension point that lets a preloaded module
    decide which provider backs a mount — which is what makes a *verifying* mount, or a
-   *recording* one, possible from userland at all.
+   *recording* one, possible from userland at all. It ships in the same pull request as the
+   flags, and is the reason that one is the piece nothing here runs without.
 
 Together they let the root a program runs from be a plain `.zip` embedded inside the
 program's own file. Combined with Node's newer **Single Executable Application (SEA)**
@@ -109,7 +113,7 @@ Node's module resolution and every `fs` call assume that tree lives on the real 
 you want to ship the tree *inside* a single file, you need Node to be able to treat
 something-that-isn't-a-directory as the directory it resolves against.
 
-That is exactly what the fork provides.
+That is exactly what these additions to Node provide.
 
 ---
 
@@ -122,19 +126,21 @@ one lives:
   experimental builtin) by **Matteo Collina** — not part of this work. It's summarized
   below only because it's the foundation everything else stands on.
 - **The novel work is two additions to Node:**
-  - **ZIP archive support in `node:zlib`** and the **`ZipProvider`** that mounts an archive
-    through VFS — proposed upstream as
-    [nodejs/node#64339](https://github.com/nodejs/node/pull/64339).
+  - **ZIP archive support in `node:zlib`** ([nodejs/node#64339](https://github.com/nodejs/node/pull/64339),
+    merged, in v26.8.0) and the **`ZipProvider`** that mounts an archive through VFS
+    ([nodejs/node#64915](https://github.com/nodejs/node/pull/64915), merged).
   - The **`--vfs-mount` / `--vfs-load` module loader** that makes a mounted tree the thing a
     program actually resolves and runs from, and the provider registry that decides what
-    backs a mount — prepared as a follow-on in
-    [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
+    backs a mount — open as
+    [nodejs/node#65748](https://github.com/nodejs/node/pull/65748). Loading a **native addon**
+    out of a mount is a separate pull request,
+    [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), also open.
 - **The SEA group** is recent upstream Node functionality the experiment leans on, carried
   along so the whole pipeline works from one binary.
 
 ### 0. Foundation (pre-existing): `node:vfs` — a virtual file system with pluggable providers
 
-*By Matteo Collina; here for context, not part of this fork's contribution.* An experimental
+*By Matteo Collina; here for context, not part of this work's contribution.* An experimental
 builtin (`--experimental-vfs` to enable) exposing a `node:fs`-shaped API backed by a
 swappable **provider**:
 
@@ -149,7 +155,7 @@ objects are real `fs.Stats`. Crucially, the docs are explicit that **VFS is not 
 it redirects supported `fs` calls whose resolved path falls under a mount; it is not a
 security boundary. That honesty matters for how it's positioned below.
 
-### 1. ZIP support in `node:zlib` *([nodejs/node#64339](https://github.com/nodejs/node/pull/64339))*
+### 1. ZIP support in `node:zlib` *([nodejs/node#64339](https://github.com/nodejs/node/pull/64339) — merged, released in v26.8.0)*
 
 `node:zlib` gains a small archive toolkit:
 
@@ -169,7 +175,7 @@ Two details make the whole single-file trick possible:
 - Read paths enforce content-size limits and reject malformed records (zip-bomb / corrupt
   input guards), with dedicated `ERR_ZIP_*` codes.
 
-### 2. `ZipProvider` — a VFS provider backed by a ZIP archive *([nodejs/node#64339](https://github.com/nodejs/node/pull/64339))*
+### 2. `ZipProvider` — a VFS provider backed by a ZIP archive *([nodejs/node#64915](https://github.com/nodejs/node/pull/64915) — merged)*
 
 The bridge between the two: a provider for Matteo's `node:vfs` that exposes the entries of
 a `ZipFile` (on disk) or `ZipBuffer` (in memory) as a browsable, read/write file tree.
@@ -177,24 +183,33 @@ Directories are recognized both explicitly and implicitly; a file opened for wri
 as a new archive entry when its handle is closed. This is what lets a `.zip` be *mounted*
 and treated like a directory.
 
-### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([pipobscure/node#3](https://github.com/pipobscure/node/pull/3))*
+### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — open)*
 
 This is what wires VFS into Node's *startup and module resolution* so a mounted tree
 becomes the thing the program actually runs from. Mounting and running are two separate
 flags, so a program can be given several mounts and still have one entry point:
 
-- **`--vfs-mount <source>[=<target>]`** mounts `<source>` at `<target>`, defaulting to
-  `<source>`'s own resolved path. Repeatable.
-  - A **directory** source is mounted with `RealFSProvider`.
-  - A **file** source is opened as a read-only ZIP (`ZipFile`) and mounted with
-    `ZipProvider` — turning that one file into a virtual directory.
-- **`--vfs-load`** runs the entry point out of the **last** `--vfs-mount`, resolving it
-  *and all subsequent `require()` / `import`* against the mount instead of the real
-  filesystem. `argv[1]` is then *unconditionally that mount point*, exactly as if you had
-  run `node <mountPoint>`. The mount's own `package.json` `"main"` decides what runs; a
-  positional argument is the program's own argument (shifted to `argv[2]+`), never an
-  entry-point override.
-- That rule is precisely what makes a **self-mounting shebang** work:
+- **`--vfs-mount <source>`** mounts `<source>` at a reserved mount point Node assigns.
+  Repeatable, and the target is deliberately not yours to choose: mounts therefore never
+  shadow a real path, and no invocation can redirect one tree onto another.
+  - The provider is chosen from the **source itself, not its name**: a **directory** is
+    mounted with `RealFSProvider`, and a **file whose bytes are a ZIP archive** with
+    `ZipProvider` — so an archive can be called anything at all.
+- **`--vfs-load[=index]`** runs the entry point out of the **first** `--vfs-mount`, or the
+  one `index` names, resolving it *and all subsequent `require()` / `import`* against the
+  mount instead of the real filesystem. An index matching no mount is rejected at startup
+  rather than quietly running a different one. The mount's own `package.json` `"main"`
+  decides what runs; a positional argument is the program's own argument (from `argv[2]`
+  on), never an entry-point override. `argv[1]` reports the mounted *source's* real path
+  rather than the generated mount point — which is what lets a launcher archive read its
+  own bytes and verify itself.
+- **Neither flag is a matter for the environment.** `--vfs-load` is refused in
+  `NODE_OPTIONS` outright — which entry point runs is the command line's decision, and
+  `NODE_OPTIONS` is parsed first, so otherwise an environment variable could redirect any
+  invocation on the machine. `--vfs-mount` is permitted there, but those mounts are ordered
+  *after* the command line's, so the index still counts the mounts the invocation itself
+  asked for.
+- The entry-point rule is precisely what makes a **self-mounting shebang** work:
   `#!/usr/bin/env -S node --vfs-load --vfs-mount`. The kernel appends the script's own path
   as the value of the trailing `--vfs-mount`, so the script mounts *itself* and runs its
   embedded `package.json` main.
@@ -203,10 +218,20 @@ flags, so a program can be given several mounts and still have one entry point:
   changed to stop calling native bindings directly and instead go through a VFS-aware path
   — deferring unchanged to the real bindings whenever no mount is active, so non-mounted
   behavior is identical.
-- **Native addons** work: directory mounts `dlopen` the real file; archive mounts extract
-  the addon to a per-pid, content-hashed temp file first (there is no real file to point
-  at). **Worker threads** inherit the active mount, so sandboxed code can't spawn an
-  "escaped" worker.
+- **Worker threads** inherit the active mounts — including when constructed with an
+  explicit `execArgv`, which would otherwise get a fresh options parse and escape the
+  mount — so code cannot spawn an "escaped" worker. `--vfs-load` itself has no effect in a
+  worker: it re-mounts the same sources but runs its own entry point.
+- **Native addons** are a separate pull request,
+  [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), and the reason is that
+  `dlopen()`/`LoadLibrary()` open a shared object *by path* and a VFS path has no inode to
+  open. It reads the addon's bytes out of the mount and loads them from a private,
+  self-cleaning image using the smallest on-disk footprint each platform allows: an
+  anonymous `memfd` through `/proc/self/fd` on Linux, so the bytes never touch the file
+  system at all; a file in a `0700` `mkdtemp()` directory, unlinked immediately after
+  loading, elsewhere on POSIX; a `FILE_FLAG_DELETE_ON_CLOSE` temp file on Windows. Addons on
+  the real file system are untouched and load directly. Until it lands, a bundle whose
+  dependency tree contains a `.node` file mounts and then fails at `require`.
 
 Recording the path of *every file actually read through a mount* — by module resolution or
 by the program's own `fs` calls — used to be a third flag, `--vfs-manifest`, implemented as
@@ -215,7 +240,7 @@ an observer hook inside `node:vfs`. It is now a **provider** instead, in this re
 manifest by observation**: run the app once, and you get the exact minimal set of files it
 touches — the correct contents for the archive you're about to build.
 
-### 4. `vfs.registerProvider()` — choosing what backs a mount
+### 4. `vfs.registerProvider()` — choosing what backs a mount *(part of [nodejs/node#65748](https://github.com/nodejs/node/pull/65748))*
 
 A mount source is not hard-wired to the built-in provider for its kind. `node:vfs` exposes
 a small registry:
@@ -224,10 +249,12 @@ a small registry:
 vfs.registerProvider({ name, canHandle(resolvedPath, stats), create(resolvedPath, stats) });
 ```
 
-Registered providers are consulted **before** the built-ins — the `RealFSProvider` for a
-directory and the `ZipProvider` for an archive are themselves just the last two entries —
+Registered providers are consulted **before** the built-ins — the `ZipProvider` for an
+archive and the `RealFSProvider` for a directory are themselves just the last two entries —
 newest first, and selection happens *after* preload modules have run. That is the whole
-point: a preloaded module can install a provider for the source about to be mounted.
+point: a preloaded module can install a provider for the source about to be mounted. A
+registered provider is offered **directories as well as files**, so it can back, wrap or vet
+any source rather than only adding a format.
 
 ```sh
 node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
@@ -838,7 +865,7 @@ from the blob, and then the application's, from the archive at the end of the fi
 That mirrors [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`),
 which puts a SEA's own assets behind a VFS mount and runs the main script from its root, so
 `__dirname`, relative `require()` and `node_modules` resolution all work inside the
-executable. **That work is not merged and is in no released Node**, so the same thing is
+executable. **That work is still open and in no released Node**, so the same thing is
 done here in userland — with the difference that matters for this package: the mount that
 runs the *application* is the signed archive appended to the file, not the blob. When
 `useVfs` lands, the generated stub is the only piece that changes.
@@ -942,13 +969,19 @@ import { recording, Manifest } from '@pipobscure/bundle/recorder';
 const Recording = recording(BundleProvider, new Manifest('reads.txt'));
 ```
 
-Two things it does not do. It records per *mount*, not per process, so several
+One thing it does not do: it records per *mount*, not per process, so several
 `--vfs-mount` directories merge into one list — the flag only ever supported a single
-directory target, so this is new ground rather than a regression. And node consults
-registered providers when `--vfs-mount` is handed a *file*, but mounts a directory with its
-own `RealFSProvider` without asking — so a directory mount cannot be influenced from a
-preload alone, and `tools/observe.ts` makes the mount itself and resolves the entry point
-against the path it is given back. That is the shape to copy for your own build.
+directory target, so this is new ground rather than a regression.
+
+An earlier constraint here has since gone away, and it is worth recording because it shaped
+the code. Provider selection once applied only when `--vfs-mount` was handed a *file*, with
+a directory mounted by node's own `RealFSProvider` without asking — so a recording mount
+could not be installed from a preload at all, and `tools/observe.ts` makes the mount itself
+and resolves the entry point against the path it is given back.
+[nodejs/node#65748](https://github.com/nodejs/node/pull/65748) offers registered providers
+directories as well as files, which is what the `-r @pipobscure/bundle/record` line above now
+relies on. The runner is still the shape to copy when you want the mount point in hand — but
+it is a choice now, not the only route.
 
 ---
 
@@ -1074,10 +1107,11 @@ one OIDC token; Fulcio certifies it for the signature, and `npm publish --proven
 its attestation from it. Two attestations over one artifact, from one identity: npm's over
 the registry copy, and this project's over the bytes inside it.
 
-> **It cannot run yet.** Every step depends on the unmerged node work, so there is no
-> `node-version` that would make it pass. The file is disabled two ways over — it does not
-> end in `.yml`, so GitHub never parses it, and its body is commented out — and it carries
-> the one-line command that turns it back into a live workflow. It is there to be read.
+> **It cannot run yet.** Every step depends on the `--vfs-mount` / `--vfs-load` work, which
+> is still an open pull request, so there is no `node-version` that would make it pass. The
+> file is disabled two ways over — it does not end in `.yml`, so GitHub never parses it, and
+> its body is commented out — and it carries the one-line command that turns it back into a
+> live workflow. It is there to be read.
 
 Two honest limits. An LLM review is a good reviewer, not a proof — it raises the cost of
 slipping something past and does not reduce it to zero, which is what the `severity` and
@@ -1128,7 +1162,7 @@ The through-line is: **let a single file be the file tree a program runs from.**
 ### Honest limitations
 
 - **VFS is not a sandbox.** It redirects `fs`; it does not confine untrusted code. Real
-  isolation still needs OS-level mechanisms. The fork's own docs say so.
+  isolation still needs OS-level mechanisms. Node's own docs say so.
 - **A verified mount is an integrity gate, not a confinement.** It proves the code is the
   code that was signed, by someone whose chain you trust. Once that code runs it has the
   full authority of the process — the guarantee is about *provenance*, not privilege.
@@ -1631,7 +1665,7 @@ Nothing is duplicated, and the verifier the container runs is the one the test s
 
 This is the userland form of [nodejs/node#65675](https://github.com/nodejs/node/pull/65675)
 (`"useVfs": true`), which puts a SEA's own assets behind a VFS mount and runs the main script
-from its root. That work is not merged and is in no released node — `--build-sea` accepts the
+from its root. That work is still open and in no released node — `--build-sea` accepts the
 key and ignores it — so it is done here by hand, with the difference that matters: the mount
 that runs the *application* is the signed archive appended to the file, not the blob. When
 `useVfs` lands, the generated stub is the only piece that changes.
@@ -1788,10 +1822,11 @@ the right one for a release pipeline specifically — less obviously so for ordi
 
 #### Why it ships disabled
 
-None of this can run. `node:vfs`, the ZIP support in `node:zlib` and the `--vfs-mount`
-loader are unmerged, so there is no `node-version` GitHub Actions can install that would
-make the workflow pass, and shipping it live would produce a permanently red workflow and a
-repository that looks broken.
+None of this can run yet. `node:vfs` and the ZIP support in `node:zlib` are released and
+`ZipProvider` is merged, but the `--vfs-mount` / `--vfs-load` loader is still open, so there
+is no `node-version` GitHub Actions can install that would make the workflow pass, and
+shipping it live would produce a permanently red workflow and a repository that looks
+broken.
 
 It is kept anyway, at `.github/workflows/release.yml.disabled`: the file does not end in
 `.yml`, so GitHub never parses it, and the body is commented out on top of that. The header

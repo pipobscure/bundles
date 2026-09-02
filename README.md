@@ -15,8 +15,10 @@ filesystem, so an archive that does not check out never becomes one and its entr
 never runs. Every member is re-hashed against its signed digest as it is read, for the life
 of the process.
 
-> **Requires an unreleased Node.** `node:vfs`, the ZIP support in `node:zlib` and the
-> `--vfs-mount` / `--vfs-load` loader are not in any released Node yet. See
+> **Requires a Node built from `main`, with one open pull request applied.** `node:vfs` and
+> the ZIP support in `node:zlib` are released, and `ZipProvider` is merged and should be in
+> the next release; the `--vfs-mount` / `--vfs-load` loader — and with it
+> `vfs.registerProvider()` — is still open, and is the piece nothing here runs without. See
 > [Requirements](#requirements). Everything here is experimental.
 
 ---
@@ -373,7 +375,8 @@ From code, `createSeaBase()` and `buildSea()` split the expensive half (a ~155 M
 Node) from the cheap one, and `verifySelf()` lets an application report on its own
 provenance. The bootstrap mounts the package out of the SEA blob with `node:vfs` rather than
 inlining a copy of the verifier — the userland form of
-[nodejs/node#65675](https://github.com/nodejs/node/pull/65675), which is not merged.
+[nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`), which is
+still open.
 
 ---
 
@@ -450,18 +453,33 @@ Other limits, stated plainly:
 
 ## Requirements
 
-A Node.js build carrying three things that are not in any release:
+Everything here sits on Node's experimental `node:vfs` (by Matteo Collina) and runs under
+`--experimental-vfs`. Where each piece stands, as of 2026-09-02:
 
-1. **ZIP support in `node:zlib`** plus a `ZipProvider` — proposed as
-   [nodejs/node#64339](https://github.com/nodejs/node/pull/64339).
-2. **`--vfs-mount` / `--vfs-load`**, which make a mounted tree the thing a program resolves
-   and runs from — [pipobscure/node#3](https://github.com/pipobscure/node/pull/3).
-3. **`vfs.registerProvider()`**, the extension point that lets a preload decide what backs a
-   mount — which is what makes a verifying mount possible from userland at all.
+| Piece | Where it is |
+|---|---|
+| **`node:vfs`**, and modules resolving and loading out of a mount | released, v26.4.0 |
+| **ZIP support in `node:zlib`** — `ZipFile`, `ZipBuffer`, `ZipEntry` | released, v26.8.0 |
+| **`ZipProvider`**, a VFS provider backed by such an archive | merged — [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) |
+| **`--vfs-mount` / `--vfs-load`**, and `vfs.registerProvider()` | open — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
+| **Native addons loaded from a mount** | open — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
 
-All three sit on Node's existing experimental `node:vfs` (by Matteo Collina), and everything
-runs under `--experimental-vfs`. [HISTORY.md](HISTORY.md) explains each in detail and why
-they are worth having.
+A released Node already reads ZIP archives and already resolves modules out of a mount; the
+provider that turns one into the other is merged, so `main` today has everything a program
+needs to *be* an archive. What is still missing is the way to ask for that mount from outside
+the program, which is the whole hinge: **`--vfs-mount` / `--vfs-load`** make a mounted tree
+the thing a program resolves and runs from, and the same pull request brings
+`vfs.registerProvider()` — the extension point that lets a preload decide what backs a mount,
+and therefore the one that makes a *verifying* mount possible from userland at all. Until it
+lands, build Node from `main` with it applied; nothing in this package runs without it.
+
+[nodejs/node#65680](https://github.com/nodejs/node/pull/65680) matters only if what you bundle
+contains native addons. A `dlopen()` needs a path with an inode behind it and a VFS path has
+none, so it reads the addon's bytes out of the mount and loads them from a private,
+self-cleaning image instead — a memfd on Linux, an unlinked temp file elsewhere. Without it, a
+bundle whose dependency tree includes a `.node` file mounts fine and fails at `require`.
+
+[HISTORY.md](HISTORY.md) explains each in detail and why they are worth having.
 
 `openssl` on `PATH` is needed only to generate the throwaway PKI the tests use.
 
@@ -512,7 +530,7 @@ does to release itself is something you can do to your own project.
 [`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is the
 whole pipeline as a workflow — CI, pack, fetch the published release, audit the diff, gate,
 sign through sigstore with the workflow's OIDC identity, publish with npm provenance, every
-action pinned to a commit SHA. It is inert, because the Node it needs does not exist yet; the
+action pinned to a commit SHA. It is inert, because the Node it needs is not released yet; the
 header carries the command that makes it live.
 
 ---

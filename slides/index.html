@@ -100,6 +100,7 @@ th{text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.16em
 td{padding:12px 14px 12px 0;border-bottom:1px solid var(--rule);color:var(--ink-dim);vertical-align:top}
 td b{color:var(--ink)} td .mono{font-size:14.5px}
 .tw{overflow-x:auto}
+.tw.tight td{padding:9px 14px 9px 0}
 
 .timeline{display:flex;flex-direction:column;margin-top:20px}
 .ev{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:11px 0;border-bottom:1px solid var(--rule);align-items:baseline}
@@ -188,6 +189,7 @@ svg{display:block;max-width:100%}
   <div class="notes" hidden>
     <p class="say">"I'm going to spend the first third of this talk on jobs I've had, because the design of this thing is downstream of a specific sequence of things going wrong."</p>
     <p><b>One correction to make early, because people assume otherwise:</b> the runtime's job is to <i>run archives</i>. It does not decide which archives are allowed to run. Signing and verification are optional tools living entirely outside Node. Everything after that builds on the capability, not on the checking.</p>
+    <p><b>Check the tense before you open with it.</b> "Can now" is true once the mount/load flags land; as of 2 Sep 2026 they are still an open pull request (nodejs/node#65748) while everything under them is released or merged. If you are presenting before that, say "is about to" here and let slide <span class="mono">0x14</span> carry the detail — the room forgives a pending PR and does not forgive being oversold.</p>
     <p><b>Housekeeping:</b> questions at the end, there'll be time for one or two.</p>
     <p><em>Press T</em> to start the pace timer. Red = behind plan.</p>
   </div>
@@ -620,11 +622,12 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
      <span class="y">--vfs-mount</span> app.zip \
      <span class="y">--vfs-load</span></div>
       <ul class="bullets" style="margin-top:4px">
-        <li><b><code>--vfs-mount</code></b> mounts a source. A directory gets <code>RealFSProvider</code>; a file is
-          opened as a read-only zip and gets <code>ZipProvider</code>. Repeatable.</li>
-        <li><b><code>--vfs-load</code></b> runs the entry point <i>out of</i> the last mount &mdash; resolving it and
-          every later <code>require</code> / <code>import</code> against the mount. The archive's own
-          <code>package.json</code> <code>"main"</code> decides what runs.</li>
+        <li><b><code>--vfs-mount</code></b> mounts a source. The provider comes from the <i>source</i>, not the
+          name: a directory gets <code>RealFSProvider</code>, zip bytes get <code>ZipProvider</code>.</li>
+        <li><b><code>--vfs-load</code></b> runs the entry point <i>out of</i> the first mount &mdash;
+          <code>--vfs-load=<i>n</i></code> picks another &mdash; resolving it and every later <code>require</code> /
+          <code>import</code> against it. The archive's own <code>package.json</code> <code>"main"</code> decides
+          what runs.</li>
         <li>Resolution primitives were rerouted through a VFS-aware path that <b>defers to the real bindings when
           nothing is mounted</b> &mdash; so unmounted behaviour is unchanged.</li>
       </ul>
@@ -633,16 +636,17 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
       <div class="card">
         <div class="eyebrow" style="margin-bottom:11px">And then the good bit</div>
         <p style="color:var(--ink-dim);font-size:16.5px;line-height:1.5">
-          <code style="color:var(--accent)">argv[1]</code> is <i>unconditionally the mount point</i>. So a trailing
-          <code>--vfs-mount</code> with no value takes whatever the kernel appends &mdash;</p>
+          <code style="color:var(--accent)">--vfs-load</code> takes the entry point from the <i>mount</i>, never from
+          a positional. So a trailing <code>--vfs-mount</code> with no value takes whatever the kernel appends &mdash;</p>
         <div class="cmd sm" style="margin-top:12px;border-left-color:var(--ok)">#!/usr/bin/env -S node <span class="c">\</span>
   --experimental-vfs <span class="y">--vfs-load --vfs-mount</span></div>
         <p style="color:var(--ink);font-size:16.5px;line-height:1.5;margin-top:12px">
           &mdash; which is <b style="color:var(--accent)">the script's own path</b>. The file mounts <i>itself</i> and
           runs its own embedded main.</p>
       </div>
-      <p class="sub" style="font-size:16.5px;max-width:40ch">Native addons work: archive mounts extract to a per-pid,
-        content-hashed temp file, because <code>dlopen</code> needs a real path. Worker threads inherit the mount.</p>
+      <p class="sub" style="font-size:16.5px;max-width:40ch"><code style="color:var(--accent)">argv[1]</code> is the
+        source's <i>real</i> path, so the file can still read its own bytes &mdash; which is how a launcher verifies
+        itself. Worker threads inherit the mounts.</p>
     </div>
   </div>
   <div class="kicker"><span class="mono">node:vfs foundation by Matteo Collina</span><span>09</span></div>
@@ -650,7 +654,10 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
     <p><b>Get the credit right here, out loud.</b> <em>node:vfs</em> — the subsystem itself, MemoryProvider, RealFSProvider — is Matteo Collina's, and so is the VFS module loading that makes a mount resolvable. Yours is the zip support in node:zlib, the Zip VFS provider, and these two flags. The status slide breaks it down; don't blur it here.</p>
     <p class="say">"The shebang thing is my favourite accident. The kernel appends the script's path to the interpreter line. If the last flag is a <i>--vfs-mount</i> still waiting for a value… it gets the script itself."</p>
     <p><b>One honest footnote, if anyone is taking notes:</b> this exact form is not what the tool actually ships as a prefix. The kernel appends the path <i>and then the user's arguments</i>, which leaves nowhere to write the <em>--</em> that stops node claiming them — so <em>app.run --help</em> prints node's help. The shipped prefix is two lines of <em>sh</em> that <em>exec</em> node with <em>"$0"</em> and a <em>--</em>, and slide <span class="mono">0x0F</span> shows it. The trick on this slide is real and is a property of the flag; it is just not sufficient on its own.</p>
+    <p><b>Two details worth having ready.</b> The mount point is node's to choose, not yours — mounts live in a reserved namespace, so one can never shadow a real path. And because the provider is picked from the source's bytes rather than its name, a signed archive can be called <em>app.run</em>, <em>bundle.zip</em> or nothing in particular and still mount the same way — which matters in Act III, where renaming a file must not change what checks it.</p>
+    <p><b>Neither flag takes orders from the environment.</b> <em>--vfs-load</em> is refused in <em>NODE_OPTIONS</em> outright — which entry point runs is the command line's decision, and NODE_OPTIONS is parsed first, so otherwise an environment variable could redirect any invocation on the machine. <em>--vfs-mount</em> is allowed there, but those mounts sort after the command line's, so the index still counts the mounts you asked for.</p>
     <p><b>Why two flags?</b> Because you may want several mounts and exactly one entry point. Mounting and running are different concerns. Expect this question.</p>
+    <p><b>If someone asks about native addons</b> — and at a Node conference someone will — they are a separate pull request (65680), because <em>dlopen</em> opens a shared object by path and a VFS path has no inode to open. It reads the addon out of the mount and loads it from a private, self-cleaning image: an anonymous <em>memfd</em> on Linux, so the bytes never touch the disk at all, an unlinked temp file elsewhere. Until it lands, a bundle containing a <em>.node</em> file mounts and then fails at <em>require</em>. The status slide has it as its own row.</p>
     <p>Note what's <i>absent</i> from this slide: any mention of trust. Mounting an archive is just mounting an archive. Node will happily run an unsigned one, and that's correct behaviour.</p>
   </div>
 </section>
@@ -672,8 +679,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
           <code>ZipProvider</code> are just the last two entries.</li>
         <li>Selection happens <b>after preload modules have run</b>. So a <code>-r</code> module can install a provider
           for the source that is about to be mounted.</li>
-        <li>Because yours outranks the built-in for a file the built-in would happily take, it can <b>wrap</b> or
-          <b>vet</b> &mdash; not just add new formats.</li>
+        <li>Yours sees <b>every</b> source &mdash; directories included &mdash; and outranks the built-ins, so it can
+          <b>wrap</b> or <b>vet</b>, not just add formats.</li>
       </ul>
     </div>
     <div class="stack">
@@ -1084,34 +1091,35 @@ exec node … --vfs-mount "$0" -- "$@"</span></div>
 <section class="slide" data-act="IV · close" data-t="65">
   <div class="gutter"><span class="off">0x12</span><span class="act">IV · close</span></div>
   <div class="eyebrow">Status</div>
-  <h2>This is in Node.</h2>
-  <div class="tw" style="margin-top:28px"><table>
-    <thead><tr><th style="width:42%">Work package</th><th style="width:17%">Where</th><th>Who</th></tr></thead>
+  <h2>This is landing in Node.</h2>
+  <div class="tw tight" style="margin-top:24px"><table>
+    <thead><tr><th style="width:42%">Work package</th><th style="width:19%">Where</th><th>Who</th></tr></thead>
     <tbody>
-      <tr><td><b><code>node:vfs</code></b><br><span style="font-size:14.5px;color:var(--muted)">the VFS subsystem it all stands on</span></td>
-        <td><span class="tag ok">in Node</span></td><td>Matteo Collina</td></tr>
+      <tr><td><b><code>node:vfs</code>, and module loading</b><br><span style="font-size:14.5px;color:var(--muted)">the subsystem, and resolving a program out of a mount</span></td>
+        <td><span class="tag ok">v26.4</span></td><td>Matteo Collina</td></tr>
       <tr><td><b>Zip support in <code>node:zlib</code></b><br><span style="font-size:14.5px;color:var(--muted)">ZipEntry / ZipFile / ZipBuffer, baseOffset</span></td>
-        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
-      <tr><td><b>VFS module loading</b><br><span style="font-size:14.5px;color:var(--muted)">resolve and run a program out of a mount</span></td>
-        <td><span class="tag ok">in Node</span></td><td>Matteo Collina</td></tr>
+        <td><span class="tag ok">v26.8</span></td><td>Philipp Dunkel</td></tr>
       <tr><td><b>Zip VFS provider</b><br><span style="font-size:14.5px;color:var(--muted)">mount an archive as a file tree</span></td>
-        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
-      <tr><td><b><code>--vfs-mount</code> / <code>--vfs-load</code></b><br><span style="font-size:14.5px;color:var(--muted)">mount it, and run the program out of it</span></td>
-        <td><span class="tag ok">in Node</span></td><td>Philipp Dunkel</td></tr>
+        <td><span class="tag ok">merged</span></td><td>Philipp Dunkel</td></tr>
+      <tr><td><b><code>--vfs-mount</code> / <code>--vfs-load</code>, <code>registerProvider</code></b><br><span style="font-size:14.5px;color:var(--muted)">mount it, run the program out of it, choose what backs it</span></td>
+        <td><span class="tag warn">open &middot; 65748</span></td><td>Philipp Dunkel</td></tr>
+      <tr><td><b>Native addons from a mount</b><br><span style="font-size:14.5px;color:var(--muted)"><code>dlopen</code> wants an inode; a VFS path has none</span></td>
+        <td><span class="tag warn">open &middot; 65680</span></td><td>Philipp Dunkel</td></tr>
       <tr><td><b>Signing, verifying, recording</b><br><span style="font-size:14.5px;color:var(--muted)">the optional layer &mdash; and deliberately so</span></td>
         <td><span class="tag acc">userland</span></td><td class="mono" style="font-size:14px">@pipobscure/bundle</td></tr>
       <tr><td><b>SEA assets behind a VFS mount</b><br><span style="font-size:14.5px;color:var(--muted)">what makes a self-verifying executable tidy</span></td>
-        <td><span class="tag warn">proposed</span></td><td>Matteo Collina</td></tr>
+        <td><span class="tag warn">open &middot; 65675</span></td><td>Matteo Collina</td></tr>
     </tbody>
   </table></div>
-  <p class="sub" style="margin-top:16px;font-size:18px;color:var(--ink-dim);max-width:78ch">
-    Still behind <code style="color:var(--accent)">--experimental-vfs</code>. Flags and names can move before it settles.
-    The userland half is a TypeScript ESM package: four entry points &mdash; record, register, the API, and the SEA driver.</p>
-  <div class="kicker"><span class="mono">mechanism landed. policy is yours.</span><span></span></div>
+  <p class="sub" style="margin-top:14px;font-size:18px;color:var(--ink-dim);max-width:82ch">
+    Still behind <code style="color:var(--accent)">--experimental-vfs</code>, and the flags can still move &mdash; they are
+    the one piece nothing here runs without.</p>
+  <div class="kicker"><span class="mono">mechanism upstream. policy is yours.</span><span></span></div>
   <div class="notes" hidden>
-    <p><b>⚠ Check every row the week of the talk.</b> As of Aug 2026 the bottom two Node rows were still in flight — the Zip VFS provider expected within ~2 weeks, the mount/load flags within ~4–6 weeks. If either slipped, change that row rather than glossing it; the credibility you built in Act I is worth more than a tidy table.</p>
-    <p><b>Attribution matters on this slide and people do read it.</b> Two of the five Node rows are Matteo Collina's — the VFS subsystem itself and the module loading. Say so out loud; don't let a table of your own name imply otherwise.</p>
-    <p>The line to land: <i>"the mechanism is in Node. The policy is a package you can fork, replace, or ignore. That separation is the deliverable."</i></p>
+    <p><b>⚠ Check every row the week of the talk.</b> As of 2 Sep 2026: <em>node:vfs</em> and the module loading are released (v26.4), the zip support in <em>node:zlib</em> is released (v26.8), the Zip VFS provider merged that morning and is due in the next release, and three pull requests are open — the mount/load flags (65748), native addons from a mount (65680), and SEA assets behind a VFS mount (65675). If any of those moved, change that row rather than glossing it; the credibility you built in Act I is worth more than a tidy table.</p>
+    <p><b>Do not let "landing" slide into "landed."</b> The flags are the keystone and they are still a pull request — without them nothing in Act III runs at all. Say that plainly; someone in the room will check, and volunteering it costs you nothing while being caught costs you the act.</p>
+    <p><b>Attribution matters on this slide and people do read it.</b> The top row is Matteo Collina's — the VFS subsystem itself and the module loading — and so is the SEA-assets one. Say so out loud; don't let a table of your own name imply otherwise.</p>
+    <p>The line to land: <i>"the mechanism is going into Node. The policy is a package you can fork, replace, or ignore. That separation is the deliverable."</i> Once the flags land, drop the "going".</p>
   </div>
 </section>
 
