@@ -102,6 +102,25 @@ td b{color:var(--ink)} td .mono{font-size:14.5px}
 .tw{overflow-x:auto}
 .tw.tight td{padding:9px 14px 9px 0}
 
+/* Slides that carry more than the others: one notch tighter, so the content
+   still lands above the kicker on a 1280x720 stage. Everything here is
+   per-slide; the deck's own scale is unchanged. */
+#sigfmt .ev{padding:8px 0}
+#sigfmt .lead{font-size:20px;line-height:1.36}
+#sigfmt .bullets{gap:11px}
+#sigfmt .bullets li{font-size:17px;line-height:1.4}
+#sigfmt .stack{gap:12px}
+#provenance .ev{padding:9px 0}
+#tree .stack{gap:12px}
+#tree .card{padding:16px 19px}
+#baseoffset .bullets{gap:11px}
+#baseoffset .bullets li{font-size:18px;line-height:1.4}
+#demo1 .cmd.sm{font-size:11.5px;line-height:1.38}
+#demo1 .stack{gap:12px}
+#audit .lead{font-size:19px;line-height:1.36}
+#audit .cmd.sm{font-size:12px;line-height:1.5}
+#audit .stack{gap:11px}
+
 .timeline{display:flex;flex-direction:column;margin-top:20px}
 .ev{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:11px 0;border-bottom:1px solid var(--rule);align-items:baseline}
 .ev:last-child{border-bottom:0}
@@ -240,13 +259,8 @@ npm <span class="r">ERR!</span> fetch failed https://registry.npmjs.org/...
 npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
 
 <span class="c"># the code hadn't changed. the build had.</span></div>
-      <div class="takes">
-        <div class="take"><span class="n">01</span><span class="x">The registry is <b>not a build input</b>. Don't reach
-          for the network at deploy time.</span></div>
-        <div class="take"><span class="n">02</span><span class="x">Reproducible, <b>known versions</b> are worth real
-          effort. Resolve once; ship what you resolved.</span></div>
-      </div>
     </div>
+    <div class="stack">
     <figure>
       <div style="font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">
         npm incidents by month &mdash; from npm's own status page</div>
@@ -307,6 +321,13 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
         <span style="color:var(--ink-dim)">one every 20.4 days</span>, 11 of them major or critical.
         <span style="color:var(--rule-hi)">source: status.npmjs.org/api/v2/incidents.json</span></figcaption>
     </figure>
+      <div class="takes" style="margin-top:0">
+        <div class="take"><span class="n">01</span><span class="x">The registry is <b>not a build input</b>. Don't reach
+          for the network at deploy time.</span></div>
+        <div class="take"><span class="n">02</span><span class="x">Reproducible, <b>known versions</b> are worth real
+          effort. Resolve once; ship what you resolved.</span></div>
+      </div>
+    </div>
   </div>
   <div class="kicker"><span class="mono">example — the registry in the deploy path</span><span>01</span></div>
   <div class="notes" hidden>
@@ -319,7 +340,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
 </section>
 
 <!-- ═══ 02 ═══ -->
-<section class="slide" data-act="I · where this comes from" data-t="100">
+<section class="slide" id="provenance" data-act="I · where this comes from" data-t="100">
   <div class="gutter"><span class="off">0x02</span><span class="act">I · where this comes from</span></div>
   <div class="chapter"><span>Bloomberg LP</span><span class="yr">2014&ndash;2026</span><span class="ln"></span><span>i &mdash; provenance</span></div>
   <h2>&ldquo;What is running on that<br>host?&rdquo; needs a real answer.</h2>
@@ -522,7 +543,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
 </section>
 
 <!-- ═══ 07 ═══ -->
-<section class="slide" data-act="II · the primitive" data-t="65">
+<section class="slide" id="tree" data-act="II · the primitive" data-t="65">
   <div class="gutter"><span class="off">0x07</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Why this needed the runtime at all</div>
   <h2>An application is a tree.<br>Not a blob.</h2>
@@ -544,12 +565,12 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <code>fs</code> call &mdash; assumes that tree is on a real disk. A bundler rewrites its slice of module
         loading; everything else keeps pointing at directories that aren't there.</p>
       <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
-        <p style="color:var(--ink);font-size:22px;line-height:1.36;font-weight:600">
+        <p style="color:var(--ink);font-size:20px;line-height:1.34;font-weight:600">
           Don't teach the bundler about more file types.</p>
-        <p style="color:var(--accent);font-size:22px;line-height:1.36;font-weight:600;margin-top:10px">
+        <p style="color:var(--accent);font-size:20px;line-height:1.34;font-weight:600;margin-top:8px">
           Teach the runtime that a file can <i>be</i> a directory.</p>
       </div>
-      <p class="sub" style="font-size:17px;max-width:40ch">Then assets work. Addons work. <code>__dirname</code> works.
+      <p class="sub" style="font-size:16px;max-width:42ch">Then assets work. Addons work. <code>__dirname</code> works.
         Dynamic <code>require</code> works. Not because anyone special-cased them &mdash; because they all resolve
         against a tree, and the tree is real.</p>
     </div>
@@ -563,7 +584,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
 </section>
 
 <!-- ═══ 08 ═══ -->
-<section class="slide" data-act="II · the primitive" data-t="70">
+<section class="slide" id="baseoffset" data-act="II · the primitive" data-t="70">
   <div class="gutter"><span class="off">0x08</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Piece 1 &middot; <span style="color:var(--ok)">zip support in node:zlib</span></div>
   <h2><code style="font-size:42px">baseOffset</code> &mdash; a zip that<br>doesn't start at byte zero.</h2>
@@ -586,9 +607,9 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <text x="14" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">every internal offset is off by</text>
         <text x="14" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">len(prefix). your unzip refuses it.</text>
         <rect x="256" y="150" width="244" height="72" rx="5" fill="#151D2B" stroke="#2C6B51"/>
-        <text x="270" y="172" fill="#4FBF8B" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600">with it</text>
-        <text x="270" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">offsets seeded past the prefix.</text>
-        <text x="270" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">still a valid zip. <tspan fill="#4FBF8B">unzip app.run</tspan> works.</text>
+        <text x="264" y="172" fill="#4FBF8B" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600">with it</text>
+        <text x="264" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">offsets seeded past the prefix.</text>
+        <text x="264" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">still a valid zip. <tspan fill="#4FBF8B">unzip app.run</tspan> works.</text>
       </svg>
       <figcaption class="cap">One small primitive. It is the entire reason "append and go" works.</figcaption>
     </figure>
@@ -711,13 +732,13 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
 </section>
 
 <!-- ═══ signature format stays out ═══ -->
-<section class="slide" data-act="II · the primitive" data-t="85">
+<section class="slide" id="sigfmt" data-act="II · the primitive" data-t="85">
   <div class="gutter"><span class="off">0x0B</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">One of the design decisions</div>
   <h2>Node defines no signature<br>format. On purpose.</h2>
-  <div class="cols n" style="margin-top:22px">
+  <div class="cols n" style="margin-top:12px">
     <figure>
-      <div style="font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">
         What happens when the platform owns signing</div>
       <div class="timeline" style="margin-top:0">
         <div class="ev"><span class="d">v1</span><span class="t"><b>jar signing.</b> Per-entry checksums in a manifest.
@@ -741,8 +762,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
           site &mdash; all legitimate, all different.</li>
         <li><b>One blessed format crowds out the rest.</b> Whatever ships in core wins by default, however wrong it turns out to be.</li>
       </ul>
-      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05);padding:17px 20px">
-        <p style="font-size:17.5px;line-height:1.5;color:var(--ink)">Leave the hole, and upgrading your signature
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05);padding:13px 18px">
+        <p style="font-size:16px;line-height:1.45;color:var(--ink)">Leave the hole, and upgrading your signature
           scheme is <b style="color:var(--accent)">a dependency bump</b> &mdash; not an OS release, not a Node major,
           not a five-year deprecation.</p>
       </div>
@@ -785,7 +806,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
       <path d="M0 90 L0 102 L936 102 L936 90" stroke="#F0A93B" fill="none" stroke-width="1.5"/>
       <rect x="358" y="93" width="220" height="19" rx="3" fill="#0E1420"/>
       <text x="468" y="107" fill="#F0A93B" font-family="JetBrains Mono, monospace" font-size="11.5" text-anchor="middle">THE HASHED REGION</text>
-      <text x="944" y="128" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10">↑ stops short, so the signature can live here</text>
+      <text x="944" y="126" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10">↑ stops short, so the</text>
+      <text x="944" y="139" fill="#4FBF8B" font-family="JetBrains Mono, monospace" font-size="10">signature can live here</text>
       <text x="0" y="152" fill="#B6C2D6" font-family="Archivo, sans-serif" font-size="13">One hash over the whole file — prefix, members, the chain, and the central directory including every member's digest.</text>
     </svg>
   </figure>
@@ -839,7 +861,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
 </section>
 
 <!-- ═══ 0E ═══ -->
-<section class="slide" data-act="III · the optional layer" data-t="120">
+<section class="slide" id="demo1" data-act="III · the optional layer" data-t="120">
   <div class="gutter"><span class="off">0x0E</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 01</div>
   <h2>Observe, bundle, execute.</h2>
@@ -856,10 +878,10 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
 <span class="o">package.json</span>
 <span class="o">index.js</span>
 <span class="o">lib/hello.js</span>   <span class="c"># lib/never-used.js: absent</span></div>
-      <p class="sub" style="font-size:16px;max-width:42ch">Not static analysis. The app runs behind a
+      <p class="sub" style="font-size:15px;max-width:44ch">Not static analysis. The app runs behind a
         <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
         which writes down every file it opens.</p>
-      <div class="cmd sm" style="margin-top:4px"><span class="c"># 2. archive exactly that, then sign it</span>
+      <div class="cmd sm"><span class="c"># 2. archive exactly that, then sign it</span>
 <span class="p">$</span> npx bundle create --base ./app \
    -f app.manifest -o app.bundle
 <span class="o">+ index.js  + lib/hello.js</span>  <span class="c">…</span>
@@ -881,7 +903,7 @@ exec node --experimental-vfs \
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program.</span>
 <span class="p">$</span> ./app.run Grace
 <span class="g">hello, Grace</span></div>
-      <p class="sub" style="font-size:16px;max-width:42ch">Two kilobytes for this one. No install, no
+      <p class="sub" style="font-size:15px;max-width:44ch">Two kilobytes for this one. No install, no
         <code>node_modules</code>, no wrapper &mdash; the file mounts itself and runs its own main.</p>
     </div>
   </div>
@@ -981,7 +1003,7 @@ exec node --experimental-vfs \
 </section>
 
 <!-- ═══ 11 ═══ -->
-<section class="slide" data-act="III · the optional layer" data-t="80">
+<section class="slide" id="audit" data-act="III · the optional layer" data-t="80">
   <div class="gutter"><span class="off">0x11</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 05</div>
   <h2>Provenance says <i>who</i>.<br>Now ask <i>what</i>.</h2>
@@ -1016,14 +1038,14 @@ exec node --experimental-vfs \
     <div class="stack">
       <p class="lead" style="max-width:32ch">A bundle is a <b style="color:var(--ink)">closed set</b>. Nothing resolves
         later; nothing is fetched at install. That is the shape a review can actually be complete over.</p>
-      <p class="sub" style="font-size:17.5px;max-width:40ch">So the review is a step, not an afterthought &mdash; and it
+      <p class="sub" style="font-size:16px;max-width:42ch">So the review is a step, not an afterthought &mdash; and it
         sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
         <i>you</i> stand behind.</p>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npx bundle <span class="y">audit --check</span> app.bundle \
     &amp;&amp; npx bundle sign --launcher …
 <span class="r">error</span>: app.bundle has not been audited</div>
-      <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:15px 19px">
-        <p style="font-size:15.5px;line-height:1.5">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
+      <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:12px 16px">
+        <p style="font-size:14.5px;line-height:1.45">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
           so rebuilding invalidates it. Otherwise the gate approves any later build on the strength of one earlier
           approval &mdash; which is every &ldquo;review completed&rdquo; checkbox ever.</p>
       </div>
