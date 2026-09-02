@@ -11,12 +11,11 @@ import { packageRoot } from '../src/files.ts';
 // recording provider itself gets exercised over a real tree rather than a
 // fixture.
 //
-// Why this is a runner rather than a `-r` preload: node consults registered
-// providers when `--vfs-mount` is handed a *file*, and mounts a directory with
-// its own `RealFSProvider` without asking. So a directory mount cannot be
-// influenced from a preload, and the mount has to be made here — which also
-// means the mount point is the generated one this process is told, and the
-// entry point has to be resolved against it.
+// Why this is a runner rather than a `-r` preload: node hands registered
+// providers every source, directories included, so a recording provider *can*
+// now be installed from a preload — `src/record.ts` is exactly that. What a
+// preload cannot give you is the mount point, and the cross-check wants the
+// entry point resolved against the mount it made, so the mount is made here.
 //
 //   BUNDLE_MANIFEST=read.manifest node --experimental-vfs tools/observe.ts help
 

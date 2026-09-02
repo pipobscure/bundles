@@ -164,7 +164,7 @@ test('the bin is inspectable without running it', async () => {
     // the first hundred bytes, and the rest is a zip anybody can open.
     const head = FS.readFileSync(BIN).subarray(0, 100).toString('ascii');
     assert.match(head, /^#!/);
-    assert.match(head, /--vfs-mount/);
+    assert.match(head, /--vfs-load="\$0"/);
 
     assert.equal(verifyBundleSync(BIN, { roots: [ROOT_PEM] }).state, 'valid');
     assert.ok(inspectBundle(BIN).members.includes('package.json'));

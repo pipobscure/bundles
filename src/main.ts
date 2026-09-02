@@ -4,7 +4,7 @@ import { main } from './cli.ts';
 // The executable entry point, in every launch mode this tool has:
 //
 //   * `bundle …` / `node dist/main.js …` — an ordinary CLI.
-//   * `--vfs-load --vfs-mount <archive>` — node runs the mounted package's
+//   * `--vfs-load=<archive>` — node runs the mounted package's
 //     `main`, which is this file, out of the archive.
 //   * the SEA container, whose bootstrap mounts its own tail and then requires
 //     the package inside it, landing here.

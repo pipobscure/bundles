@@ -62,7 +62,7 @@ moving window over the recent past, not a complete history. The caption says so.
 
 - **Re-run the chart** (above) so the cadence figure is current.
 - **Check the status slide** (`0x14`). It lists seven work packages, and as of
-  **2 Sep 2026** they stand as: `node:vfs` and VFS module loading released in v26.4, the
+  **3 Sep 2026** they stand as: `node:vfs` and VFS module loading released in v26.4, the
   zip support in `node:zlib` released in v26.8, the Zip VFS provider merged
   (nodejs/node#64915) and due in the next release, the mount/load flags and
   `registerProvider` still open (nodejs/node#65748), native addons from a mount still open
@@ -96,7 +96,7 @@ moving window over the recent past, not a complete history. The caption says so.
   ```sh
   npm run build && npm run testpki
   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-      -r @pipobscure/bundle/record --vfs-load --vfs-mount ./app -- Ada
+      -r @pipobscure/bundle/record --vfs-load=./app -- Ada
   npx bundle create --base ./app -f app.manifest -o app.bundle
   npx bundle sign --launcher \
       --key build/certs/leaf.key --chain build/certs/chain.pem -o app.run app.bundle
@@ -110,12 +110,13 @@ moving window over the recent past, not a complete history. The caption says so.
   that way when you edit — a demo that only works from this checkout is a demo of nothing.
   The example app is a three-file greeter with one deliberately unused module, so the
   manifest has something to leave out.
-- **`head -c 89 app.run` on `0x0F` shows the current prefix**, which is a two-line
-  `#!/bin/sh` that `exec`s node with `"$0"` and a `--`. If you are tempted to describe it as
-  the `env -S` one-liner, don't: that form is prettier and broken, because the user's
-  arguments land after the kernel-appended path with nowhere to put the `--`, so
+- **`head -c 77 app.run` on `0x0F` shows the current prefix**, which is a two-line
+  `#!/bin/sh` that `exec`s node with `--vfs-load="$0"` and a `--`. If you are tempted to
+  describe it as the `env -S` one-liner, don't: that form is prettier and broken, because the
+  user's arguments land after the kernel-appended path with nowhere to put the `--`, so
   `app.run --help` prints node's help. Slide `0x0A` still describes the trailing-flag trick
-  correctly — that is about the flag, not about this prefix.
+  correctly — that is about the flag, not about this prefix. The byte count moved from 89 to
+  77 when `--vfs-load` started naming its source; re-check it if the prefix changes again.
 
 ## Structure
 

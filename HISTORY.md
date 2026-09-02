@@ -24,7 +24,7 @@ as ESM, with four things in it:
   observation rather than guesswork. It is the userland replacement for the
   `--vfs-manifest` flag.
 - **`@pipobscure/bundle/register`** — a **verifying `node:vfs` provider** you preload with
-  `-r` (or `--import`), so `node --vfs-load --vfs-mount app.bundle` mounts and runs an
+  `-r` (or `--import`), so `node --vfs-load=app.bundle` mounts and runs an
   application *only* if it is properly signed, and checks each member against its recorded
   digest as that member is read.
 - **`@pipobscure/bundle`** — the same operations as an API: `createBundle`, `signBundle`,
@@ -186,33 +186,39 @@ and treated like a directory.
 ### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — open)*
 
 This is what wires VFS into Node's *startup and module resolution* so a mounted tree
-becomes the thing the program actually runs from. Mounting and running are two separate
-flags, so a program can be given several mounts and still have one entry point:
+becomes the thing the program actually runs from. Mounting and running stay separate
+concerns — one flag only mounts, the other mounts and runs — so a program can be given
+several mounts and still have exactly one entry point:
 
-- **`--vfs-mount <source>`** mounts `<source>` at a reserved mount point Node assigns.
+- **`--vfs-mount=<source>`** mounts `<source>` at a reserved mount point Node assigns.
   Repeatable, and the target is deliberately not yours to choose: mounts therefore never
   shadow a real path, and no invocation can redirect one tree onto another.
   - The provider is chosen from the **source itself, not its name**: a **directory** is
     mounted with `RealFSProvider`, and a **file whose bytes are a ZIP archive** with
     `ZipProvider` — so an archive can be called anything at all.
-- **`--vfs-load[=index]`** runs the entry point out of the **first** `--vfs-mount`, or the
-  one `index` names, resolving it *and all subsequent `require()` / `import`* against the
-  mount instead of the real filesystem. An index matching no mount is rejected at startup
-  rather than quietly running a different one. The mount's own `package.json` `"main"`
-  decides what runs; a positional argument is the program's own argument (from `argv[2]`
-  on), never an entry-point override. `argv[1]` reports the mounted *source's* real path
-  rather than the generated mount point — which is what lets a launcher archive read its
-  own bytes and verify itself.
-- **Neither flag is a matter for the environment.** `--vfs-load` is refused in
-  `NODE_OPTIONS` outright — which entry point runs is the command line's decision, and
-  `NODE_OPTIONS` is parsed first, so otherwise an environment variable could redirect any
-  invocation on the machine. `--vfs-mount` is permitted there, but those mounts are ordered
-  *after* the command line's, so the index still counts the mounts the invocation itself
-  asked for.
+- **`--vfs-load=<source>`** mounts `<source>` exactly as `--vfs-mount` does *and* runs the
+  entry point out of that mount, resolving it *and all subsequent `require()` / `import`*
+  against it instead of the real filesystem. It may be given at most once. The mount's own
+  `package.json` `"main"` decides what runs; a positional argument is the program's own
+  argument (from `argv[2]` on), never an entry-point override. `argv[1]` reports the
+  *source* rather than the generated mount point — which is what lets a launcher archive
+  read its own bytes and verify itself.
+  - Both options append to one list, so mounts happen in the order written:
+    `--vfs-mount=a --vfs-load=b --vfs-mount=c` mounts `a`, `b`, `c` and runs `b`. Mounting
+    the same source twice mounts it twice, and the entry point comes from the mount
+    `--vfs-load` contributed rather than from the earlier one.
+  - It named a mount by 0-based *index* until early September 2026, which meant counting
+    `--vfs-mount`s out by hand and left the flag's value optional — and an optional value
+    needs an alias onto a hidden index flag, the trick `--inspect=<port>` uses. Naming the
+    source instead removed the flag, the range check and the counting.
+- **`--vfs-load` is refused in `NODE_OPTIONS`**: which entry point runs is the command
+  line's decision, and the environment must not be able to redirect any invocation on the
+  machine. `--vfs-mount` is permitted there, and those mounts are made *before* the command
+  line's — with no index to protect, the order no longer changes what runs.
 - The entry-point rule is precisely what makes a **self-mounting shebang** work:
-  `#!/usr/bin/env -S node --vfs-load --vfs-mount`. The kernel appends the script's own path
-  as the value of the trailing `--vfs-mount`, so the script mounts *itself* and runs its
-  embedded `package.json` main.
+  `#!/usr/bin/env -S node --vfs-load`. The kernel appends the script's own path as the value
+  of the trailing `--vfs-load`, so the script mounts *itself* and runs its embedded
+  `package.json` main — one flag now that the flag names its source.
 - To make this real, four module-resolution primitives (package.json reading,
   nearest-scope lookup, legacy main resolution, extensionless format sniffing) were
   changed to stop calling native bindings directly and instead go through a VFS-aware path
@@ -220,8 +226,9 @@ flags, so a program can be given several mounts and still have one entry point:
   behavior is identical.
 - **Worker threads** inherit the active mounts — including when constructed with an
   explicit `execArgv`, which would otherwise get a fresh options parse and escape the
-  mount — so code cannot spawn an "escaped" worker. `--vfs-load` itself has no effect in a
-  worker: it re-mounts the same sources but runs its own entry point.
+  mount — so code cannot spawn an "escaped" worker. In a worker `--vfs-load` mounts but does
+  not load: the same sources are mounted in the same order, so the reserved paths line up,
+  and the worker runs its own entry point.
 - **Native addons** are a separate pull request,
   [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), and the reason is that
   `dlopen()`/`LoadLibrary()` open a shared object *by path* and a VFS path has no inode to
@@ -257,7 +264,7 @@ registered provider is offered **directories as well as files**, so it can back,
 any source rather than only adding a format.
 
 ```sh
-node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
+node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle
 ```
 
 `canHandle` receives the `statSync()` of the source, so a provider can claim archives, or
@@ -325,7 +332,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
 | `test/*.test.ts` | 113 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
-| `shell-base` | The shebang prefix: `#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs-load --vfs-mount`. |
+| `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
 
@@ -444,10 +451,10 @@ No prefix at all: just the ZIP, with its per-member digests, its `AUTHORITY.PEM`
 and the whole-file signature in the EOCD comment. It is run by mounting it:
 
 ```sh
-node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle -- <args>
+node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle -- <args>
 ```
 
-The preload registers the provider; `--vfs-mount` hands it the archive; the provider verifies
+The preload registers the provider; `--vfs-load` hands it the archive; the provider verifies
 the signature and the chain **before** returning a filesystem, so an archive that fails is
 never mounted and the entry point never runs. This is the mode where the *runtime* enforces
 the signature rather than the application checking itself — the application needs no boot
@@ -455,25 +462,25 @@ code of its own at all. (The `--` matters: without it node claims any argument t
 like one of its own flags, and the application never sees it.)
 
 **`app.run` — the shebang archive (the same ZIP plus a one-line header; needs Node installed).**
-It is the `shell-base` prefix — `#!/bin/sh` and one `exec node … --vfs-mount "$0" -- "$@"`
+It is the `shell-base` prefix — `#!/bin/sh` and one `exec node … --vfs-load="$0" -- "$@"`
 line — followed by the ZIP. `exec` replaces the shell before it reads past that line, so the
 archive bytes are never parsed as script; `"$0"` is the file's own path, so it mounts
 **itself** and its `package.json` main becomes the entry point. The archive's `baseOffset`
 was seeded past the prefix, so it stays a valid ZIP even though it doesn't start at byte 0.
 A whole application in a file you can email — provided the recipient has a compatible Node.
 
-> The obvious prefix is `#!/usr/bin/env -S node … --vfs-load --vfs-mount`, letting the
-> kernel's appended path become the trailing flag's value. That is prettier and it works,
-> but the user's arguments land after that path with nowhere to put a `--`, so every
-> dash-leading argument goes to node rather than to the program — `app.run --help` prints
-> node's help. The shell line exists to place that `--`.
+> The obvious prefix is `#!/usr/bin/env -S node … --vfs-load`, letting the kernel's appended
+> path become the trailing flag's value. That is prettier and it works, but the user's
+> arguments land after that path with nowhere to put a `--`, so every dash-leading argument
+> goes to node rather than to the program — `app.run --help` prints node's help. The shell
+> line exists to place that `--`.
 
 > **Note:** this needs a Node whose provider selection recognizes a ZIP by locating its
 > end-of-central-directory record rather than by sniffing `PK\x03\x04` at byte 0 — a
 > prefixed container by construction has no `PK` at byte 0, and the leading-bytes test
 > rejected it with `ERR_VFS_INVALID_TARGET` before anything else happened. The bundle
 > provider never had that blind spot (it always scanned from the tail), so
-> `node -r @pipobscure/bundle/register --vfs-load --vfs-mount app.run` mounts and verifies
+> `node -r @pipobscure/bundle/register --vfs-load=app.run` mounts and verifies
 > the same file either way.
 >
 > The shebang launcher runs the archive *without* the verifying provider — the kernel gives
@@ -500,7 +507,7 @@ npm run build
 
 # 1. observe what a run reads.
 BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-    -r ./dist/record.js --vfs-load --vfs-mount ./some/app > /dev/null
+    -r ./dist/record.js --vfs-load=./some/app > /dev/null
 
 # 2. archive exactly that, unsigned.
 node dist/main.js create --base ./some/app --files app.manifest --output app.bundle
@@ -518,7 +525,7 @@ node dist/main.js verify app.signed.bundle                          # -> VALID (
 
 # Run it through the verifying mount.
 node dist/main.js run --root build/certs/root.pem app.signed.bundle -- <args>
-node --experimental-vfs -r ./dist/register.js --vfs-load --vfs-mount app.signed.bundle
+node --experimental-vfs -r ./dist/register.js --vfs-load=app.signed.bundle
     # refuses: the test root is trusted by nothing
 
 # The same archive behind a shebang, and inside a self-validating executable.
@@ -553,7 +560,7 @@ npm run sign:cli            # -> bundle.run, signed by whoever you signed in as
 npm run verify:cli          # -> VALID, with the identity that signed it
 ```
 
-A launcher archive can verify **itself**: `--vfs-mount` leaves the container's own path
+A launcher archive can verify **itself**: `--vfs-load` leaves the container's own path
 readable, so from inside, `process.argv[1]` is the real file and reading it yields the raw
 bytes rather than the mounted tree. `./app.run verify app.run` works.
 
@@ -817,7 +824,7 @@ would be a no-op in exactly the deployment that relies on it.
 For anything more, call `register()` yourself from a preload of your own:
 
 ```js
-// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load --vfs-mount app.bundle
+// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.bundle
 import { register } from '@pipobscure/bundle/provider';
 
 register({
@@ -835,7 +842,7 @@ A preload runs under the CommonJS loader, so it must not contain a top-level `aw
 ESM syntax is otherwise fine, and `--import` works as well as `-r`.
 
 `bundle run <archive> [-- <args>]` is the same thing with the flags filled in: it re-execs
-`node` with the preload and `--vfs-mount`, so what runs is what the child's own bootstrap
+`node` with the preload and `--vfs-load`, so what runs is what the child's own bootstrap
 verified.
 
 ### Self-verifying the SEA
@@ -926,7 +933,7 @@ const { state, identity, signedAt } = verifySelf();
 By contrast, the shebang launcher has no pre-mount stage of its own, so `app.run` executed
 directly does not self-verify — the kernel gives it no preload flag to carry a provider, and
 it hands straight off to the app. Mounting it with the provider preloaded
-(`node -r @pipobscure/bundle/register --vfs-load --vfs-mount app.run`) is what closes that
+(`node -r @pipobscure/bundle/register --vfs-load=app.run`) is what closes that
 gap, and is the one route by which `app.run` runs verified at all.
 
 ---
@@ -941,7 +948,7 @@ a **provider** — which is what `src/recorder.ts` is:
 
 ```sh
 BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-    -r @pipobscure/bundle/record --vfs-load --vfs-mount ./app
+    -r @pipobscure/bundle/record --vfs-load=./app
 ```
 
 `recording(Base, manifest)` wraps a provider *class*, leaving its constructor signature
@@ -969,8 +976,8 @@ import { recording, Manifest } from '@pipobscure/bundle/recorder';
 const Recording = recording(BundleProvider, new Manifest('reads.txt'));
 ```
 
-One thing it does not do: it records per *mount*, not per process, so several
-`--vfs-mount` directories merge into one list — the flag only ever supported a single
+One thing it does not do: it records per *mount*, not per process, so several mounted
+directories merge into one list — the `--vfs-manifest` flag only ever supported a single
 directory target, so this is new ground rather than a regression.
 
 An earlier constraint here has since gone away, and it is worth recording because it shaped
@@ -1138,7 +1145,7 @@ The through-line is: **let a single file be the file tree a program runs from.**
   mounted) means the *whole* runtime, not just the bundler's slice, agrees on where files
   are. Assets and addons come along for free.
 - **The self-mounting shebang is the elegant payoff.** Because the kernel appends the
-  invoked script's own path to a trailing `--vfs-mount`, so the script mounts *itself*,
+  invoked script's own path to a trailing `--vfs-load`, so the script mounts *itself*,
   a plain executable ZIP with a one-line header behaves
   like an installed program — no launcher, no wrapper, no unpacking. It's the Python
   zipapp / self-extracting-jar idea, but resolved natively by the runtime rather than
@@ -1167,8 +1174,8 @@ The through-line is: **let a single file be the file tree a program runs from.**
   code that was signed, by someone whose chain you trust. Once that code runs it has the
   full authority of the process — the guarantee is about *provenance*, not privilege.
 - **The gate is only as strong as how the runtime was launched.** Anyone who can change the
-  command line can drop the `-r`, and `--vfs-mount` will mount the archive with the built-in
-  provider, which verifies nothing. Registration is a userland opt-in, not a runtime policy.
+  command line can drop the `-r`, and the archive is mounted with the built-in provider,
+  which verifies nothing. Registration is a userland opt-in, not a runtime policy.
 - **Native SEAs are large** because they include a full Node. That's inherent to
   zero-dependency native distribution, not a flaw in the approach.
 - **Signing proves provenance, and provenance is not safety.** Every significant npm
@@ -1193,7 +1200,7 @@ bundles/
     index.ts        the package root: create / sign / verify / inspect / run, from code
     api.ts          the programmatic drive the CLI is a wrapper over
     cli.ts          parseArgs and reporting; main(argv, io) -> exit code
-    main.ts         the executable entry, and the package `main` --vfs-load runs
+    main.ts         the executable entry, and the package `main` --vfs-load= runs
     archive.ts      bundle() builds unsigned from a directory; rebundle() re-emits behind a
                     new prefix and signs; keySigner() is the offline-CA signer
     manifest.ts     buildManifest() / parseManifest() / verifySync(): the format and its check

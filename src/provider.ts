@@ -113,7 +113,7 @@ export function open(path: string, options?: ProviderOptions | Settings): Bundle
  * selects it for signed archives. Meant to be preloaded, before `--vfs-mount`
  * picks a provider:
  *
- *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load --vfs-mount app.bundle
+ *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle
  */
 export function register(options?: ProviderOptions): Settings {
     const opts = settings(options);

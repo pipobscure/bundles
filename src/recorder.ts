@@ -6,7 +6,7 @@ import { isMainThread } from 'node:worker_threads';
 // flag now that mounting is `--vfs-mount` and provider selection is the only
 // place a mount can be influenced.
 //
-//   node -r @pipobscure/bundle/record --vfs-load --vfs-mount ./lib
+//   node -r @pipobscure/bundle/record --vfs-load=./lib
 //
 // The idea is unchanged — run the application once and write down every file it
 // actually reads through the mount, which is the exact set an archive of it
@@ -133,7 +133,7 @@ export function recording<T extends ProviderClass>(Base: T, manifest: Manifest):
  * backed by it. Meant to be preloaded, before the mounts are made:
  *
  *   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
- *       -r @pipobscure/bundle/record --vfs-load --vfs-mount ./lib
+ *       -r @pipobscure/bundle/record --vfs-load=./lib
  *
  * With no manifest destination there is nothing to record, so nothing is
  * registered and directory mounts are left exactly as node makes them; the

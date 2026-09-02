@@ -6,7 +6,7 @@ import type * as Recorder from './recorder.ts';
 // it already in place when it picks a provider for a directory.
 //
 //   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-//       -r @pipobscure/bundle/record --vfs-load --vfs-mount ./lib
+//       -r @pipobscure/bundle/record --vfs-load=./lib
 //
 // `--import @pipobscure/bundle/record` works just as well: mounting is deferred
 // until both `-r` and `--import` preloads have run, and this module imports

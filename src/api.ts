@@ -239,7 +239,7 @@ export function mountArgv(archive: string): string[] {
     return [
         '--no-warnings', '--experimental-vfs',
         '-r', registerPath(),
-        '--vfs-load', '--vfs-mount', archive,
+        '--vfs-load', archive,
         '--',
     ];
 }

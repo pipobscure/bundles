@@ -2,9 +2,10 @@
 ## THIS WORKFLOW CANNOT RUN YET. It is here to be read, not to fire.
 ## =============================================================================
 ##
-## Everything below depends on a node that does not exist outside a fork:
-## `node:vfs`, the ZIP support in `node:zlib`, and the `--vfs-mount` /
-## `--vfs-load` loader are all unmerged (see HISTORY.md, "What changed in node").
+## Everything below depends on a node no released line carries yet: `node:vfs` and
+## the ZIP support in `node:zlib` are released and `ZipProvider` is merged, but the
+## `--vfs-mount` / `--vfs-load` loader is still an open pull request (see HISTORY.md,
+## "What changed in node").
 ## There is no `node-version` GitHub Actions can install that would make this pass,
 ## so shipping it live would produce a permanently red workflow and a repository
 ## that looks broken.
@@ -89,8 +90,8 @@
 #         with:
 #           persist-credentials: false
 #
-#       # The archive format needs node:vfs and the --vfs-mount loader, so a
-#       # released node will not do until that work lands upstream. This is the one
+#       # The archive format needs node:vfs and the --vfs-mount / --vfs-load loader,
+#       # so a released node will not do until that work lands upstream. This is the one
 #       # thing standing between this workflow and being able to run at all.
 #       - name: Set up node
 #         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

@@ -96,7 +96,7 @@ export function mount(target: string, { roots = [ROOT_PEM], args = [], allowUntr
     if (roots.length) env['BUNDLE_ROOTS'] = roots.join(PATH.delimiter);
     if (allowUntrusted) env['BUNDLE_ALLOW_UNTRUSTED'] = '1';
     return spawnSync(process.execPath,
-        ['--no-warnings', '--experimental-vfs', '-r', REGISTER, '--vfs-load', '--vfs-mount', target, '--', ...args],
+        ['--no-warnings', '--experimental-vfs', '-r', REGISTER, '--vfs-load', target, '--', ...args],
         { encoding: 'utf-8', env });
 }
 

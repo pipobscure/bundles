@@ -79,7 +79,7 @@ imports. So the file list comes from running the thing:
 
 ```sh
 BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
-    -r @pipobscure/bundle/record --vfs-load --vfs-mount ./app -- <args>
+    -r @pipobscure/bundle/record --vfs-load=./app -- <args>
 ```
 
 Every file read through the mount is appended to `app.manifest`, one path per line, as it is
@@ -283,7 +283,7 @@ const files = moduleFiles({
 enough:
 
 ```js
-// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load --vfs-mount app.bundle
+// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.bundle
 import { register } from '@pipobscure/bundle/provider';
 
 register({
@@ -439,7 +439,7 @@ Other limits, stated plainly:
 - **VFS is not a sandbox.** It redirects `fs` calls; it does not confine untrusted code.
   Verified code runs with the full authority of the process.
 - **The gate is only as strong as how Node was launched.** Anyone who can change the command
-  line can drop the `-r`, and `--vfs-mount` will use the built-in provider, which checks
+  line can drop the `-r`, and the mount falls back to the built-in provider, which checks
   nothing. Registration is a userland opt-in, not a runtime policy. A SEA closes this for
   itself by carrying its own bootstrap.
 - **A shebang archive does not self-verify.** The kernel gives it no preload flag to carry a
@@ -490,9 +490,13 @@ bundle whose dependency tree includes a `.node` file mounts fine and fails at `r
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 131 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 136 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
+
+The suite needs a Node carrying the [requirements](#requirements); against a build of
+[nodejs/node#65748](https://github.com/nodejs/node/pull/65748) all 136 pass, launcher and
+mount tests included.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
 test PKI is generated on demand by `tools/testpki.ts` and is **never committed** — a private

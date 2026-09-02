@@ -1,2 +1,2 @@
 #!/bin/sh
-exec node --no-warnings --experimental-vfs --vfs-load --vfs-mount "$0" -- "$@"
+exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"
