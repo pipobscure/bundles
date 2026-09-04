@@ -6,16 +6,23 @@
 // does not cover is listed at the bottom of this comment, because a renderer
 // that quietly drops syntax is worse than one that says what it knows.
 //
-// **Embedded HTML is escaped, not passed through.** GitHub renders a documented
-// subset of inline HTML; this renders none. The content here comes out of an
-// archive somebody handed the server, and "the document can inject markup into
-// the page" is a decision worth making deliberately rather than inheriting. The
-// escaping happens before anything else, so every later pass works on text that
-// can no longer become a tag.
+// **HTML passes through, and so does every link scheme.** GitHub sanitises both,
+// and has to: it renders documents that strangers uploaded, on GitHub's own
+// origin. This renders an archive the person running the server chose, and can
+// read — `unzip -l` on it, or the audit step this package is built around. A
+// renderer that stripped `<details>` and refused `mailto:` would be answering a
+// question nobody here is asking, and would make the viewer useless for exactly
+// the documents that need it.
 //
-// Not supported, deliberately: raw HTML, reference-style links, footnotes,
-// definition lists, and setext (underlined) headings. Fenced code carries its
-// language as a class but nothing highlights it.
+// Only code is escaped, spans and fences alike, because a `<script>` written
+// inside a code block is meant to be *read* rather than run. Everything else is
+// emitted as written. Markdown is applied to the text between tags but never
+// inside them, so an `href` full of underscores stays an href.
+//
+// Not supported, deliberately: reference-style links, footnotes, definition
+// lists, setext (underlined) headings, and indented code blocks — four spaces is
+// a continuation here, so use a fence. Fenced code carries its language as a
+// class but nothing highlights it.
 
 export interface Rendered {
     html: string;
@@ -24,7 +31,7 @@ export interface Rendered {
 }
 
 export function render(source: string): Rendered {
-    const lines = source.replaceAll('\u0000', '').replace(/\r\n?/g, '\n').split('\n');
+    const lines = source.replaceAll(MARK, '').replace(/\r\n?/g, '\n').split('\n');
     const slugs = new Map<string, number>();
     const state: State = { slugs, title: null };
     return { html: blocks(lines, state), title: state.title };
@@ -40,6 +47,11 @@ const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^ {0,3}([-*_])\s*(?:\1\s*){2,}$/;
 const BULLET = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const QUOTE = /^ {0,3}> ?(.*)$/;
+const HTML_BLOCK = /^ {0,3}<(?!(?:https?|mailto):)(?:[a-zA-Z!/?])/;
+// The marker that stands in for a code span while the rest of the inline
+// rules run. NUL is the one character the source cannot contain — render()
+// strips it — so nothing a document says can be mistaken for one.
+const MARK = String.fromCharCode(0);
 
 /** Renders a run of lines as block-level markdown. */
 function blocks(lines: string[], state: State): string {
@@ -119,6 +131,19 @@ function blocks(lines: string[], state: State): string {
             continue;
         }
 
+        // A block that opens with a tag is HTML, and stays HTML until a blank
+        // line. Wrapping it in <p> or running emphasis over it would only
+        // corrupt what the author wrote.
+        if (HTML_BLOCK.test(line)) {
+            const body: string[] = [];
+            while (i < lines.length && lines[i]!.trim() !== '') {
+                body.push(lines[i]!);
+                i++;
+            }
+            out.push(body.join('\n'));
+            continue;
+        }
+
         const paragraph: string[] = [];
         while (i < lines.length && lines[i]!.trim() !== '' && !isBlockStart(lines, i)) {
             // trimStart only: two trailing spaces are a hard line break,
@@ -136,7 +161,8 @@ function blocks(lines: string[], state: State): string {
 function isBlockStart(lines: string[], i: number): boolean {
     const line = lines[i]!;
     return FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) ||
-        BULLET.test(line) || (line.includes('|') && i + 1 < lines.length && isTableRule(lines[i + 1]!));
+        BULLET.test(line) || HTML_BLOCK.test(line) ||
+        (line.includes('|') && i + 1 < lines.length && isTableRule(lines[i + 1]!));
 }
 
 /**
@@ -246,19 +272,41 @@ function table(lines: string[], start: number): [string, number] {
  */
 function inline(text: string): string {
     const spans: string[] = [];
-    let html = escape(text).replace(/(`+)([\s\S]*?)\1/g, (_, _ticks, code: string) => {
-        spans.push(`<code>${code.trim()}</code>`);
-        return `\u0000${spans.length - 1}\u0000`;
+    // Code spans first, and escaped: a `<script>` written inside backticks is
+    // something to read. Everything outside them keeps its angle brackets.
+    const held = text.replace(/(`+)([\s\S]*?)\1/g, (_, _ticks, code: string) => {
+        spans.push(`<code>${escape(code.trim())}</code>`);
+        return `${MARK}${spans.length - 1}${MARK}`;
     });
 
-    html = html
+    // `<https://…>` and `<mailto:…>` look like tags to the splitter below, so
+    // they become anchors first — and are held aside like code spans, because an
+    // anchor left in the stream would have its text linked a second time.
+    const linked = held.replace(/<((?:https?|mailto):[^\s<>]+)>/g, (_, href: string) => {
+        spans.push(`<a href="${url(href)}">${href}</a>`);
+        return `${MARK}${spans.length - 1}${MARK}`;
+    });
+
+    // Split on tags and comments and transform only what lies between them.
+    // Emphasis inside an attribute would turn href="/a_b_c" into an <em>, and a
+    // bare URL inside one would nest a link in an href.
+    const html = linked
+        .split(/(<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->)/g)
+        .map((piece, index) => (index % 2 === 1 ? piece : marks(piece)))
+        .join('');
+
+    return html.replace(new RegExp(`${MARK}(\\d+)${MARK}`, 'g'), (_, index: string) => spans[Number(index)]!);
+}
+
+/** The inline markdown itself, over a run of text with no tags in it. */
+function marks(text: string): string {
+    return text
         .replace(/!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"([^"]*)")?\)/g,
             (_, alt: string, src: string, title?: string) =>
                 `<img src="${url(src)}" alt="${alt}"${title === undefined ? '' : ` title="${title}"`}>`)
         .replace(/\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"([^"]*)")?\)/g,
             (_, label: string, href: string, title?: string) =>
                 `<a href="${url(href)}"${title === undefined ? '' : ` title="${title}"`}>${label}</a>`)
-        .replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, (_, href: string) => `<a href="${url(href)}">${href}</a>`)
         .replace(/(^|[\s(])(https?:\/\/[^\s<>()]+)/g,
             (_, before: string, href: string) => `${before}<a href="${url(href)}">${href}</a>`)
         .replace(/\*\*([^\s*][\s\S]*?)\*\*/g, '<strong>$1</strong>')
@@ -269,8 +317,6 @@ function inline(text: string): string {
         // Two trailing spaces are markdown's hard break; a single newline inside
         // a paragraph is just how the source was wrapped.
         .replace(/ {2,}\n/g, '<br>\n');
-
-    return html.replace(/\u0000(\d+)\u0000/g, (_, index: string) => spans[Number(index)]!);
 }
 
 /** The plain text of an inline string, for a `<title>`. */
@@ -279,16 +325,13 @@ function plain(text: string): string {
 }
 
 /**
- * A URL for an attribute. Anything that is not plainly a path, a fragment, or
- * an http(s)/mailto URL is dropped: `javascript:` in a link is the one way a
- * document with no HTML in it can still run code in the page.
+ * A URL for an attribute. Quotes are encoded so the attribute survives; nothing
+ * else is touched. `javascript:`, `data:`, `mailto:` and whatever scheme comes
+ * next all pass, because the document came from an archive the operator picked
+ * and can read — filtering here would only break the documents that need it.
  */
 function url(raw: string): string {
-    const value = raw.trim();
-    if (/^(https?:|mailto:)/i.test(value) || /^[^a-z]/i.test(value) || !value.includes(':')) {
-        return value.replaceAll('"', '&quot;');
-    }
-    return '#';
+    return raw.trim().replaceAll('"', '&quot;');
 }
 
 /** GitHub's heading anchors: lowercase, spaces to hyphens, punctuation dropped. */

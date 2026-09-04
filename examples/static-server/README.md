@@ -215,12 +215,18 @@ lies rather than moved somewhere else. `?raw` serves the source instead — with
 its own ETag, since it is a different representation of the same file. Rendered
 pages are cached in memory against the source's size and mtime.
 
-**Embedded HTML is escaped rather than passed through**, and a `javascript:`
-link is dropped. GitHub renders a subset of inline HTML; this renders none,
-because the document arrived inside an archive somebody handed the server, and
-"the content can inject markup into the page" should be a decision rather than an
-inheritance. Reference links, footnotes and setext headings are not supported;
-the file says so at the top rather than dropping them quietly.
+**HTML passes through, and so does every link scheme.** A `<details>` block,
+an inline `<kbd>`, a `mailto:` or a `javascript:` href all arrive as written —
+markdown still renders inside an HTML block, and never inside a tag, so an
+`href` full of underscores stays an href. GitHub sanitises both because it
+renders documents strangers uploaded on its own origin; this renders an archive
+you chose and can read, and a viewer that stripped `<details>` would be useless
+for the documents that need it. Only code is escaped, spans and fences alike,
+because a `<script>` inside backticks is meant to be read.
+
+Reference links, footnotes, setext headings and indented code blocks are not
+supported — use a fence. The renderer says so at the top of the file rather than
+dropping them quietly.
 
 **Two built-in files, as a fallback.** `/builtin.css` styles the generated pages
 and `/favicon.ico` answers the request every browser makes without being asked —
