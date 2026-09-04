@@ -133,8 +133,8 @@ one lives:
     program actually resolves and runs from, and the provider registry that decides what
     backs a mount — open as
     [nodejs/node#65748](https://github.com/nodejs/node/pull/65748). Loading a **native addon**
-    out of a mount is a separate pull request,
-    [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), also open.
+    out of a mount was a separate pull request,
+    [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), merged on 4 September.
 - **The SEA group** is recent upstream Node functionality the experiment leans on, carried
   along so the whole pipeline works from one binary.
 
@@ -229,16 +229,18 @@ several mounts and still have exactly one entry point:
   mount — so code cannot spawn an "escaped" worker. In a worker `--vfs-load` mounts but does
   not load: the same sources are mounted in the same order, so the reserved paths line up,
   and the worker runs its own entry point.
-- **Native addons** are a separate pull request,
-  [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), and the reason is that
+- **Native addons** were a separate pull request,
+  [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), merged on 4 September. The
+  reason they needed one is that
   `dlopen()`/`LoadLibrary()` open a shared object *by path* and a VFS path has no inode to
   open. It reads the addon's bytes out of the mount and loads them from a private,
   self-cleaning image using the smallest on-disk footprint each platform allows: an
   anonymous `memfd` through `/proc/self/fd` on Linux, so the bytes never touch the file
   system at all; a file in a `0700` `mkdtemp()` directory, unlinked immediately after
   loading, elsewhere on POSIX; a `FILE_FLAG_DELETE_ON_CLOSE` temp file on Windows. Addons on
-  the real file system are untouched and load directly. Until it lands, a bundle whose
-  dependency tree contains a `.node` file mounts and then fails at `require`.
+  the real file system are untouched and load directly. Before it, a bundle whose dependency
+  tree contained a `.node` file mounted and then failed at `require` — the last thing a bundle
+  could not carry.
 
 Recording the path of *every file actually read through a mount* — by module resolution or
 by the program's own `fs` calls — used to be a third flag, `--vfs-manifest`, implemented as
@@ -872,8 +874,8 @@ from the blob, and then the application's, from the archive at the end of the fi
 That mirrors [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`),
 which puts a SEA's own assets behind a VFS mount and runs the main script from its root, so
 `__dirname`, relative `require()` and `node_modules` resolution all work inside the
-executable. **That work is still open and in no released Node**, so the same thing is
-done here in userland — with the difference that matters for this package: the mount that
+executable. **That work merged on 3 September and is in no released Node**, so the same thing
+is done here in userland — with the difference that matters for this package: the mount that
 runs the *application* is the signed archive appended to the file, not the blob. When
 `useVfs` lands, the generated stub is the only piece that changes.
 
@@ -1672,8 +1674,8 @@ Nothing is duplicated, and the verifier the container runs is the one the test s
 
 This is the userland form of [nodejs/node#65675](https://github.com/nodejs/node/pull/65675)
 (`"useVfs": true`), which puts a SEA's own assets behind a VFS mount and runs the main script
-from its root. That work is still open and in no released node — `--build-sea` accepts the
-key and ignores it — so it is done here by hand, with the difference that matters: the mount
+from its root. That work merged on 3 September and is in no released node — the `--build-sea` in any node
+you can install today accepts the key and ignores it — so it is done here by hand, with the difference that matters: the mount
 that runs the *application* is the signed archive appended to the file, not the blob. When
 `useVfs` lands, the generated stub is the only piece that changes.
 

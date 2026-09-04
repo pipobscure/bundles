@@ -375,8 +375,9 @@ From code, `createSeaBase()` and `buildSea()` split the expensive half (a ~155 M
 Node) from the cheap one, and `verifySelf()` lets an application report on its own
 provenance. The bootstrap mounts the package out of the SEA blob with `node:vfs` rather than
 inlining a copy of the verifier — the userland form of
-[nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`), which is
-still open.
+[nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`), which merged
+on 3 September and is in no released node yet. When it ships, the generated stub is the only
+piece here that changes.
 
 ---
 
@@ -462,7 +463,7 @@ Everything here sits on Node's experimental `node:vfs` (by Matteo Collina) and r
 | **ZIP support in `node:zlib`** — `ZipFile`, `ZipBuffer`, `ZipEntry` | released, v26.8.0 |
 | **`ZipProvider`**, a VFS provider backed by such an archive | merged — [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) |
 | **`--vfs-mount` / `--vfs-load`**, and `vfs.registerProvider()` | open — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
-| **Native addons loaded from a mount** | open — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
+| **Native addons loaded from a mount** | merged — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
 
 A released Node already reads ZIP archives and already resolves modules out of a mount; the
 provider that turns one into the other is merged, so `main` today has everything a program
@@ -473,11 +474,13 @@ the thing a program resolves and runs from, and the same pull request brings
 and therefore the one that makes a *verifying* mount possible from userland at all. Until it
 lands, build Node from `main` with it applied; nothing in this package runs without it.
 
-[nodejs/node#65680](https://github.com/nodejs/node/pull/65680) matters only if what you bundle
-contains native addons. A `dlopen()` needs a path with an inode behind it and a VFS path has
-none, so it reads the addon's bytes out of the mount and loads them from a private,
-self-cleaning image instead — a memfd on Linux, an unlinked temp file elsewhere. Without it, a
-bundle whose dependency tree includes a `.node` file mounts fine and fails at `require`.
+Native addons out of a mount landed on 4 September as
+[nodejs/node#65680](https://github.com/nodejs/node/pull/65680), which closes the last gap in
+what a bundle can contain. A `dlopen()` needs a path with an inode behind it and a VFS path
+has none, so it reads the addon's bytes out of the mount and loads them from a private,
+self-cleaning image instead — an anonymous memfd on Linux, an unlinked temp file elsewhere.
+Before it, a bundle whose dependency tree included a `.node` file mounted fine and then failed
+at `require`.
 
 [HISTORY.md](HISTORY.md) explains each in detail and why they are worth having.
 

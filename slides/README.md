@@ -62,15 +62,16 @@ moving window over the recent past, not a complete history. The caption says so.
 
 - **Re-run the chart** (above) so the cadence figure is current.
 - **Check the status slide** (`0x14`). It lists seven work packages, and as of
-  **3 Sep 2026** they stand as: `node:vfs` and VFS module loading released in v26.4, the
-  zip support in `node:zlib` released in v26.8, the Zip VFS provider merged
-  (nodejs/node#64915) and due in the next release, the mount/load flags and
-  `registerProvider` still open (nodejs/node#65748), native addons from a mount still open
-  (nodejs/node#65680), SEA assets behind a VFS mount still open (nodejs/node#65675), and the
-  signing layer in userland. If any of those moved, change the row — and if the flags landed,
-  the headline goes back to "This is in Node." The talk is planned for whenever a compatible
-  Node actually ships, so this slide is the one most likely to be wrong by then. The speaker
-  note repeats this.
+  **5 Sep 2026** exactly one is not green: the mount/load flags and
+  `registerProvider` (nodejs/node#65748), still open and still moving — the flag
+  took a mount index until 2 Sep and now names its source, so re-read `0x09` and
+  `0x0A` too. Everything else has landed: `node:vfs` and VFS module loading in
+  v26.4, the zip support in `node:zlib` in v26.8, the Zip VFS provider merged
+  2 Sep, SEA assets behind a VFS mount 3 Sep, native addons from a mount 4 Sep —
+  the four merges are waiting on a release. If any of that moved, change the row
+  — and if the flags landed, the headline goes back to "This is in Node." The
+  talk is planned for whenever a compatible Node actually ships, so this slide is
+  the one most likely to be wrong by then. The speaker note repeats this.
 - **Verify the Shai-Hulud framing** on `0x03`. Reporting varies by source and wave; the
   notes recommend "hundreds of packages across two waves in late 2025, and CISA issued an
   advisory" over a precise count you would have to defend.
