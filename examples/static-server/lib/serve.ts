@@ -4,8 +4,9 @@ import type { Stats } from 'node:fs';
 import { find, list, type Mount } from './mounts.ts';
 import { contentType } from './mime.ts';
 import { cacheControl, digest, etagFor, isFresh } from './cache.ts';
-import { builtin, directoryPage, errorPage, mountsPage } from './listing.ts';
+import { builtin, directoryPage, errorPage, markdownPage, mountsPage } from './listing.ts';
 import { redirectFor, type Redirect } from './redirects.ts';
+import { render } from './markdown.ts';
 
 // One request, start to finish.
 //
@@ -81,6 +82,14 @@ export function handle(req: IncomingMessage, res: ServerResponse, config: Config
             sendFile(req, res, index.mount, `${path}index.html`, index.stats, config);
             return;
         }
+        // A directory of markdown is a directory of documentation, and its
+        // README is what a reader wants first — the same rule the place these
+        // files usually live already applies.
+        const readme = find(config.mounts, `${path}README.md`);
+        if (readme !== null) {
+            sendMarkdown(req, res, readme.mount, `${path}README.md`, readme.stats, config);
+            return;
+        }
         if (!config.listing) {
             send(req, res, 403, errorPage(403, 'This directory has no index, and listings are off.'));
             return;
@@ -90,6 +99,13 @@ export function handle(req: IncomingMessage, res: ServerResponse, config: Config
     }
 
     if (hit !== null) {
+        // `?raw` is the way back to the source of a rendered page — for reading
+        // the markdown, for diffing it, for `curl | less`.
+        const raw = new URLSearchParams(queryOf(req.url ?? '').slice(1)).has('raw');
+        if (!raw && path.toLowerCase().endsWith('.md')) {
+            sendMarkdown(req, res, hit.mount, path, hit.stats, config);
+            return;
+        }
         sendFile(req, res, hit.mount, path, hit.stats, config);
         return;
     }
@@ -212,6 +228,41 @@ function sendFile(
     stream.pipe(res);
 }
 
+// Rendered markdown, kept against the source's (size, mtime) the same way the
+// etags are. Rendering is cheap but not free, and a documentation site serves
+// the same page to everyone.
+const rendered = new Map<string, { stamp: string; body: Buffer }>();
+
+/**
+ * A markdown file as a page: rendered, wrapped in the same shell the generated
+ * pages use, and styled by `/builtin.css` — so a directory of `.md` files is a
+ * documentation site with no build step and nothing to configure.
+ */
+function sendMarkdown(
+    req: IncomingMessage, res: ServerResponse, mount: Mount, path: string, stats: Stats, config: Config,
+): void {
+    const key = `${mount.source} ${path}`;
+    const stamp = `${stats.size}:${stats.mtimeMs}`;
+    let body = rendered.get(key)?.stamp === stamp ? rendered.get(key)!.body : undefined;
+
+    if (body === undefined) {
+        const source = mount.vfs.readFileSync(path).toString('utf-8');
+        const page = render(source);
+        body = Buffer.from(markdownPage(page.title ?? path, path, page.html), 'utf-8');
+        rendered.set(key, { stamp, body });
+    }
+
+    sendBuffer(req, res, body, {
+        type: 'text/html; charset=utf-8',
+        // The etag is over the *rendered* page, not the source: `?raw` serves
+        // different bytes from the same file and must not share a validator.
+        etag: digest(body),
+        cacheControl: cacheControl(`${path}.html`, 'text/html', config),
+        lastModified: new Date(Math.floor(stats.mtimeMs / 1000) * 1000),
+        servedBy: mount.id,
+    });
+}
+
 /**
  * Whether a `Range` should be honoured at all. `If-Range` is the client saying
  * "only if this is still the representation I have", so a mismatch means send
@@ -273,7 +324,7 @@ function sendBuffer(
     req: IncomingMessage,
     res: ServerResponse,
     body: Buffer,
-    meta: { type: string; cacheControl: string; etag?: string },
+    meta: { type: string; cacheControl: string; etag?: string; lastModified?: Date; servedBy?: string },
     status = 200,
 ): void {
     const headers: OutgoingHttpHeaders = {
@@ -282,11 +333,19 @@ function sendBuffer(
         'Cache-Control': meta.cacheControl,
         'X-Content-Type-Options': 'nosniff',
     };
+    if (meta.servedBy !== undefined) headers['X-Served-By'] = meta.servedBy;
+    if (meta.lastModified !== undefined) headers['Last-Modified'] = meta.lastModified.toUTCString();
+
     if (meta.etag !== undefined) {
         headers['ETag'] = meta.etag;
-        const noneMatch = req.headers['if-none-match'];
-        if (noneMatch !== undefined && noneMatch.split(',').some((c) => c.trim() === meta.etag)) {
-            res.writeHead(304, { 'ETag': meta.etag, 'Cache-Control': meta.cacheControl });
+        // The same freshness rules a file gets: a generated page is still a
+        // representation, and a client that already holds it should be told so.
+        if (isFresh(req, meta.etag, meta.lastModified ?? new Date(0))) {
+            res.writeHead(304, {
+                'ETag': meta.etag,
+                'Cache-Control': meta.cacheControl,
+                ...(meta.lastModified === undefined ? {} : { 'Last-Modified': meta.lastModified.toUTCString() }),
+            });
             res.end();
             return;
         }

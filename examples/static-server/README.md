@@ -17,7 +17,7 @@ package.
 
 ## What it demonstrates
 
-**An application is a tree.** The server is an entry point, a `lib/` of six
+**An application is a tree.** The server is an entry point, a `lib/` of seven
 modules, and two files in `assets/` — a stylesheet and a favicon — that it reads
 at runtime through `import.meta.dirname`. Bundled, all of that is inside one
 archive, and the assets are fetched out of the same mount the code was loaded
@@ -163,24 +163,64 @@ always allowed to do.
 
 The key is a regular expression matched against the request path and the
 location is the replacement, so this is `String.prototype.replace()` — `$1` and
-its siblings work, and a pattern is unanchored unless you anchor it. Rules are
-tried in file order and the first match wins. See
-[`redirects.example.json`](redirects.example.json).
+its siblings work, `$0` is accepted for `$&`, and a pattern is unanchored unless
+you anchor it. See [`redirects.example.json`](redirects.example.json).
 
-Four details worth knowing:
+**Every rule is applied, in file order, each to what the last one produced**, so
+rules compose:
+
+```jsonc
+{
+  "^/site/":   { "location": "https://external.site/", "code": 301 },
+  "https?://": { "location": "/redirect-intercept?$0", "code": 302 }
+}
+```
+
+`/site/foo` becomes `https://external.site/foo` by the first rule, and the second
+sees *that* and hands it to an interceptor:
+`/redirect-intercept?https://external.site/foo`. First-match-wins would leave the
+second rule unreachable for exactly the paths it exists to catch. The response
+code comes from the last rule that actually changed the value.
+
+Four more details worth knowing:
 
 - **Rules run before the mounts.** A redirect table says where things live, and a
   file that happens to sit at the old path does not quietly outrank it.
 - **The file is checked at startup.** A bad pattern, a missing `location` or a
   code that is not 301/302/303/307/308 stops the server with a message naming the
   rule, rather than surfacing as a 500 on the one request that reaches it.
-- **A rule that maps a path to itself is skipped**, because answering it is a
-  redirect loop. Longer loops — `/a` to `/b` to `/a` — are still yours to avoid.
+- **A pass that changes nothing is not a redirect**, so a rule mapping a path
+  to itself is skipped rather than answered as a loop. Longer loops — `/a` to
+  `/b` to `/a` across two rules — are still yours to avoid.
 - **The query survives.** If the rule's location carries no `?`, the request's
   own query is appended, so `?page=2` lives through a move. Permanent redirects
   (301, 308) are cacheable for `--max-age`; the temporary ones are `no-cache`,
   because a permanent redirect a browser has cached forever is the expensive kind
   of typo.
+
+**Markdown is rendered, so an archive of `.md` files is a documentation site.**
+A `.md` request comes back as a page styled by `/builtin.css`, and `README.md`
+stands in for `index.html` as a directory's default — the rule the place these
+files usually live already uses.
+
+```sh
+./static-server.run docs.zip        # and / is docs/README.md, rendered
+```
+
+The renderer is [`lib/markdown.ts`](lib/markdown.ts): headings with GitHub-style
+anchors, emphasis, code spans and fences, links and images, nested and ordered
+and task lists, blockquotes, GFM tables with alignment, and rules. Relative links
+between documents work as written, because a `.md` file is rendered where it
+lies rather than moved somewhere else. `?raw` serves the source instead — with
+its own ETag, since it is a different representation of the same file. Rendered
+pages are cached in memory against the source's size and mtime.
+
+**Embedded HTML is escaped rather than passed through**, and a `javascript:`
+link is dropped. GitHub renders a subset of inline HTML; this renders none,
+because the document arrived inside an archive somebody handed the server, and
+"the content can inject markup into the page" should be a decision rather than an
+inheritance. Reference links, footnotes and setext headings are not supported;
+the file says so at the top rather than dropping them quietly.
 
 **Two built-in files, as a fallback.** `/builtin.css` styles the generated pages
 and `/favicon.ico` answers the request every browser makes without being asked —
@@ -223,7 +263,9 @@ would teach you anything about mounting an archive.
 
 ## The example content
 
-`content/site-a` is a plain directory; `content/site-b` is meant to be zipped.
+`content/docs` is a small documentation tree — zip it and serve it to see the
+markdown viewer with nothing else configured. `content/site-a` is a plain
+directory; `content/site-b` is meant to be zipped.
 Serve both and the merge is visible: the page in the archive is styled by the
 stylesheet in the directory, and neither knows the difference. The root has no
 `index.html` unless `site-a` is mounted, so serving only the archive shows the

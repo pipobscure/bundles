@@ -44,3 +44,41 @@ td.from, th.from { text-align: right; color: var(--dim); }
 .kind.archive { color: var(--accent); border-color: var(--accent); }
 .empty, .foot { color: var(--dim); }
 footer { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 3rem; color: var(--dim); font-size: 0.85rem; }
+
+/* Rendered markdown — the documentation viewer. Close enough to GitHub to feel
+   familiar, without pretending to be a copy of it. */
+.markdown { line-height: 1.65; }
+.markdown > *:first-child { margin-top: 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+    line-height: 1.25; margin: 1.8rem 0 0.9rem; letter-spacing: -0.01em;
+}
+.markdown h1 { font-size: 1.9rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); }
+.markdown h2 { font-size: 1.4rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--rule); }
+.markdown h3 { font-size: 1.15rem; }
+.markdown h4 { font-size: 1rem; }
+.markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown pre, .markdown table {
+    margin: 0 0 1rem;
+}
+.markdown ul, .markdown ol { padding-left: 1.6rem; }
+.markdown li { margin: 0.25rem 0; }
+.markdown li.task { list-style: none; margin-left: -1.3rem; }
+.markdown li.task input { margin-right: 0.4rem; }
+.markdown code {
+    background: color-mix(in srgb, var(--rule) 45%, transparent);
+    padding: 0.15em 0.35em; border-radius: 4px; font-size: 0.88em;
+}
+.markdown pre {
+    background: color-mix(in srgb, var(--rule) 32%, transparent);
+    padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.5;
+}
+.markdown pre code { background: none; padding: 0; font-size: 0.85rem; }
+.markdown blockquote {
+    border-left: 3px solid var(--rule); padding: 0.1rem 0 0.1rem 1rem; color: var(--dim);
+}
+.markdown blockquote > *:last-child { margin-bottom: 0; }
+.markdown table { display: block; overflow-x: auto; width: max-content; max-width: 100%; }
+.markdown th, .markdown td { border: 1px solid var(--rule); padding: 0.4rem 0.7rem; }
+.markdown th { background: color-mix(in srgb, var(--rule) 30%, transparent); }
+.markdown hr { border: 0; border-top: 1px solid var(--rule); margin: 1.8rem 0; }
+.markdown img { max-width: 100%; }
+.markdown del { color: var(--dim); }

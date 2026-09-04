@@ -97,6 +97,20 @@ export function directoryPage(path: string, entries: Entry[], mounts: Mount[]): 
     ${entriesTable(path, entries)}`);
 }
 
+/**
+ * A rendered markdown file, in the same shell as everything else — so it picks
+ * up `/builtin.css`, and a site can restyle its documentation by supplying one.
+ */
+export function markdownPage(title: string, path: string, html: string): string {
+    const parent = parentOf(path);
+    return page(title, `
+    <article class="markdown">${html}</article>
+    <p class="foot">
+      ${parent === null ? '' : `<a href="${encodePath(parent)}">↑ ${escape(parent)}</a> · `}
+      <a href="${encodePath(path)}?raw">view source</a>
+    </p>`);
+}
+
 export function errorPage(status: number, detail: string): string {
     const titles: Record<number, string> = {
         400: 'Bad request',
