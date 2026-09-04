@@ -103,6 +103,18 @@ test('the published file list carries everything the exports map points at', () 
     }
 });
 
+test('the examples are not part of the published package', () => {
+    // They exist to be read and run from a checkout: they carry their own
+    // package.json, they are not built into dist/, and a published copy would
+    // only be dead weight in every install. "files" is an allowlist, so this
+    // holds as long as nobody adds an examples entry to it.
+    assert.ok(FS.existsSync(PATH.join(ROOT, 'examples')), 'the examples directory should be there to check');
+    assert.ok(
+        !manifest.files.some((entry) => entry.replace(/^\.\//, '').split('/')[0] === 'examples'),
+        `"files" would publish the examples: ${manifest.files.join(', ')}`,
+    );
+});
+
 // ------------------------------------------------------------------ the bin ---
 
 // `bin` points straight at the signed archive. There is no wrapper: the file

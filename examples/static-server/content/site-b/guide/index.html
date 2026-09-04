@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>the guide — from the archive</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p class="tag">served from inside a zip archive</p>
+  <h1>The guide</h1>
+  <p>This page is a member of an archive, mounted with <code>ZipProvider</code>. The stylesheet it is
+    using is not in that archive at all — it comes from the directory mounted alongside it, because the
+    two are merged into one tree and a request only cares which source answers first.</p>
+  <p><a href="/">Back to the top</a> · <a href="/guide/caching.html">How this server caches</a></p>
+</main>
+</body>
+</html>

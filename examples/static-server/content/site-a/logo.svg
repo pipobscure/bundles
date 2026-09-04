@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="A file containing a tree">
+  <rect x="16" y="8" width="88" height="104" rx="8" fill="none" stroke="#9a5b2c" stroke-width="4"/>
+  <path d="M38 34h44M38 52h30M52 52v40M52 70h22M52 92h22" fill="none" stroke="#9a5b2c" stroke-width="4"
+        stroke-linecap="round"/>
+</svg>

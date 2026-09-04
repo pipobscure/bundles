@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>site-a — the directory</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p class="tag">served from a directory on disk</p>
+  <h1>site-a</h1>
+  <p>This page came from a plain directory, mounted with <code>RealFSProvider</code>. Its stylesheet and
+    its logo came from the same place, resolved as ordinary relative paths — nothing here knows it is
+    being served out of a virtual file system.</p>
+  <img src="/logo.svg" alt="" width="120" height="120">
+  <p><a href="/guide/">The guide</a> is in the other source, and this link does not care which.</p>
+</main>
+<script src="/app.9f2c1a7d.js"></script>
+</body>
+</html>

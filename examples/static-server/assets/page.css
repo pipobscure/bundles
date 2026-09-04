@@ -1,0 +1,46 @@
+/* Read out of the server's own tree — inside a bundle, that is a member of the
+   archive, served through the same mount the code was loaded from. */
+:root {
+    --ground: #fbfaf7;
+    --ink: #1b1a17;
+    --dim: #6c6862;
+    --rule: #e3ded4;
+    --accent: #9a5b2c;
+    --panel: #fff;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ground: #16151a;
+        --ink: #ecebe7;
+        --dim: #9b968d;
+        --rule: #2e2c33;
+        --accent: #e0a267;
+        --panel: #1d1c22;
+    }
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 1rem; }
+h1 { font-size: 1.7rem; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+h1.err span { color: var(--dim); font-weight: 500; }
+.lead { color: var(--dim); margin: 0 0 1.6rem; max-width: 62ch; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a.up { display: inline-block; margin-bottom: 1rem; }
+table { width: 100%; border-collapse: collapse; margin: 0 0 1.8rem; background: var(--panel); }
+th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--dim); font-weight: 600; }
+td.n { color: var(--dim); width: 2rem; font-variant-numeric: tabular-nums; }
+td.size, th.size { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); white-space: nowrap; }
+td.from, th.from { text-align: right; color: var(--dim); }
+.src { color: var(--dim); font-size: 0.82rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.kind { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.15rem 0.45rem;
+    border: 1px solid var(--rule); border-radius: 999px; color: var(--dim); }
+.kind.archive { color: var(--accent); border-color: var(--accent); }
+.empty, .foot { color: var(--dim); }
+footer { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 3rem; color: var(--dim); font-size: 0.85rem; }

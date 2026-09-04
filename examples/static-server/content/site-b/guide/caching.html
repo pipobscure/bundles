@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>caching — from the archive</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p class="tag">served from inside a zip archive</p>
+  <h1>How this server caches</h1>
+  <ul>
+    <li><b>ETags are content hashes.</b> Same bytes, same validator — no matter which source served them,
+      or when the archive was built.</li>
+    <li><b>HTML revalidates every time</b> (<code>max-age=0, must-revalidate</code>), so a page is never
+      stale, and a 304 costs one round trip and no body.</li>
+    <li><b>Fingerprinted files are immutable for a year.</b> <code>app.9f2c1a7d.js</code> cannot change
+      without changing its name, so it never needs revalidating.</li>
+    <li><b>Everything else</b> is fresh for an hour by default, then revalidated.</li>
+  </ul>
+  <p><a href="/guide/">Back to the guide</a></p>
+</main>
+</body>
+</html>

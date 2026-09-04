@@ -1,0 +1,9 @@
+{
+  "name": "@example/static-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A static web server that serves the directories and archives it is given — the example application for @pipobscure/bundle.",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "EUPL-1.2"
+}

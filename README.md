@@ -548,6 +548,9 @@ header carries the command that makes it live.
   decided before it was built, and what departed from the plan: signing-time attestation,
   the audit skill, shipping the tool as a bundle of itself, the self-validating executable,
   and the audit as a build step.
+- **[examples/static-server/](examples/static-server/)** — an example application: a static web
+  server that serves the directories and archives it is handed, built and signed the way this
+  README says to build things. It ships with the repository, not with the package.
 - **[skills/audit-bundle/SKILL.md](skills/audit-bundle/SKILL.md)** — the review procedure.
 - **[slides/](slides/)** — *Ship the Tree*, a talk about the project, kept in step with it.
   `slides/index.html` opens in any browser with no build step; press <kbd>S</kbd> for the

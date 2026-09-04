@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; }
+body { margin: 0; font: 16px/1.6 ui-sans-serif, system-ui, sans-serif; background: Canvas; color: CanvasText; }
+main { max-width: 40rem; margin: 0 auto; padding: 4rem 1.5rem; }
+h1 { font-size: 2.4rem; letter-spacing: -0.03em; margin: 0.2rem 0 1rem; }
+.tag { text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.72rem; color: #8a7f70; margin: 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+img { margin: 1.5rem 0; }
