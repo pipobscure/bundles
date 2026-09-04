@@ -6,37 +6,47 @@ import type { Entry, Mount } from './mounts.ts';
 // The pages the server generates itself: the mount enumeration, a directory
 // listing, and the error pages.
 //
-// They are styled by `assets/page.css`, read out of the *server's own tree* — so
-// when the server runs as a signed archive, that stylesheet is a member of that
-// archive, fetched through the same mount the code was loaded from. It is the
-// smallest possible demonstration of what this project is about: an application
-// is a tree, and its assets travel with it.
+// They are styled by `assets/builtin.css`, read out of the *server's own tree* —
+// so when the server runs as a signed archive, that stylesheet is a member of
+// that archive, fetched through the same mount the code was loaded from. It is
+// the smallest possible demonstration of what this project is about: an
+// application is a tree, and its assets travel with it.
 //
-// It is also the file that makes the observation step honest. Nothing reads it
-// until a *generated* page is served, so a run that only fetches content leaves
-// it out of the archive — see the README's step 1.
+// The built-ins are a *fallback*, not a reserved namespace: the mounts are
+// searched first, and these answer only when nothing there does. So a site can
+// carry its own `/builtin.css` or `/favicon.ico` and simply have it win, and a
+// server standing up with no favicon at all stops answering the browser's
+// automatic request with a 404.
 
 const ASSETS = PATH.join(import.meta.dirname, '..', 'assets');
+
+/** The paths that fall back to a file inside this program, and their types. */
+const BUILTIN = new Map<string, { file: string; type: string }>([
+    ['/builtin.css', { file: 'builtin.css', type: 'text/css; charset=utf-8' }],
+    ['/favicon.ico', { file: 'favicon.ico', type: 'image/x-icon' }],
+]);
+
 const cached = new Map<string, { body: Buffer; type: string }>();
 
 /**
- * One of the server's own files, by name — and only the ones named here. A
- * server that resolves its own directory from a request path is a server that
- * eventually serves its own source.
+ * The built-in behind `path`, if there is one and the mounts did not answer
+ * first. Only the two paths above resolve: a server that maps a request path
+ * onto its own directory is a server that eventually serves its own source.
  */
-export function ownAsset(name: string): { body: Buffer; type: string } | null {
-    if (name !== 'page.css') return null;
-    const hit = cached.get(name);
+export function builtin(path: string): { body: Buffer; type: string } | null {
+    const known = BUILTIN.get(path);
+    if (known === undefined) return null;
+    const hit = cached.get(known.file);
     if (hit !== undefined) return hit;
 
     let body: Buffer;
     try {
-        body = readFileSync(PATH.join(ASSETS, name));
+        body = readFileSync(PATH.join(ASSETS, known.file));
     } catch {
         return null;
     }
-    const asset = { body, type: 'text/css; charset=utf-8' };
-    cached.set(name, asset);
+    const asset = { body, type: known.type };
+    cached.set(known.file, asset);
     return asset;
 }
 
@@ -52,8 +62,9 @@ export function mountsPage(mounts: Mount[], entries: Entry[]): string {
     <p class="lead">This server has nothing to serve. Name a directory or an archive on the command
       line and it appears here, along with everything in it.</p>
     <p class="foot">Starting up read every module this server has, and this page is the last code
-      path — bar the stylesheet it links, which your browser is fetching separately. That pair is a
-      complete observation run, with nothing mounted at all.</p>`);
+      path — bar the two built-ins it links, <code>/builtin.css</code> and <code>/favicon.ico</code>,
+      which your browser fetches separately. Those three requests are a complete observation run,
+      with nothing mounted at all.</p>`);
     }
 
     const rows = mounts.map((mount, index) => `
@@ -129,7 +140,8 @@ function page(title: string, body: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(title)}</title>
-<link rel="stylesheet" href="/__server__/page.css">
+<link rel="stylesheet" href="/builtin.css">
+<link rel="icon" href="/favicon.ico">
 </head>
 <body>
 <main>${body}</main>

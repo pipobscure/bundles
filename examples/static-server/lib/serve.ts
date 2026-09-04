@@ -4,7 +4,7 @@ import type { Stats } from 'node:fs';
 import { find, list, type Mount } from './mounts.ts';
 import { contentType } from './mime.ts';
 import { cacheControl, digest, etagFor, isFresh } from './cache.ts';
-import { directoryPage, errorPage, mountsPage, ownAsset } from './listing.ts';
+import { builtin, directoryPage, errorPage, mountsPage } from './listing.ts';
 
 // One request, start to finish.
 //
@@ -19,9 +19,6 @@ export interface Config {
     listing: boolean;
     maxAge: number;
 }
-
-/** Where the server serves its own files from, kept out of the content's way. */
-const OWN_PREFIX = '/__server__/';
 
 export function handle(req: IncomingMessage, res: ServerResponse, config: Config): void {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -41,20 +38,6 @@ export function handle(req: IncomingMessage, res: ServerResponse, config: Config
     }
     if (path === null) {
         send(req, res, 403, errorPage(403, 'That path tried to leave the served tree.'));
-        return;
-    }
-
-    if (path.startsWith(OWN_PREFIX)) {
-        const asset = ownAsset(path.slice(OWN_PREFIX.length));
-        if (asset === null) {
-            send(req, res, 404, errorPage(404, 'No such file.'));
-            return;
-        }
-        sendBuffer(req, res, asset.body, {
-            type: asset.type,
-            etag: digest(asset.body),
-            cacheControl: `public, max-age=${config.maxAge}`,
-        });
         return;
     }
 
@@ -94,6 +77,20 @@ export function handle(req: IncomingMessage, res: ServerResponse, config: Config
     // because a root exists whether or not any source has a file at it.
     if (path === '/') {
         send(req, res, 200, pageFor('/', config));
+        return;
+    }
+
+    // Only now the built-ins. Searching the mounts first is what lets a site
+    // carry its own `/builtin.css` or `/favicon.ico` and have it win — the
+    // fallback is for what nobody supplied, which on a freshly stood-up server
+    // is usually the favicon a browser asks for without being told to.
+    const own = builtin(path);
+    if (own !== null) {
+        sendBuffer(req, res, own.body, {
+            type: own.type,
+            etag: digest(own.body),
+            cacheControl: `public, max-age=${config.maxAge}`,
+        });
         return;
     }
 

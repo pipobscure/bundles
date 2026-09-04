@@ -18,10 +18,10 @@ package.
 ## What it demonstrates
 
 **An application is a tree.** The server is an entry point, a `lib/` of five
-modules, and `assets/page.css` — which it reads at runtime through
-`import.meta.dirname`. Bundled, all of that is inside one archive, and the
-stylesheet is fetched out of the same mount the code was loaded from. A bundler
-would have collapsed the JavaScript and left the stylesheet behind.
+modules, and two files in `assets/` — a stylesheet and a favicon — that it reads
+at runtime through `import.meta.dirname`. Bundled, all of that is inside one
+archive, and the assets are fetched out of the same mount the code was loaded
+from. A bundler would have collapsed the JavaScript and left both behind.
 
 **TypeScript runs as it is.** The sources are erasable-syntax TypeScript, and the
 archive contains the `.ts` files. Node strips the types on the way in — from
@@ -75,8 +75,9 @@ cd examples/static-server
 #    project it is @pipobscure/bundle/record.)
 BUNDLE_MANIFEST=server.manifest node --experimental-vfs \
     -r ../../dist/record.js --vfs-load=. -- --port=8080 &
-curl -s -o /dev/null localhost:8080/                    # startup, and a generated page
-curl -s -o /dev/null localhost:8080/__server__/page.css # the stylesheet that page links
+curl -s -o /dev/null localhost:8080/             # startup, and a generated page
+curl -s -o /dev/null localhost:8080/builtin.css  # the stylesheet that page links
+curl -s -o /dev/null localhost:8080/favicon.ico  # and the icon a browser would ask for
 kill %1
 
 # 2. create — archive exactly that
@@ -98,12 +99,12 @@ with an empty enumeration — and that is deliberate: startup reads every module
 and `package.json`, and one generated page needs no content at all. Nothing has
 to be mounted to exercise the program.
 
-**And note that it takes two requests, not one.** `assets/page.css` is a
-*separate* HTTP request that a browser would make after parsing the page, and
-`curl` is not a browser: fetch only `/` and the server never opens its own
-stylesheet, so the archive is complete right up until someone hits a 404 — at
-which point the server 404s its own CSS. Nothing about the source tree says that;
-only running it does.
+**And note that it takes three requests, not one.** The stylesheet and the icon
+are *separate* HTTP requests that a browser makes after parsing the page, and
+`curl` is not a browser: fetch only `/` and the server never opens either asset,
+so the archive is complete right up until someone hits a page — at which point
+the server 404s its own CSS. Nothing about the source tree says that; only running
+it does.
 
 That is the shape of the warning in general. Observation records the files a run
 *read*, so a path never taken is a file never archived — a lazily-required
@@ -144,6 +145,18 @@ the validators and no body.
 with `If-Range` honoured and 416 plus `Content-Range: bytes */size` when the
 range cannot be met. Multiple ranges are answered in full, which a server is
 always allowed to do.
+
+**Two built-in files, as a fallback.** `/builtin.css` styles the generated pages
+and `/favicon.ico` answers the request every browser makes without being asked —
+the 404 you always see in the log of a freshly stood-up server. Both are looked
+for in the **mounts first**: put a `builtin.css` or a `favicon.ico` in any source
+you serve and yours wins, with no flag and no configuration. The built-in is only
+what nobody supplied.
+
+The stock favicon is [@pipobscure](https://github.com/pipobscure)'s avatar, which
+is a fine default for a demo in this repository and almost certainly not what you
+want on your own site — so replace it by putting a `favicon.ico` in your content.
+That is the override working, and it is one file.
 
 **Everything else you would want**: `HEAD`, 405 with `Allow` for anything else,
 301 for a directory without its trailing slash, `index.html` for a directory that
