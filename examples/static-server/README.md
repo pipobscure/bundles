@@ -224,9 +224,11 @@ you chose and can read, and a viewer that stripped `<details>` would be useless
 for the documents that need it. Only code is escaped, spans and fences alike,
 because a `<script>` inside backticks is meant to be read.
 
-Reference links, footnotes, setext headings and indented code blocks are not
-supported — use a fence. The renderer says so at the top of the file rather than
-dropping them quietly.
+Reference links, footnotes and setext headings are not supported; the renderer
+says so at the top of the file rather than dropping them quietly. One departure
+from CommonMark, deliberately: a bullet indented four spaces at the top level is
+a list rather than a code block, because that is what somebody who indented a
+list meant.
 
 **Two built-in files, as a fallback.** `/builtin.css` styles the generated pages
 and `/favicon.ico` answers the request every browser makes without being asked —

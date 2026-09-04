@@ -20,9 +20,13 @@
 // inside them, so an `href` full of underscores stays an href.
 //
 // Not supported, deliberately: reference-style links, footnotes, definition
-// lists, setext (underlined) headings, and indented code blocks — four spaces is
-// a continuation here, so use a fence. Fenced code carries its language as a
-// class but nothing highlights it.
+// lists, and setext (underlined) headings. Fenced code carries its language as a
+// class but nothing highlights it; an indented block has no language to carry.
+//
+// One departure from CommonMark, for lists: a bullet indented four spaces at the
+// top level is read as a list rather than as code, because that is what somebody
+// who indented a list meant, and a list that silently became a code block is a
+// worse surprise than a code block that needed a fence.
 
 export interface Rendered {
     html: string;
@@ -45,9 +49,10 @@ interface State {
 const FENCE = /^ {0,3}(```+|~~~+)\s*([\w+-]*)\s*$/;
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^ {0,3}([-*_])\s*(?:\1\s*){2,}$/;
-const BULLET = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+const BULLET = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(.*)$/;
 const QUOTE = /^ {0,3}> ?(.*)$/;
 const HTML_BLOCK = /^ {0,3}<(?!(?:https?|mailto):)(?:[a-zA-Z!/?])/;
+const INDENTED = /^(?: {4}|\t)/;
 // The marker that stands in for a code span while the rest of the inline
 // rules run. NUL is the one character the source cannot contain — render()
 // strips it — so nothing a document says can be mistaken for one.
@@ -131,6 +136,21 @@ function blocks(lines: string[], state: State): string {
             continue;
         }
 
+        // Four spaces or a tab is a code block, and it keeps that meaning all
+        // the way down: the whole point of writing one is that the contents are
+        // not interpreted. Blank lines inside it belong to the block; the ones
+        // that trail it do not.
+        if (INDENTED.test(line)) {
+            const body: string[] = [];
+            while (i < lines.length && (INDENTED.test(lines[i]!) || lines[i]!.trim() === '')) {
+                body.push(lines[i]!.replace(INDENTED, ''));
+                i++;
+            }
+            while (body.length > 0 && body[body.length - 1]!.trim() === '') body.pop();
+            out.push(`<pre><code>${escape(body.join('\n'))}\n</code></pre>`);
+            continue;
+        }
+
         // A block that opens with a tag is HTML, and stays HTML until a blank
         // line. Wrapping it in <p> or running emphasis over it would only
         // corrupt what the author wrote.
@@ -178,6 +198,11 @@ function list(lines: string[], start: number, state: State): [string, number] {
     let loose = false;
     let i = start;
     let blanks = 0;
+    // How far in the current item's content sits: the marker plus the space
+    // after it. `1. ` and `- ` are different widths, and `10. ` different again,
+    // so a fixed guess dedents continuation lines by the wrong amount and leaves
+    // a stray space in front of every fenced block inside a list.
+    let width = indent + first[2]!.length + first[3]!.length;
 
     while (i < lines.length) {
         const line = lines[i]!;
@@ -192,15 +217,21 @@ function list(lines: string[], start: number, state: State): [string, number] {
         const continued = items.length > 0 && line.search(/\S/) > indent;
 
         if (own) {
+            // A list ends where its kind changes: `1.` after `-` starts a new
+            // list rather than continuing this one.
+            if (/\d/.test(bullet[2]!) !== ordered) break;
+            if (bullet[1]!.length < indent) break;
             // A blank line between items makes the whole list loose, which is
             // what decides whether items are wrapped in <p>.
             if (blanks > 0 && items.length > 0) loose = true;
-            if (bullet[1]!.length < indent) break;
-            items.push([bullet[3]!]);
+            items.push([bullet[4]!]);
+            width = bullet[1]!.length + bullet[2]!.length + bullet[3]!.length;
         } else if (continued) {
             if (blanks > 0) loose = true;
-            // Keep the relative indentation so a nested list still parses.
-            items[items.length - 1]!.push(line.slice(indent + 2));
+            // Strip this item's content indent, and no more: what is left of the
+            // indentation is the author's, and a nested list or an indented block
+            // needs it.
+            items[items.length - 1]!.push(line.replace(new RegExp(`^ {0,${width}}`), ''));
         } else {
             break;
         }
@@ -212,7 +243,10 @@ function list(lines: string[], start: number, state: State): [string, number] {
     const rendered = items.map((item) => {
         const [task, body] = taskOf(item);
         const html = blocks(body, state);
-        const content = loose ? html : html.replace(/^<p>([\s\S]*)<\/p>$/, '$1');
+        // A tight item shows its text bare. Only the first paragraph's wrapper
+        // comes off: what follows it is a nested list or a code block, which
+        // still needs to be a block of its own.
+        const content = loose ? html : html.replace(/^<p>([\s\S]*?)<\/p>(\n|$)/, '$1$2');
         return `<li${task === null ? '' : ' class="task"'}>${task ?? ''}${content}</li>`;
     }).join('\n');
 
