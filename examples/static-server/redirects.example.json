@@ -1,0 +1,6 @@
+{
+  "^/old/(.*)$": { "location": "/$1", "code": 301 },
+  "^/guide$": { "location": "/guide/", "code": 308 },
+  "^/docs/(.*)$": { "location": "/guide/$1" },
+  "^/elsewhere/(.*)$": { "location": "https://example.com/$1", "code": 302 }
+}

@@ -9,6 +9,7 @@ archive; which it is comes from the file itself, not from its name.
   --host=<addr>     address to listen on (default localhost; 0.0.0.0 for all)
   --port=<n>        port to listen on (default 8080; 0 picks a free one)
   --max-age=<secs>  freshness for ordinary files (default 3600)
+  --redirects=<f>   JSON file of redirect rules, applied before anything is served
   --no-listing      404 a directory that has no index.html, instead of listing it
   --help
 
@@ -22,6 +23,7 @@ export interface Options {
     host: string;
     port: number;
     maxAge: number;
+    redirects: string | undefined;
     listing: boolean;
 }
 
@@ -33,6 +35,7 @@ export function parse(argv: string[]): Options {
             'host': { type: 'string' },
             'port': { type: 'string' },
             'max-age': { type: 'string' },
+            'redirects': { type: 'string' },
             'no-listing': { type: 'boolean' },
             'help': { type: 'boolean', short: 'h' },
         },
@@ -44,6 +47,7 @@ export function parse(argv: string[]): Options {
         host: values.host ?? 'localhost',
         port: number(values.port, 'port', Number(process.env['PORT'] ?? 8080)),
         maxAge: number(values['max-age'], 'max-age', 3600),
+        redirects: values.redirects,
         listing: values['no-listing'] !== true,
     };
 }

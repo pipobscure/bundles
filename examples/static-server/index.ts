@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { parse, USAGE } from './lib/args.ts';
 import { mountAll, type Mount } from './lib/mounts.ts';
+import { loadRedirects, type Redirect } from './lib/redirects.ts';
 import { handle } from './lib/serve.ts';
 
 // A static web server that serves what it is handed: directories, ZIP archives,
@@ -35,8 +36,10 @@ if (options.sources.length === 0) {
 }
 
 let mounts: Mount[];
+let redirects: Redirect[];
 try {
     mounts = mountAll(options.sources);
+    redirects = options.redirects === undefined ? [] : loadRedirects(options.redirects);
 } catch (error) {
     process.stderr.write(`static-server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(66);
@@ -44,7 +47,7 @@ try {
 
 const server = createServer((req, res) => {
     try {
-        handle(req, res, { mounts, listing: options.listing, maxAge: options.maxAge });
+        handle(req, res, { mounts, redirects, listing: options.listing, maxAge: options.maxAge });
     } catch (error) {
         // A handler that throws still has to answer: a hung socket is worse than
         // a 500, and an example that swallows the reason is worse than both.
@@ -64,6 +67,9 @@ server.listen(options.port, options.host, () => {
     process.stdout.write(`static-server: http://${host}:${port}\n`);
     for (const mount of mounts) {
         process.stdout.write(`  ${mount.kind.padEnd(9)} ${mount.source}\n`);
+    }
+    if (redirects.length > 0) {
+        process.stdout.write(`  redirects ${redirects.length} rule${redirects.length === 1 ? '' : 's'}\n`);
     }
 });
 

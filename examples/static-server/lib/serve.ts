@@ -5,6 +5,7 @@ import { find, list, type Mount } from './mounts.ts';
 import { contentType } from './mime.ts';
 import { cacheControl, digest, etagFor, isFresh } from './cache.ts';
 import { builtin, directoryPage, errorPage, mountsPage } from './listing.ts';
+import { redirectFor, type Redirect } from './redirects.ts';
 
 // One request, start to finish.
 //
@@ -18,6 +19,7 @@ export interface Config {
     mounts: Mount[];
     listing: boolean;
     maxAge: number;
+    redirects: Redirect[];
 }
 
 export function handle(req: IncomingMessage, res: ServerResponse, config: Config): void {
@@ -38,6 +40,25 @@ export function handle(req: IncomingMessage, res: ServerResponse, config: Config
     }
     if (path === null) {
         send(req, res, 403, errorPage(403, 'That path tried to leave the served tree.'));
+        return;
+    }
+
+    // Rules first, before anything is looked for. A redirect table is a
+    // statement about where things live, and a file that happened to sit at the
+    // old path should not quietly outrank it — the surprising server is the one
+    // where adding a file silently disables a redirect.
+    const redirect = redirectFor(config.redirects, path);
+    if (redirect !== null) {
+        res.writeHead(redirect.code, {
+            'Location': locationHeader(redirect.location, req.url ?? ''),
+            // A permanent redirect a browser caches forever is the expensive
+            // kind of typo, so only the permanent ones are cacheable at all.
+            'Cache-Control': redirect.code === 301 || redirect.code === 308
+                ? `public, max-age=${config.maxAge}`
+                : 'no-cache',
+            'Content-Length': 0,
+        });
+        res.end();
         return;
     }
 
@@ -272,6 +293,21 @@ function sendBuffer(
     }
     res.writeHead(status, headers);
     res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+/**
+ * The `Location` for a redirect rule. An absolute URL is used exactly as
+ * written; a path is percent-encoded segment by segment, because the
+ * replacement may have carried decoded text — a filename with a space in it
+ * would otherwise produce a header no client can parse. A query the rule did not
+ * write itself is carried over from the request, so `?page=2` survives a move.
+ */
+function locationHeader(location: string, url: string): string {
+    const absolute = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(location);
+    const mark = location.search(/[?#]/);
+    const head = mark === -1 ? location : location.slice(0, mark);
+    const rest = mark === -1 ? '' : location.slice(mark);
+    return (absolute ? head : encodePath(head)) + (rest === '' ? queryOf(url) : rest);
 }
 
 function queryOf(url: string): string {

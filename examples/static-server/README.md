@@ -17,7 +17,7 @@ package.
 
 ## What it demonstrates
 
-**An application is a tree.** The server is an entry point, a `lib/` of five
+**An application is a tree.** The server is an entry point, a `lib/` of six
 modules, and two files in `assets/` — a stylesheet and a favicon — that it reads
 at runtime through `import.meta.dirname`. Bundled, all of that is inside one
 archive, and the assets are fetched out of the same mount the code was loaded
@@ -146,6 +146,42 @@ with `If-Range` honoured and 416 plus `Content-Range: bytes */size` when the
 range cannot be met. Multiple ranges are answered in full, which a server is
 always allowed to do.
 
+**Redirects**, from a JSON file, applied before anything is looked for:
+
+```jsonc
+{
+  "^/old/(.*)$":       { "location": "/$1", "code": 301 },
+  "^/guide$":          { "location": "/guide/", "code": 308 },
+  "^/docs/(.*)$":      { "location": "/guide/$1" },          // 301 by default
+  "^/elsewhere/(.*)$": { "location": "https://example.com/$1", "code": 302 }
+}
+```
+
+```sh
+./static-server.run --redirects=redirects.json ./site
+```
+
+The key is a regular expression matched against the request path and the
+location is the replacement, so this is `String.prototype.replace()` — `$1` and
+its siblings work, and a pattern is unanchored unless you anchor it. Rules are
+tried in file order and the first match wins. See
+[`redirects.example.json`](redirects.example.json).
+
+Four details worth knowing:
+
+- **Rules run before the mounts.** A redirect table says where things live, and a
+  file that happens to sit at the old path does not quietly outrank it.
+- **The file is checked at startup.** A bad pattern, a missing `location` or a
+  code that is not 301/302/303/307/308 stops the server with a message naming the
+  rule, rather than surfacing as a 500 on the one request that reaches it.
+- **A rule that maps a path to itself is skipped**, because answering it is a
+  redirect loop. Longer loops — `/a` to `/b` to `/a` — are still yours to avoid.
+- **The query survives.** If the rule's location carries no `?`, the request's
+  own query is appended, so `?page=2` lives through a move. Permanent redirects
+  (301, 308) are cacheable for `--max-age`; the temporary ones are `no-cache`,
+  because a permanent redirect a browser has cached forever is the expensive kind
+  of typo.
+
 **Two built-in files, as a fallback.** `/builtin.css` styles the generated pages
 and `/favicon.ico` answers the request every browser makes without being asked —
 the 404 you always see in the log of a freshly stood-up server. Both are looked
@@ -180,6 +216,7 @@ would teach you anything about mounting an archive.
 --host=<addr>     address to listen on (default localhost; 0.0.0.0 for all)
 --port=<n>        port to listen on (default 8080; 0 picks a free one)
 --max-age=<secs>  freshness for ordinary files (default 3600)
+--redirects=<f>   JSON file of redirect rules, applied before anything is served
 --no-listing      404 a directory that has no index.html, instead of listing it
 --help
 ```
