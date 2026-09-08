@@ -49,7 +49,9 @@ test('the generated stub requires the launcher and lets it decide the shape', ()
     const stub = stubSource({ roots: ['/etc/root.pem'], allowUntrusted: true });
     // The blob is the file system now, so the stub is a relative require —
     // no asset to fetch, no ZipBuffer to mount by hand.
-    assert.match(stub, /require\("\.\/(src|dist)\/launch\.(ts|js)"\)/);
+    // An ES module, like every other file in the bundle it is injected into.
+    assert.match(stub, /import \* as launch from "\.\/(src|dist)\/launch\.(ts|js)"/);
+    assert.ok(!stub.includes('require('), 'the stub is not CommonJS');
     assert.ok(!stub.includes('getRawAsset'), 'nothing unpacks an asset any more');
     assert.match(stub, /appended\(process\.execPath\)/);
     assert.match(stub, /\.runSelf\(OPTIONS\)/);
