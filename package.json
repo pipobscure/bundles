@@ -31,6 +31,7 @@
     "./recorder": "./dist/recorder.js",
     "./record": "./dist/record.js",
     "./sea": "./dist/sea.js",
+    "./launch": "./dist/launch.js",
     "./manifest": "./dist/manifest.js",
     "./archive": "./dist/archive.js",
     "./skill": "./dist/skill.js",

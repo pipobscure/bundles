@@ -33,7 +33,7 @@ as ESM, with four things in it:
 - **`bundle`**, the CLI — `create`, `sign`, `verify`, `run`, `sea`, `trust`, `skill`.
 
 Plus **`@pipobscure/bundle/sea`**, which puts the verifying mount inside a single executable:
-a Node runtime, this package as a mounted asset in its own SEA blob, and the application
+a Node runtime, this package as a mounted archive in its own SEA blob, and the application
 appended as a signed archive — so the finished binary checks its own signature before
 running anything, with the checker inside what is checked.
 
@@ -324,7 +324,8 @@ the tests import the sources rather than the build for exactly that reason.
 | `src/register.ts` | The `-r` preload entry point — one call to `register()`, configured through the environment. |
 | `src/recorder.ts` | The recording provider: wraps a provider class so every read through it is appended to a manifest. Replaces the `--vfs-manifest` flag. |
 | `src/record.ts` | The `-r` preload for recording — set `BUNDLE_MANIFEST` and mount a directory. |
-| `src/sea.ts` | The self-validating executable: `bootstrap()` at runtime, `createSeaBase()` / `buildSea()` at build time, and the generated CommonJS stub that ties them together. |
+| `src/launch.ts` | The verification entry point: verify a container, mount it, run what is inside — as an executable checking itself, as a runtime handed an archive, or as a library call. Carries the verifying node's own command line. |
+| `src/sea.ts` | Building the executables: `createSeaBase()` / `buildSea()`, the generated CommonJS stub, and the self-test that runs the result once before handing it back. |
 | `src/sigstore.ts` | Sigstore as one of the signers the format can carry: a two-phase signer (get the Fulcio certificate, *then* sign the finished hash), synchronous bundle verification, and the trust root. |
 | `src/oidc.ts` | Getting an OIDC identity token — an ambient CI token, a browser sign-in through sigstore's Dex, or a device code. No dependencies of its own. |
 | `src/files.ts` | Working out a member list the way observation cannot: a dependency closure resolved through `node_modules`, for code that is only required on a path a test run never takes. |
@@ -333,7 +334,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 113 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 144 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -345,7 +346,8 @@ the tests import the sources rather than the build for exactly that reason.
   ".":          "./dist/index.js",     // create / sign / verify / inspect / run, from code
   "./register": "./dist/register.js",  // -r preload: mount only what is signed
   "./record":   "./dist/record.js",    // -r preload: write down what a run reads
-  "./sea":      "./dist/sea.js",       // build and boot a self-validating executable
+  "./sea":      "./dist/sea.js",       // build a verifying runtime, with or without an app
+  "./launch":   "./dist/launch.js",    // verify a container, mount it, run it
   "./provider": "./dist/provider.js",  // the verifying provider, and register(options)
   "./recorder": "./dist/recorder.js",  // the recording provider, and recording(Base, manifest)
   "./cli":      "./dist/cli.js",       // main(argv, io) -> exit code
@@ -537,7 +539,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.bundle
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 131 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 144 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -847,15 +849,18 @@ ESM syntax is otherwise fine, and `--import` works as well as `-r`.
 `node` with the preload and `--vfs-load`, so what runs is what the child's own bootstrap
 verified.
 
-### Self-verifying the SEA
+### The verifying runtime, in two shapes
 
-`bundle sea` produces a single executable that checks its own signature before it runs
-anything. The file is three parts, in the order the loader meets them:
+`bundle sea` builds a node runtime with this package inside it. Whether the result is an
+application or a tool depends on nothing but what is behind it.
+
+**With an archive appended, it is that application**, checking its own signature before it
+runs anything:
 
 ```
-[ node runtime | SEA blob: stub + the verifier as a mounted asset ] [ app.bundle ]
-  \____________________ the prefix, and part of the ______________/
-   \___________________ archive's signed region _______/
+[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.bundle ]
+  \_______________________ the prefix, and part of the _______________/
+   \______________________ archive's signed region ______/
 ```
 
 The application is an ordinary signed `.bundle` appended to a node binary — the same
@@ -864,27 +869,52 @@ that the whole-file hash covers the prefix too, so the runtime and the verifier 
 are signed by the same signature that covers the application. There is nothing to check the
 checker against, because the checker is inside what is checked.
 
-**Driving SEA through a VFS mount.** The bootstrap runs before anything is mounted, so it
-cannot import this package the ordinary way. Rather than inlining a second copy of the
-verifier into the stub — which is what this used to do, and which drifts — the package's own
-files ride in the SEA blob as a single `.bundle` asset, and the stub mounts *that* with
-`node:vfs` and requires the real library out of it. So there are two mounts: the verifier's,
-from the blob, and then the application's, from the archive at the end of the file.
+**With nothing appended, it is a verifying node**: a runtime that takes an archive on its
+command line, checks it, and runs it.
 
-That mirrors [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`),
-which puts a SEA's own assets behind a VFS mount and runs the main script from its root, so
-`__dirname`, relative `require()` and `node_modules` resolution all work inside the
-executable. **That work merged on 3 September and is in no released Node**, so the same thing
-is done here in userland — with the difference that matters for this package: the mount that
-runs the *application* is the signed archive appended to the file, not the blob. When
-`useVfs` lands, the generated stub is the only piece that changes.
+```sh
+bundle sea --output node-verifying --root /etc/ssl/my-root.pem
+./node-verifying ./my-app.zip --args --for --the --app
+```
+
+One runtime, any number of applications, none of them trusted until they verify — the shape
+you want when the thing being distributed is *many* signed archives rather than one program.
+The application sees the argv `--vfs-load` would have given it: the archive where a script
+path goes, its own arguments from index 2 on, and none of the runtime's flags, which is why
+everything after the archive belongs to the program.
+
+The two are one binary, and it decides which it is by looking at its own tail: a signed
+archive behind it runs that, nothing behind it takes one from the command line, and an
+*unsigned* archive behind it is refused rather than quietly treated as neither. So a
+verifying node built today becomes a self-validating executable tomorrow with nothing but
+`bundle sign --prefix`, which is the same operation that puts a shebang in front of an
+archive.
+
+**A policy is baked in, or it is not.** `--root`, `--identity` and `--issuer` at build time
+become the binary's own policy, and a binary built with one is **sealed**: it accepts no
+policy from its command line, because a runtime that demands a signing identity is not one
+whose user can ask it to stop. Built without, the same flags work and fall back to the
+environment — one build, decided about later.
+
+**The package rides inside as an archive node mounts for itself.** The stub runs before
+anything is mounted, so it cannot import this package the ordinary way. It no longer has to:
+`"useVfs": true` with `"vfsArchive"` ([nodejs/node#65675](https://github.com/nodejs/node/pull/65675),
+and the `vfsArchive` that followed it) embeds a ZIP in the executable and mounts it as the
+file system the main script runs from. The stub is injected at the root of that mount, so
+requiring the launcher is a relative path and nothing else.
+
+That replaced the userland version of the same idea: the verifier bundle as a raw SEA asset,
+copied into a `ZipBuffer` and mounted by hand in a stub that had to know how. Two mounts
+became one, `getRawAsset` and the copy went with it, and the piece of this system that no
+test can exercise from source — the generated stub — went from twenty lines to three.
 
 The startup, in order:
 
 1. **verify** — the verifying provider from `./provider` recomputes the whole-file hash over
-   `process.execPath` (itself, runtime and all), checks the signature over it against the
-   chain in `AUTHORITY.PEM`, and anchors that chain. Anything short of acceptable exits
-   non-zero here, before the archive is a filesystem.
+   the container (for a self-validating executable that is `process.execPath`, runtime and
+   all; for a verifying node it is the archive named on the command line), checks the
+   signature over it against the chain in `AUTHORITY.PEM`, and anchors that chain. Anything
+   short of acceptable exits non-zero here, before the archive is a filesystem.
 2. **mount** — only then does the archive become the application's file tree, and `__filename`,
    `import.meta.dirname`, relative imports and `node_modules` all resolve inside it.
 3. **run** — the archive's `package.json` `main`, `require()`d or `import()`ed as its `type`
@@ -931,6 +961,13 @@ import { verifySelf } from '@pipobscure/bundle/sea';
 
 const { state, identity, signedAt } = verifySelf();
 ```
+
+All of it runs through one entry point, `@pipobscure/bundle/launch`, which is where the
+verify-mount-run path lives now that three callers share it: `runSelf()` for an executable
+with an archive behind it, `main(argv)` for a runtime that is handed one, and `run(container)`
+for a process that already exists. They differ in which container they are given and in what
+`process.argv` should look like afterwards; everything else — the refusal, the mount, the
+choice between `require` and `import` — is the same code.
 
 By contrast, the shebang launcher has no pre-mount stage of its own, so `app.run` executed
 directly does not self-verify — the kernel gives it no preload flag to carry a provider, and
@@ -1210,7 +1247,8 @@ bundles/
     register.ts     the `-r` preload; configured via BUNDLE_ROOTS / BUNDLE_ALLOW_UNTRUSTED / …
     recorder.ts     recording() + Manifest: the userland replacement for --vfs-manifest
     record.ts       the `-r` preload for recording; configured via BUNDLE_MANIFEST
-    sea.ts          bootstrap() / createSeaBase() / buildSea(): the self-validating executable
+    launch.ts       verify a container, mount it, run it — and the verifying node's CLI
+    sea.ts          createSeaBase() / buildSea(): building the executables
     sigstore.ts     the sigstore signer (two-phase) and synchronous bundle verification
     oidc.ts         identity tokens: ambient CI, browser sign-in, or device code
     files.ts        dependency closures, for what an observation run cannot see
@@ -1225,7 +1263,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/release.yml.disabled
                   the release pipeline, inert until the node work lands
-  test/           113 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           144 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/

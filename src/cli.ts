@@ -26,7 +26,7 @@ commands:
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
-  sea       wrap an archive in a node runtime that verifies itself and runs it
+  sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root used to check sigstore signatures
   skill     install this package's bundle-auditing skill into a project
 
@@ -92,16 +92,27 @@ run options:                        usage: run [options] <archive> [-- <app args
       --issuer <url>    require this sigstore OIDC issuer
       --untrusted       run an archive whose signature is good but untrusted
 
-sea options:                        usage: sea [options] <archive>
+sea options:                        usage: sea [options] [archive]
   -o, --output <file>   write the executable here (required)
       --node <file>     node binary to embed (default: the running one)
       --base <file>     reuse a SEA base built earlier instead of building one
       --no-sigstore     leave the sigstore libraries out of the embedded verifier
-      --untrusted       let the finished executable run when its own signature
-                        is good but unanchored
-  -r, --root <file>     trusted root the executable checks itself against; repeatable
-      --identity <san>  identity the executable requires of its own signature
-      --issuer <url>    issuer the executable requires of its own signature
+      --untrusted       let the finished executable run an archive whose
+                        signature is good but unanchored
+  -r, --root <file>     trusted root the executable checks against; repeatable
+      --identity <san>  identity the executable requires of a signature
+      --issuer <url>    issuer the executable requires of a signature
+
+  with an archive, the result is that application: one file that verifies
+  itself and runs what is inside it. without one, the result is a verifying
+  node — a runtime that takes an archive on its own command line:
+
+      bundle sea -o node-verifying
+      ./node-verifying ./my-app.zip --args --for --the --app
+
+  a runtime built with a policy (-r, --identity, --issuer) is sealed: it
+  accepts no policy from its command line, because a binary that demands a
+  signing identity is not one whose user can ask it to stop.
 
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
@@ -420,11 +431,39 @@ async function sea(args: string[], io: Console): Promise<number> {
         },
     });
     const app = positionals[0];
-    if (!app) throw new Error('sea: an archive path is required');
     if (!values.output) throw new Error('sea: --output is required');
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('sea: --key and --chain must be given together');
 
     const SEA = await import('./sea.ts');
+    // A policy baked into a runtime is the last word: it would be no policy at
+    // all if the command line could drop it. Nothing baked, nothing to seal —
+    // that runtime takes its policy from flags and the environment, the way
+    // `bundle run` does.
+    const bootstrap = {
+        roots: values.root,
+        identity: values.identity,
+        issuer: values.issuer,
+        allowUntrusted: values.untrusted,
+        sealed: Boolean(values.root?.length || values.identity || values.issuer),
+    };
+
+    if (!app) {
+        if (values.key || values.chain) {
+            throw new Error('sea: signing options need an archive to sign — a verifying node carries none');
+        }
+        if (values.base) throw new Error('sea: --base reuses a runtime; without an archive there is nothing to add to it');
+        io.err('* building a verifying node (node runtime + verifier, no application)');
+        const built = await SEA.createSeaBase({
+            output: values.output,
+            node: values.node,
+            sigstore: values.sigstore,
+            bootstrap,
+        });
+        io.err(`* wrote ${built.output} (${built.size} bytes, ${built.verifier.length} verifier members)`);
+        io.err(`* run an archive with it: ${values.output} <archive> [args...]`);
+        return 0;
+    }
+
     const signer = await chooseSigner(values, io);
     const res = await SEA.buildSea({
         app,
@@ -435,12 +474,7 @@ async function sea(args: string[], io: Console): Promise<number> {
         signer,
         hashAlg: values.hash,
         signAlg: values.sign,
-        bootstrap: {
-            roots: values.root,
-            identity: values.identity,
-            issuer: values.issuer,
-            allowUntrusted: values.untrusted,
-        },
+        bootstrap,
         log: io.err,
     });
     if (res.output) io.err(`* wrote ${res.output} (${res.size} bytes)`);

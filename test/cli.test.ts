@@ -245,14 +245,22 @@ test('audit reports what is about to be reviewed, and gates signing on it', asyn
     assert.match(passed.stderr.join('\n'), /read it/);
 });
 
-test('sea needs both an archive and somewhere to put the result', async () => {
-    const missingArchive = collector();
-    assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea')], missingArchive), 70);
-    assert.match(missingArchive.stderr.join('\n'), /an archive path is required/);
-
+test('sea needs somewhere to put the result, and rejects what it cannot do', async () => {
     const missingOutput = collector();
     assert.equal(await main(['sea', PATH.join(tmp, 'bare.bundle')], missingOutput), 70);
     assert.match(missingOutput.stderr.join('\n'), /--output is required/);
+
+    // Without an archive the result is a verifying node, which carries no
+    // application — so there is nothing for a signing key to sign, and nothing
+    // for a prebuilt base to be added to.
+    const signingNothing = collector();
+    assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea'),
+        '--key', LEAF_KEY, '--chain', CHAIN_PEM], signingNothing), 70);
+    assert.match(signingNothing.stderr.join('\n'), /signing options need an archive/);
+
+    const baseWithoutApp = collector();
+    assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea'), '--base', process.execPath], baseWithoutApp), 70);
+    assert.match(baseWithoutApp.stderr.join('\n'), /nothing to add to it/);
 });
 
 test('the certificate fixtures the suite signs with are the repository ones', () => {

@@ -27,7 +27,7 @@ of the process.
 
 - [Install](#install) · [The four steps](#the-four-steps) · [CLI](#cli)
 - [Using it from code](#using-it-from-code) · [Exports](#exports)
-- [Self-validating executables](#self-validating-executables)
+- [Executables that verify before they run](#executables-that-verify-before-they-run)
 - [How it works](#how-it-works) · [What it does and does not prove](#what-it-does-and-does-not-prove)
 - [Requirements](#requirements) · [Development](#development) · [Reading further](#reading-further)
 
@@ -169,7 +169,7 @@ bundle <command> [options]
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
-  sea       wrap an archive in a node runtime that verifies itself and runs it
+  sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root
   skill     install the bundle-auditing skill into a project
 ```
@@ -322,7 +322,8 @@ A preload takes no arguments, so the mount is configured through the environment
   ".":          "create / sign / verify / inspect / run, from code",
   "./register": "-r preload: mount only what is signed",
   "./record":   "-r preload: write down what a run reads",
-  "./sea":      "build and boot a self-validating executable",
+  "./sea":      "build a verifying runtime, with or without an app inside",
+  "./launch":   "verify a container, mount it, run it — and the runtime's CLI",
   "./provider": "the verifying provider, and register(options)",
   "./recorder": "the recording provider, and recording(Base, manifest)",
   "./cli":      "main(argv, io) -> exit code",
@@ -345,19 +346,19 @@ only, so `node src/main.ts` runs them directly under Node's type stripping.
 
 ---
 
-## Self-validating executables
+## Executables that verify before they run
 
-`bundle sea` produces a single file that checks its own signature before running anything:
+`bundle sea` builds a node runtime with this package inside it. What you do with that runtime
+is the difference between the two shapes it can take.
+
+**With an archive, it becomes that application** — one file that checks its own signature
+before running anything:
 
 ```
-[ node runtime | SEA blob: stub + the verifier as a mounted asset ] [ app.bundle ]
-  \____________________ the prefix, and part of the ______________/
-   \___________________ archive's signed region _______/
+[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.bundle ]
+  \_______________________ the prefix, and part of the _______________/
+   \______________________ archive's signed region ______/
 ```
-
-The whole-file hash covers the prefix too, so the runtime and the verifier inside it are
-signed by the same signature that covers the application. There is nothing to check the
-checker against, because the checker is inside what is checked.
 
 ```sh
 bundle sea --output app.sea \
@@ -367,17 +368,45 @@ bundle sea --output app.sea \
     app.bundle
 ```
 
-Those become the executable's own policy, baked in — the point being that a binary run by
-its own name has no flags and no preload to configure it. Leave them off and the policy comes
-from the environment instead, so one build can be decided about later.
+The whole-file hash covers the prefix too, so the runtime and the verifier inside it are
+signed by the same signature that covers the application. There is nothing to check the
+checker against, because the checker is inside what is checked.
+
+**Without one, it becomes a verifying node** — a runtime that takes an archive on its command
+line, checks it, and runs it:
+
+```sh
+bundle sea --output node-verifying --root /etc/ssl/my-root.pem
+./node-verifying ./my-app.zip --args --for --the --app
+./node-verifying --verify ./my-app.zip        # the trust state, without running it
+```
+
+One runtime, any number of applications, none of them trusted until they verify. The
+application sees the argv it would have had from `--vfs-load`: the archive where a script
+path goes, its own arguments from index 2 on, and none of the runtime's flags — which is why
+everything after the archive belongs to the program, `--help` included.
+
+The two are the same binary. A verifying node with an archive appended to it — `bundle sign
+--prefix node-verifying app.bundle` — *is* the self-validating executable, and at startup the
+runtime decides which it is by looking at its own tail: a signed archive behind it runs that,
+nothing behind it takes one from the command line, and an *unsigned* archive behind it is
+refused rather than quietly treated as neither.
+
+**Policy is baked in, or it is not.** The `--root`, `--identity` and `--issuer` given at build
+time become the executable's own policy — the point being that a binary run by its own name
+has no flags and no preload to configure it. A runtime built with a policy is **sealed**: it
+takes no policy from its command line, because a binary that demands a signing identity is
+not one whose user can ask it to stop. Build without one and the flags above work, falling
+back to `BUNDLE_ROOTS` and friends, so one build can be decided about later.
 
 From code, `createSeaBase()` and `buildSea()` split the expensive half (a ~155 MB copy of
-Node) from the cheap one, and `verifySelf()` lets an application report on its own
-provenance. The bootstrap mounts the package out of the SEA blob with `node:vfs` rather than
-inlining a copy of the verifier — the userland form of
-[nodejs/node#65675](https://github.com/nodejs/node/pull/65675) (`"useVfs": true`), which merged
-on 3 September and is in no released node yet. When it ships, the generated stub is the only
-piece here that changes.
+Node) from the cheap one, `@pipobscure/bundle/launch` is the entry point all of this runs
+through — `run()`, `runSelf()`, `verify()`, `main()` — and `verifySelf()` lets an application
+report on its own provenance. The package rides inside the executable as an archive that node
+mounts for itself: `"useVfs": true` with `"vfsArchive"`
+([nodejs/node#65675](https://github.com/nodejs/node/pull/65675) and the `vfsArchive` that
+followed it), which is why the generated stub is three lines and why there is no second copy
+of the verifier anywhere.
 
 ---
 
@@ -493,13 +522,13 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 136 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 144 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 
 The suite needs a Node carrying the [requirements](#requirements); against a build of
-[nodejs/node#65748](https://github.com/nodejs/node/pull/65748) all 136 pass, launcher and
-mount tests included.
+[nodejs/node#65748](https://github.com/nodejs/node/pull/65748) all 144 pass, launcher, mount
+and executable tests included.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
 test PKI is generated on demand by `tools/testpki.ts` and is **never committed** — a private

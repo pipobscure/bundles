@@ -1,144 +1,85 @@
-import * as VFS from 'node:vfs';
 import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { open as openBundle, type ProviderOptions } from './provider.ts';
+import { mount, start, verify, type Baked, type Mounted } from './launch.ts';
 import { signBundle, createBundle, type BuildResult } from './api.ts';
-import { verifySync, message, type VerificationResult } from './manifest.ts';
+import type { VerificationResult } from './manifest.ts';
 import { moduleFiles, packageRoot, moduleDir } from './files.ts';
 import type { Signer } from './archive.ts';
 
-// A single-executable application that verifies itself before it runs.
+// Building the executables: a node runtime with this package inside it, which
+// verifies an archive before running anything out of it.
 //
-// The shape is one file with three parts, in the order the loader meets them:
+// One base binary, two things to do with it:
+//
+//   [ node runtime | SEA blob: stub + verifier.bundle ]
+//     a *verifying node* — `node-verifying ./my-app.zip` checks that archive
+//     and runs it. Any archive, checked every time, none of them baked in.
 //
 //   [ node runtime | SEA blob: stub + verifier.bundle ] [ app.bundle ]
 //     \______________ the prefix, and part of the app archive's ______/
 //      \____________ signed region ____________________/
+//     a *self-validating executable* — the same base with an application
+//     appended and the whole file signed as one.
 //
-// The application is an ordinary signed `.bundle` appended to a node binary —
-// the same `sign --prefix` this tool already does for a shebang launcher. What
-// makes the result self-validating is that the whole-file hash covers the
-// prefix too, so the runtime and the verifier inside it are signed by the same
-// signature that covers the application. There is nothing to check the checker
-// against because the checker is inside what is checked.
+// The second is the first with an archive behind it, which is not a
+// coincidence: appending is `sign --prefix`, the same operation that puts a
+// shebang in front of an archive. What makes it self-validating is that the
+// whole-file hash covers the prefix too, so the runtime and the verifier are
+// signed by the same signature that covers the application. There is nothing to
+// check the checker against because the checker is inside what is checked.
 //
-// ## Driving SEA through a VFS mount
+// Which shape a binary is, it decides at startup by looking at its own tail —
+// see `appended()` in `./launch.ts`. That is why one base serves both, and why
+// a verifying node built today can become a self-validating executable
+// tomorrow with nothing but `bundle sign --prefix`.
 //
-// The bootstrap runs before anything is mounted, so it cannot import this
-// package the ordinary way. Rather than inlining a second copy of the verifier
-// into the stub — which is what this file replaced, and which drifts — the
-// package's own files ride in the SEA blob as a single `.bundle` asset, and the
-// stub mounts *that* with `node:vfs` and requires the real library out of it.
-// So there are two mounts: the verifier's, from the blob, and then the
-// application's, from the archive at the end of the file.
+// ## The package rides in the blob as an archive
 //
-// This mirrors nodejs/node#65675 (`"useVfs": true`), which puts a SEA's own
-// assets behind a VFS mount and runs the main script from its root, so that
-// `__dirname`, relative `require()` and `node_modules` resolution all work
-// inside the executable. That work is not merged and is not in any released
-// node, so the same thing is done here in userland — with the difference that
-// matters for this package: the mount that runs the *application* is the signed
-// archive appended to the file, not the blob. When `useVfs` lands, the stub is
-// the only piece that changes.
+// The stub runs before anything is mounted, so it cannot import this package
+// the ordinary way. It does not have to: `"useVfs": true` with
+// `"vfsArchive": <bundle>` (nodejs/node#65675 and the `vfsArchive` that
+// followed it) embeds a ZIP in the executable and mounts it as the file system
+// the main script runs from. So the stub is three lines — require this
+// package's launcher by a relative path and hand over — and the machinery that
+// used to do it by hand, mounting a raw asset through a `ZipBuffer`, is gone.
 //
 // ## What runs before the check
 //
-// The stub and the verifier execute before the signature has been verified.
-// That is not a hole so much as the place where the trust has to start: both
-// live inside the prefix, which is inside the hashed region, so tampering with
-// either invalidates the signature over the application — and an attacker who
-// can rewrite the executable's own runtime could equally rewrite a verifier
-// that ran first. The application never runs until the check passes.
+// The stub and the verifier execute before any signature has been verified.
+// That is not a hole so much as the place where the trust has to start: in a
+// self-validating executable both live inside the prefix, which is inside the
+// hashed region, so tampering with either invalidates the signature over the
+// application — and an attacker who can rewrite the executable's own runtime
+// could equally rewrite a verifier that ran first. The application never runs
+// until the check passes.
 
 // ------------------------------------------------------------------ runtime ---
 
-export interface BootstrapOptions {
+// The runtime half moved to `./launch.ts`, where the verifying node's command
+// line lives beside it. These are the names this module has always exported;
+// they are kept because a container built by an older version of this package
+// still calls them, and because "verify myself and run what is in me" reads
+// better than "run the container that happens to be process.execPath".
+
+export interface BootstrapOptions extends Baked {
     /** The container to verify and mount (default: `process.execPath`). */
     container?: string | undefined;
-    /** Extra trusted roots, as PEM text or paths to PEM files. */
-    roots?: string[] | undefined;
-    /** Require this sigstore signing identity. */
-    identity?: string | undefined;
-    /** Require this sigstore OIDC issuer. */
-    issuer?: string | undefined;
-    /** Path to the sigstore trust root to check against. */
-    trustedRoot?: string | undefined;
-    /**
-     * Run a container whose signature is good but whose chain is not anchored
-     * in the trust store (default: false).
-     */
-    allowUntrusted?: boolean | undefined;
-    /**
-     * Recompute every member digest at mount rather than on first read
-     * (default: false — reads check them anyway, and this is startup latency).
-     */
-    deep?: boolean | undefined;
-    /** Entry point inside the archive, overriding its package.json `main`. */
-    entry?: string | undefined;
-    /**
-     * What to do when the container does not verify. The default prints the
-     * reason and exits 1; nothing from the archive has run at that point.
-     */
-    onRefuse?: ((reason: string) => void) | undefined;
 }
-
-/** Where a mounted container ended up, and what it is. */
-export interface Mounted {
-    /** The generated mount point the archive is visible at. */
-    root: string;
-    /** The mount, so a caller can unmount it. */
-    vfs: VFS.VirtualFileSystem;
-    /** The resolved entry point, as an absolute path under `root`. */
-    entry: string;
-}
+export type { Mounted };
 
 /**
  * Verify the running container and mount the archive appended to it. Returns
  * where it landed; nothing has been executed out of it yet.
- *
- * The mount is the verifying provider, so this is not merely a signature check
- * at startup: every member is re-hashed against its signed digest as it is
- * first read, for the whole life of the process.
  */
 export function mountSelf(options: BootstrapOptions = {}): Mounted {
-    const container = options.container ?? process.execPath;
-
-    const settings: ProviderOptions = {
-        roots: options.roots,
-        identity: options.identity,
-        issuer: options.issuer,
-        trustedRoot: options.trustedRoot,
-        allowUntrusted: options.allowUntrusted,
-        deep: options.deep,
-        name: 'bundle-sea',
-    };
-
-    let provider;
-    try {
-        provider = openBundle(container, settings);
-    } catch (err) {
-        refuse(options, message(err));
-    }
-
-    const vfs = VFS.create(provider, { emitExperimentalWarning: false });
-    const root = vfs.mount();
-    return { root, vfs, entry: entryPoint(root, options.entry) };
+    return mount(options.container ?? process.execPath, options);
 }
 
-/**
- * The whole startup: verify the container, mount it, and run the application
- * inside. A CommonJS entry is `require()`d and an ES module is `import()`ed,
- * chosen the way node itself chooses — the archive's `package.json` `type` and
- * the entry's own extension.
- */
+/** Verify the running container, mount it, and run the application inside. */
 export async function bootstrap(options: BootstrapOptions = {}): Promise<void> {
-    const { root, entry } = mountSelf(options);
-    if (isModule(root, entry)) await import(pathToFileURL(entry).href);
-    else createRequire(PATH.join(root, 'package.json'))(entry);
+    await start(mountSelf(options));
 }
 
 /**
@@ -146,49 +87,10 @@ export async function bootstrap(options: BootstrapOptions = {}): Promise<void> {
  * wants to report on its own provenance ("signed by X at Y").
  */
 export function verifySelf(options: BootstrapOptions = {}): VerificationResult {
-    const container = options.container ?? process.execPath;
-    const roots = (options.roots ?? []).map((root) => (root.includes('-----BEGIN') ? root : FS.readFileSync(root, 'utf-8')));
-    return verifySync(container, {
-        extraRoots: roots, deep: options.deep ?? false,
-        identity: options.identity, issuer: options.issuer, trustedRoot: options.trustedRoot,
-    });
-}
-
-// The archive's entry point: an explicit override, else its package.json
-// `main`, else `index.js` — node's own order for a directory.
-function entryPoint(root: string, override: string | undefined): string {
-    if (override) return PATH.resolve(root, override);
-    const manifest = readPackage(root);
-    return PATH.resolve(root, typeof manifest['main'] === 'string' ? manifest['main'] : 'index.js');
-}
-
-function isModule(root: string, entry: string): boolean {
-    if (entry.endsWith('.mjs')) return true;
-    if (entry.endsWith('.cjs')) return false;
-    return readPackage(root)['type'] === 'module';
-}
-
-function readPackage(root: string): Record<string, unknown> {
-    try {
-        return JSON.parse(FS.readFileSync(PATH.join(root, 'package.json'), 'utf-8')) as Record<string, unknown>;
-    } catch {
-        return {};
-    }
-}
-
-function refuse(options: BootstrapOptions, reason: string): never {
-    if (options.onRefuse) {
-        options.onRefuse(reason);
-        throw new Error(reason);
-    }
-    process.stderr.write(`refusing to run: ${reason}\n`);
-    process.exit(1);
+    return verify(options.container ?? process.execPath, options);
 }
 
 // -------------------------------------------------------------------- build ---
-
-/** The SEA asset the verifier bundle rides in. */
-export const VERIFIER_ASSET = 'bundle-verifier.bundle';
 
 /** The default flags the container runs itself with. */
 export const SEA_EXEC_ARGV = ['--no-warnings', '--experimental-vfs'];
@@ -261,8 +163,12 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
             contents = files;
         }
 
-        const stub = PATH.join(scratch, 'stub.js');
-        FS.writeFileSync(stub, stubSource(options.bootstrap ?? {}));
+        // `.cjs`, and deliberately: the stub is injected at the root of the
+        // mounted bundle, so this package's own `"type": "module"` decides how
+        // a `.js` there is read. The extension is the only thing that keeps
+        // the smallest script in the system from being an ES module.
+        const stub = PATH.join(scratch, 'stub.cjs');
+        FS.writeFileSync(stub, stubSource(anchorPolicy(options.bootstrap ?? {})));
 
         const config = PATH.join(scratch, 'sea-config.json');
         FS.writeFileSync(config, `${JSON.stringify({
@@ -271,10 +177,15 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
             disableExperimentalSEAWarning: true,
             useSnapshot: false,
             useCodeCache: false,
+            // The verifier bundle is the executable's file system rather than
+            // an asset it has to unpack: node embeds the ZIP as it is and
+            // mounts it, and the stub — injected at the root of that mount —
+            // requires this package out of it by relative path.
+            useVfs: true,
+            vfsArchive: verifier,
             execArgv: options.execArgv ?? SEA_EXEC_ARGV,
             execArgvExtension: 'none',
             ...(options.node ? { executable: PATH.resolve(options.node) } : {}),
-            assets: { [VERIFIER_ASSET]: verifier },
         }, null, 2)}\n`);
 
         const built = spawnSync(process.execPath, ['--no-warnings', '--build-sea', config],
@@ -284,6 +195,15 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
             throw new Error(`--build-sea failed (exit ${built.status}): ${(built.stderr || built.stdout || '').trim()}`);
         }
         FS.chmodSync(options.output, 0o755);
+
+        // `--build-sea` ignores configuration keys it does not know, so a node
+        // without `vfsArchive` would produce a binary that builds cleanly and
+        // fails at startup with nothing mounted. Run the result once: it costs
+        // milliseconds and it is the difference between finding that out here
+        // and finding it out in front of a user. A cross-build cannot be run,
+        // so it is not checked — the platform it is for is not this one.
+        if (!options.node) selftest(options.output);
+
         return { output: options.output, size: FS.statSync(options.output).size, verifier: contents };
     } finally {
         if (owned) FS.rmSync(scratch, { recursive: true, force: true });
@@ -349,33 +269,70 @@ export function verifierFiles({ sigstore = true }: VerifierOptions = {}): string
 const SIGSTORE_PACKAGES = ['@sigstore/verify', '@sigstore/bundle', '@sigstore/protobuf-specs', '@sigstore/tuf'];
 
 /**
- * The CommonJS stub injected into the SEA blob. It is deliberately the smallest
- * thing that can work — mount the blob's verifier bundle, require this module
- * out of it, call `bootstrap()` — because it is the one piece that cannot be
- * covered by a test that runs it from source, and the one piece that changes if
- * node's own `useVfs` lands.
+ * Resolve the paths in a baked policy, because a policy is baked *here* and read
+ * *there*. `--root build/certs/root.pem` is a sentence about the directory the
+ * build ran in; the binary that carries it may be run anywhere, by anyone, and a
+ * trust root it cannot find is a container that refuses everything. PEM text
+ * passes through untouched — it is not a path and has no directory to be
+ * relative to.
+ */
+function anchorPolicy(options: BootstrapOptions): BootstrapOptions {
+    const anchored = { ...options };
+    if (options.roots) {
+        anchored.roots = options.roots.map((root) => (root.includes('-----BEGIN') ? root : PATH.resolve(root)));
+    }
+    if (options.trustedRoot) anchored.trustedRoot = PATH.resolve(options.trustedRoot);
+    return anchored;
+}
+
+/**
+ * Run the built binary once, to prove that the file system inside it mounts and
+ * this package can be required out of it. `--version` is the cheapest thing
+ * that touches all of that, and it works whichever shape the binary is.
+ */
+function selftest(output: string): void {
+    const res = spawnSync(PATH.resolve(output), ['--version'],
+        { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
+    if (res.error) throw res.error;
+    if (res.status !== 0 || !/bundle/.test(res.stdout)) {
+        throw new Error(
+            `the built executable does not run (exit ${res.status}): ${(res.stderr || res.stdout || '').trim()}\n` +
+            'A node whose --build-sea does not understand "vfsArchive" builds exactly this: ' +
+            'the configuration key is ignored, nothing is mounted, and the stub has nothing to require.');
+    }
+}
+
+/**
+ * The CommonJS stub injected as the SEA's main script. It runs at the root of
+ * the mounted verifier bundle, so requiring this package is a relative path and
+ * nothing more; everything else it needs to decide, `launch` decides by looking
+ * at the binary's own tail.
+ *
+ * It stays the one piece no test can exercise from source, so it stays small.
  */
 export function stubSource(options: BootstrapOptions): string {
     const dir = moduleDir();
-    const entry = `./${dir}/sea${dir === 'src' ? '.ts' : '.js'}`;
+    const entry = `./${dir}/launch${dir === 'src' ? '.ts' : '.js'}`;
     return `'use strict';
-// Generated by @pipobscure/bundle. The SEA main: mount this package out of the
-// executable's own blob, then hand over to its bootstrap, which verifies the
-// archive appended to this file before running anything out of it.
-const SEA = require('node:sea');
-const ZLIB = require('node:zlib');
-const VFS = require('node:vfs');
-const MOD = require('node:module');
-const PATH = require('node:path');
+// Generated by @pipobscure/bundle. The SEA main, running at the root of the
+// archive this executable carries: hand over to the launcher, which verifies
+// either the archive appended to this file or the one named on the command
+// line before running anything out of it.
+const launch = require(${JSON.stringify(entry)});
 
 const OPTIONS = ${JSON.stringify(options, null, 2)};
 
-const blob = new ZLIB.ZipBuffer(Buffer.from(SEA.getRawAsset(${JSON.stringify(VERIFIER_ASSET)})));
-const vfs = VFS.create(new VFS.ZipProvider(blob), { emitExperimentalWarning: false });
-const root = vfs.mount();
-const bundle = MOD.createRequire(PATH.join(root, 'package.json'))(${JSON.stringify(entry)});
+// Only a binary with nothing behind it takes an archive from the command
+// line. One with an *unsigned* archive appended is not a launcher with a
+// stray tail — it is a container somebody forgot to sign, and saying so is
+// worth more than falling back to a usage message.
+const started = launch.appended(process.execPath) === 'none'
+    ? launch.main(process.argv.slice(2), OPTIONS)
+    : launch.runSelf(OPTIONS);
 
-bundle.bootstrap(OPTIONS).catch((err) => {
+started.then((code) => {
+    if (typeof code === 'number' && code !== 0) process.exitCode = code;
+}).catch((err) => {
     process.stderr.write(\`\${err && err.stack || err}\\n\`);
     process.exitCode = 1;
 });

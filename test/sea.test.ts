@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSea, createSeaBase, verifierFiles, stubSource, VERIFIER_ASSET } from '../src/sea.ts';
-import { createBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
+import { buildSea, createSeaBase, verifierFiles, stubSource } from '../src/sea.ts';
+import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { APP, CHAIN_PEM, LEAF_KEY, ROOT_PEM, scratch, testSigner, tree } from './helpers.ts';
 
 // The self-validating executable: a node runtime, this package as a mounted
@@ -45,14 +45,20 @@ test('the verifier file list is what the container needs to check itself', () =>
     assert.ok(withSigstore.length > without.length);
 });
 
-test('the generated stub mounts the blob and hands over to bootstrap', () => {
+test('the generated stub requires the launcher and lets it decide the shape', () => {
     const stub = stubSource({ roots: ['/etc/root.pem'], allowUntrusted: true });
-    assert.match(stub, /getRawAsset\(/);
-    assert.ok(stub.includes(VERIFIER_ASSET));
-    assert.match(stub, /new VFS\.ZipProvider/);
-    assert.match(stub, /\.bootstrap\(OPTIONS\)/);
-    // Whatever the build was told is baked in, because a preload takes no
-    // arguments and neither does an executable being run by its own name.
+    // The blob is the file system now, so the stub is a relative require —
+    // no asset to fetch, no ZipBuffer to mount by hand.
+    assert.match(stub, /require\("\.\/(src|dist)\/launch\.(ts|js)"\)/);
+    assert.ok(!stub.includes('getRawAsset'), 'nothing unpacks an asset any more');
+    assert.match(stub, /appended\(process\.execPath\)/);
+    assert.match(stub, /\.runSelf\(OPTIONS\)/);
+    assert.match(stub, /\.main\(process\.argv\.slice\(2\), OPTIONS\)/);
+    // 'none' is the only launcher case: an unsigned archive at the tail is a
+    // container to refuse, not a reason to print usage.
+    assert.match(stub, /=== 'none'/);
+    // Whatever the build was told is baked in, because an executable being run
+    // by its own name takes no arguments for this.
     assert.match(stub, /"\/etc\/root\.pem"/);
     assert.match(stub, /"allowUntrusted": true/);
 });
@@ -208,5 +214,143 @@ test('a container built through the CLI is the same self-validating thing', asyn
     const ran = run(output, ['cli']);
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] cli/);
+    FS.rmSync(output);
+});
+
+// ------------------------------------------------------- the verifying node ---
+
+// The same base with nothing appended is a runtime that takes an archive on its
+// command line. Every case below reuses BASE, so none of them pays for a second
+// 150 MB copy of node.
+
+const SIGNED_APP = PATH.join(tmp, 'app.signed.bundle');
+await signBundle({ source: APP_BUNDLE, output: SIGNED_APP, signer: testSigner() });
+
+// BASE has a root baked in, which is what most of these want. One more with no
+// policy at all is what the environment-driven cases need: with a trusted root
+// already inside the binary, nothing it is handed is ever untrusted.
+const OPEN_BASE = PATH.join(tmp, 'open-base');
+await createSeaBase({ output: OPEN_BASE, sigstore: false });
+
+test('the base runs an archive named on its command line', () => {
+    const ran = run(BASE, [SIGNED_APP, 'from', 'the', 'command', 'line'],
+        { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /hello from a signed bundle/);
+    // The application's own arguments reach it, and argv[1] is the archive —
+    // the same shape `--vfs-load` gives a program run out of a mount.
+    assert.match(ran.stdout, /from,the,command,line/);
+});
+
+test('the verifying node refuses what it cannot vouch for, and runs nothing', () => {
+    // Unsigned: there is no signature to check, so there is nothing to trust.
+    const unsigned = run(BASE, [APP_BUNDLE], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.notEqual(unsigned.status, 0);
+    assert.match(unsigned.stderr, /unsigned/);
+    assert.doesNotMatch(unsigned.stdout, /hello from a signed bundle/);
+
+    // Signed, but by a chain this run has no reason to trust — so the runtime
+    // with nothing baked into it, and nothing in the environment either.
+    const untrusted = run(OPEN_BASE, [SIGNED_APP], { BUNDLE_ROOTS: '', BUNDLE_ALLOW_UNTRUSTED: '' });
+    assert.notEqual(untrusted.status, 0);
+    assert.match(untrusted.stderr, /valid-untrusted/);
+
+    // Tampered with after signing: the bytes are not the signed bytes.
+    const tampered = PATH.join(tmp, 'tampered.bundle');
+    const bytes = FS.readFileSync(SIGNED_APP);
+    const middle = Math.floor(bytes.length / 2);
+    bytes[middle] = (bytes[middle]! ^ 0xff) & 0xff;
+    FS.writeFileSync(tampered, bytes);
+    const refused = run(BASE, [tampered], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.notEqual(refused.status, 0);
+    assert.doesNotMatch(refused.stdout, /hello from a signed bundle/);
+});
+
+test('a runtime with no policy of its own takes one from flags or the environment', () => {
+    const fromEnv = run(OPEN_BASE, [SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(fromEnv.status, 0, fromEnv.stderr);
+
+    const fromFlag = run(OPEN_BASE, ['--root', ROOT_PEM, SIGNED_APP], { BUNDLE_ROOTS: '' });
+    assert.equal(fromFlag.status, 0, fromFlag.stderr);
+
+    // And the deliberate loosening, which is a choice the operator is allowed
+    // to make when the binary was not built to forbid it.
+    const allowed = run(OPEN_BASE, ['--untrusted', SIGNED_APP], { BUNDLE_ROOTS: '', BUNDLE_ALLOW_UNTRUSTED: '' });
+    assert.equal(allowed.status, 0, allowed.stderr);
+});
+
+test('--verify reports on an archive without running it', () => {
+    const good = run(BASE, ['--verify', SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(good.status, 0, good.stderr);
+    assert.match(good.stdout, /^VALID/m);
+    assert.doesNotMatch(good.stdout, /hello from a signed bundle/);
+
+    const bad = run(BASE, ['--verify', APP_BUNDLE], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stdout, /^UNSIGNED/m);
+});
+
+test('the runtime says what it is, and what it wants', () => {
+    const version = run(BASE, ['--version']);
+    assert.equal(version.status, 0, version.stderr);
+    assert.match(version.stdout, /@pipobscure\/bundle/);
+
+    const help = run(BASE, ['--help']);
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /usage: <runtime> \[options\] <archive>/);
+
+    const nothing = run(BASE, []);
+    assert.equal(nothing.status, 64);
+    assert.match(nothing.stderr, /no archive to run/);
+
+    const unknown = run(BASE, ['--frobnicate', SIGNED_APP]);
+    assert.equal(unknown.status, 64);
+    assert.match(unknown.stderr, /unknown option --frobnicate/);
+});
+
+test('a runtime built with a policy of its own takes none from its command line', async () => {
+    const sealed = PATH.join(tmp, 'sealed-node');
+    // Deliberately relative: a policy is baked *here* and read *there*, so the
+    // build has to anchor it. A binary carrying `build/certs/root.pem` would
+    // refuse everything the moment it ran from anywhere else.
+    await createSeaBase({
+        output: sealed, sigstore: false,
+        bootstrap: { roots: [PATH.relative(process.cwd(), ROOT_PEM)], sealed: true },
+    });
+
+    // The baked root is enough on its own: nothing in the environment, no flag,
+    // and a working directory that knows nothing about where it was built.
+    const ran = spawnSync(sealed, [SIGNED_APP],
+        { encoding: 'utf-8', cwd: tmp, env: { ...process.env, BUNDLE_ROOTS: '' } });
+    assert.equal(ran.status, 0, ran.stderr);
+
+    // And the flags that would loosen it are refused rather than ignored, which
+    // is the difference between a policy and a default.
+    for (const flag of [['--untrusted'], ['--root', ROOT_PEM], ['--identity', 'someone']]) {
+        const refused = run(sealed, [...flag, SIGNED_APP], { BUNDLE_ROOTS: '' });
+        assert.equal(refused.status, 64, flag.join(' '));
+        assert.match(refused.stderr, /built with a policy of its own/);
+    }
+
+    // What cannot loosen anything still works.
+    const entry = run(sealed, ['--entry', 'index.js', SIGNED_APP], { BUNDLE_ROOTS: '' });
+    assert.equal(entry.status, 0, entry.stderr);
+    FS.rmSync(sealed);
+});
+
+test('the same base becomes a self-validating executable by appending an app', async () => {
+    // The composition the two shapes share: `sign --prefix` over the runtime
+    // that was serving as a launcher a moment ago.
+    const output = PATH.join(tmp, 'appended.sea');
+    await signBundle({ source: APP_BUNDLE, output, prefix: BASE, executable: true, signer: testSigner() });
+
+    const ran = run(output, ['appended'], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /hello from a signed bundle/);
+
+    // And it stops being a launcher: the archive it runs is its own.
+    const ignored = run(output, [SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
+    assert.equal(ignored.status, 0, ignored.stderr);
+    assert.match(ignored.stdout, /hello from a signed bundle/);
     FS.rmSync(output);
 });
