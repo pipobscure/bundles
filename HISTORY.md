@@ -325,7 +325,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `src/recorder.ts` | The recording provider: wraps a provider class so every read through it is appended to a manifest. Replaces the `--vfs-manifest` flag. |
 | `src/record.ts` | The `-r` preload for recording — set `BUNDLE_MANIFEST` and mount a directory. |
 | `src/launch.ts` | The verification entry point: verify a container, mount it, run what is inside — as an executable checking itself, as a runtime handed an archive, or as a library call. Carries the verifying node's own command line. |
-| `src/sea.ts` | Building the executables: `createSeaBase()` / `buildSea()`, the generated CommonJS stub, and the self-test that runs the result once before handing it back. |
+| `src/sea.ts` | Building the executables: `createSeaBase()` / `buildSea()`, the generated ES-module stub, and the self-test that runs the result once before handing it back. |
 | `src/sigstore.ts` | Sigstore as one of the signers the format can carry: a two-phase signer (get the Fulcio certificate, *then* sign the finished hash), synchronous bundle verification, and the trust root. |
 | `src/oidc.ts` | Getting an OIDC identity token — an ambient CI token, a browser sign-in through sigstore's Dex, or a device code. No dependencies of its own. |
 | `src/files.ts` | Working out a member list the way observation cannot: a dependency closure resolved through `node_modules`, for code that is only required on a path a test run never takes. |
@@ -1704,18 +1704,25 @@ way. The previous `sea.js` solved that by copying `manifest.js` into itself — 
 of duplicated verification logic, which promptly drifted: its marker regex was still the
 two-field form, so it read every sigstore-signed container as *unsigned*.
 
-The fix is to make the verifier reachable before the application is: this package's own
-files ride in the SEA blob as one `.bundle` asset, and a fifteen-line CommonJS stub mounts
-*that* with `node:vfs` and requires the real library out of it. Two mounts, in order: the
+The fix was to make the verifier reachable before the application is: this package's own
+files rode in the SEA blob as one `.bundle` asset, and a fifteen-line CommonJS stub mounted
+*that* with `node:vfs` and required the real library out of it. Two mounts, in order: the
 verifier's from the blob, then the application's from the archive at the end of the file.
-Nothing is duplicated, and the verifier the container runs is the one the test suite tests.
+Nothing was duplicated, and the verifier the container ran was the one the test suite tests.
 
-This is the userland form of [nodejs/node#65675](https://github.com/nodejs/node/pull/65675)
+That was the userland form of [nodejs/node#65675](https://github.com/nodejs/node/pull/65675)
 (`"useVfs": true`), which puts a SEA's own assets behind a VFS mount and runs the main script
-from its root. That work merged on 3 September and is in no released node — the `--build-sea` in any node
-you can install today accepts the key and ignores it — so it is done here by hand, with the difference that matters: the mount
-that runs the *application* is the signed archive appended to the file, not the blob. When
-`useVfs` lands, the generated stub is the only piece that changes.
+from its root — and the note closed by predicting that when `useVfs` landed, the generated
+stub would be the only piece that changed.
+
+**Which is what happened.** `useVfs`, with a `vfsArchive` naming the bundle, embeds the ZIP
+in the executable and mounts it as the file system the main script runs from. So the first
+of the two mounts is node's now, the stub is injected at the root of it, and reaching this
+package is one relative `import`. What is left of the stub is a handful of lines that pick
+between verifying the archive appended to the executable and verifying the one named on its
+command line — and it is an ES module, because it is injected into a bundle whose
+`package.json` says `"type": "module"` and format detection inside a mount follows the same
+rules it follows on disk.
 
 #### What runs before the check
 
