@@ -150,7 +150,12 @@ The deck is also published as a Claude artifact, linked from the root README:
 
     https://claude.ai/artifact/FsAKxG5e5rKYaUXArqb6Us
 
+The older `https://claude.ai/code/artifact/7860e0a8-3d32-4b9e-b5ce-94a36289bc34` is the
+same artifact under its previous address, and links already handed out in that form
+still resolve.
+
 It is the same file — the artifact is the body-only form, which is exactly what
 `index.html` already is — so republishing is a straight upload of this file, not a
-conversion. Republish it whenever you change the deck, or the public link goes stale;
-viewers see the pinned version, so moving the share pin is a separate step.
+conversion. Republish it whenever you change the deck, or the public link goes stale.
+Sharing is live: anyone with either link sees a republish the moment it lands, so
+publish a finished deck rather than a half-edited one.
