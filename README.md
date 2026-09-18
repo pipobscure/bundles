@@ -15,11 +15,11 @@ filesystem, so an archive that does not check out never becomes one and its entr
 never runs. Every member is re-hashed against its signed digest as it is read, for the life
 of the process.
 
-> **Requires a Node built from `main`, with one open pull request applied.** `node:vfs` and
-> the ZIP support in `node:zlib` are released, and `ZipProvider` is merged and should be in
-> the next release; the `--vfs-mount` / `--vfs-load` loader — and with it
-> `vfs.registerProvider()` — is still open, and is the piece nothing here runs without. See
-> [Requirements](#requirements). Everything here is experimental.
+> **Requires the next Node 26 release.** Everything this needs is in Node: most of it is
+> released, through v26.9.0, and the `--vfs-mount` / `--vfs-load` loader — the piece nothing
+> here runs without — merged on 17 September, the day after v26.9.0 shipped. Until the next
+> 26.x release, that means a Node built from `main`. See [Requirements](#requirements).
+> Everything here is experimental.
 
 ---
 
@@ -403,10 +403,10 @@ From code, `createSeaBase()` and `buildSea()` split the expensive half (a ~155 M
 Node) from the cheap one, `@pipobscure/bundle/launch` is the entry point all of this runs
 through — `run()`, `runSelf()`, `verify()`, `main()` — and `verifySelf()` lets an application
 report on its own provenance. The package rides inside the executable as an archive that node
-mounts for itself: `"useVfs": true` with `"vfsArchive"`
-([nodejs/node#65675](https://github.com/nodejs/node/pull/65675) and the `vfsArchive` that
-followed it), which is why the generated stub is three lines and why there is no second copy
-of the verifier anywhere.
+mounts for itself: `"useVfs": true` ([nodejs/node#65675](https://github.com/nodejs/node/pull/65675),
+released in v26.9.0) with `"vfsArchive"` ([nodejs/node#65810](https://github.com/nodejs/node/pull/65810),
+still open), which is why the generated stub is a handful of lines and why there is no second
+copy of the verifier anywhere.
 
 ---
 
@@ -490,21 +490,28 @@ Everything here sits on Node's experimental `node:vfs` (by Matteo Collina) and r
 |---|---|
 | **`node:vfs`**, and modules resolving and loading out of a mount | released, v26.4.0 |
 | **ZIP support in `node:zlib`** — `ZipFile`, `ZipBuffer`, `ZipEntry` | released, v26.8.0 |
-| **`ZipProvider`**, a VFS provider backed by such an archive | merged — [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) |
-| **`--vfs-mount` / `--vfs-load`**, and `vfs.registerProvider()` | open — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
-| **Native addons loaded from a mount** | merged — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
+| **`ZipProvider`**, a VFS provider backed by such an archive | released, v26.9.0 — [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) |
+| **Native addons loaded from a mount** | released, v26.9.0 — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
+| **`"useVfs"`**, a SEA's assets behind a VFS mount | released, v26.9.0 — [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) |
+| **`--vfs-mount` / `--vfs-load`**, and `vfs.registerProvider()` | merged 17 Sep, in the next 26.x release — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
+| **`"vfsArchive"`**, a ZIP as a SEA's file system — `bundle sea` only | open — [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) |
 
-A released Node already reads ZIP archives and already resolves modules out of a mount; the
-provider that turns one into the other is merged, so `main` today has everything a program
-needs to *be* an archive. What is still missing is the way to ask for that mount from outside
-the program, which is the whole hinge: **`--vfs-mount` / `--vfs-load`** make a mounted tree
-the thing a program resolves and runs from, and the same pull request brings
-`vfs.registerProvider()` — the extension point that lets a preload decide what backs a mount,
-and therefore the one that makes a *verifying* mount possible from userland at all. Until it
-lands, build Node from `main` with it applied; nothing in this package runs without it.
+v26.9.0 already has everything a program needs to *be* an archive: it reads ZIP archives,
+turns one into a file system, resolves modules out of it, and loads native addons from it. The
+one thing it lacks is the way to ask for that mount from *outside* the program, which is the
+whole hinge: **`--vfs-mount` / `--vfs-load`** make a mounted tree the thing a program resolves
+and runs from, and the same pull request brings `vfs.registerProvider()` — the extension point
+that lets a preload decide what backs a mount, and therefore the one that makes a *verifying*
+mount possible from userland at all. It merged on 17 September, one day after v26.9.0 was
+cut, so it ships in the next 26.x release. Until then, build Node from `main`.
 
-Native addons out of a mount landed on 4 September as
-[nodejs/node#65680](https://github.com/nodejs/node/pull/65680), which closes the last gap in
+[nodejs/node#65810](https://github.com/nodejs/node/pull/65810) is needed only to build an
+executable. It lets a SEA's file system *be* a ZIP archive rather than a list of assets, which
+is how this package gets inside one: `bundle sea` embeds the verifier bundle whole and node
+mounts it. It is still open; everything else here works without it.
+
+Native addons out of a mount shipped in v26.9.0, as
+[nodejs/node#65680](https://github.com/nodejs/node/pull/65680), which closed the last gap in
 what a bundle can contain. A `dlopen()` needs a path with an inode behind it and a VFS path
 has none, so it reads the addon's bytes out of the mount and loads them from a private,
 self-cleaning image instead — an anonymous memfd on Linux, an unlinked temp file elsewhere.
@@ -526,9 +533,10 @@ npm test               # 144 tests; generates a throwaway PKI into build/certs/ 
 npm run typecheck
 ```
 
-The suite needs a Node carrying the [requirements](#requirements); against a build of
-[nodejs/node#65748](https://github.com/nodejs/node/pull/65748) all 144 pass, launcher, mount
-and executable tests included.
+The suite needs a Node carrying the [requirements](#requirements) — today, one built from
+`main` with [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) applied for the
+executable tests; from the next 26.x release, only that. Against such a build all 144 pass,
+launcher, mount and executable tests included.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
 test PKI is generated on demand by `tools/testpki.ts` and is **never committed** — a private
@@ -566,8 +574,8 @@ does to release itself is something you can do to your own project.
 [`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is the
 whole pipeline as a workflow — CI, pack, fetch the published release, audit the diff, gate,
 sign through sigstore with the workflow's OIDC identity, publish with npm provenance, every
-action pinned to a commit SHA. It is inert, because the Node it needs is not released yet; the
-header carries the command that makes it live.
+action pinned to a commit SHA. It is inert until the next 26.x release gives GitHub Actions a
+Node it can install; the header carries the command that makes it live.
 
 ---
 

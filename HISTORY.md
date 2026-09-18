@@ -68,21 +68,21 @@ that runs on any installed Node, or as a fully self-contained native executable 
 no Node at all.
 
 It is driven by Node.js itself, in three additions on top of Node's existing experimental
-**virtual file system** (`node:vfs`, by Matteo Collina). The first has landed since this was
-written; the other two are one open pull request, so running any of this still means a Node
-built from `main` with that applied:
+**virtual file system** (`node:vfs`, by Matteo Collina). All three have landed since this was
+written — two released, the third merged and due in the next 26.x release:
 
-1. **ZIP archive support in `node:zlib`** — merged as
+1. **ZIP archive support in `node:zlib`** —
    [nodejs/node#64339](https://github.com/nodejs/node/pull/64339), released in **v26.8.0** —
-   plus a **`ZipProvider`** that mounts such an archive through VFS as a file tree, merged as
-   [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) and due in the next release.
+   plus a **`ZipProvider`** that mounts such an archive through VFS as a file tree,
+   [nodejs/node#64915](https://github.com/nodejs/node/pull/64915), released in **v26.9.0**.
 2. A **`--vfs-mount` / `--vfs-load` module loader** that mounts directories and archives
    and resolves a program's entry point and all its `require()`/`import` against them —
-   open as [nodejs/node#65748](https://github.com/nodejs/node/pull/65748).
+   [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), merged on 17 September,
+   the day after v26.9.0 was cut, so it ships in the next 26.x release.
 3. **`vfs.registerProvider()`**, the extension point that lets a preloaded module
    decide which provider backs a mount — which is what makes a *verifying* mount, or a
-   *recording* one, possible from userland at all. It ships in the same pull request as the
-   flags, and is the reason that one is the piece nothing here runs without.
+   *recording* one, possible from userland at all. It came in the same pull request as the
+   flags, which is why that one was the piece nothing here could run without.
 
 Together they let the root a program runs from be a plain `.zip` embedded inside the
 program's own file. Combined with Node's newer **Single Executable Application (SEA)**
@@ -127,14 +127,14 @@ one lives:
   below only because it's the foundation everything else stands on.
 - **The novel work is two additions to Node:**
   - **ZIP archive support in `node:zlib`** ([nodejs/node#64339](https://github.com/nodejs/node/pull/64339),
-    merged, in v26.8.0) and the **`ZipProvider`** that mounts an archive through VFS
-    ([nodejs/node#64915](https://github.com/nodejs/node/pull/64915), merged).
+    released in v26.8.0) and the **`ZipProvider`** that mounts an archive through VFS
+    ([nodejs/node#64915](https://github.com/nodejs/node/pull/64915), released in v26.9.0).
   - The **`--vfs-mount` / `--vfs-load` module loader** that makes a mounted tree the thing a
     program actually resolves and runs from, and the provider registry that decides what
-    backs a mount — open as
-    [nodejs/node#65748](https://github.com/nodejs/node/pull/65748). Loading a **native addon**
-    out of a mount was a separate pull request,
-    [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), merged on 4 September.
+    backs a mount — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), merged on
+    17 September and due in the next 26.x release. Loading a **native addon** out of a mount
+    was a separate pull request, [nodejs/node#65680](https://github.com/nodejs/node/pull/65680),
+    released in v26.9.0.
 - **The SEA group** is recent upstream Node functionality the experiment leans on, carried
   along so the whole pipeline works from one binary.
 
@@ -175,7 +175,7 @@ Two details make the whole single-file trick possible:
 - Read paths enforce content-size limits and reject malformed records (zip-bomb / corrupt
   input guards), with dedicated `ERR_ZIP_*` codes.
 
-### 2. `ZipProvider` — a VFS provider backed by a ZIP archive *([nodejs/node#64915](https://github.com/nodejs/node/pull/64915) — merged)*
+### 2. `ZipProvider` — a VFS provider backed by a ZIP archive *([nodejs/node#64915](https://github.com/nodejs/node/pull/64915) — released in v26.9.0)*
 
 The bridge between the two: a provider for Matteo's `node:vfs` that exposes the entries of
 a `ZipFile` (on disk) or `ZipBuffer` (in memory) as a browsable, read/write file tree.
@@ -183,7 +183,7 @@ Directories are recognized both explicitly and implicitly; a file opened for wri
 as a new archive entry when its handle is closed. This is what lets a `.zip` be *mounted*
 and treated like a directory.
 
-### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — open)*
+### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — merged, in the next 26.x release)*
 
 This is what wires VFS into Node's *startup and module resolution* so a mounted tree
 becomes the thing the program actually runs from. Mounting and running stay separate
@@ -230,7 +230,7 @@ several mounts and still have exactly one entry point:
   not load: the same sources are mounted in the same order, so the reserved paths line up,
   and the worker runs its own entry point.
 - **Native addons** were a separate pull request,
-  [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), merged on 4 September. The
+  [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), released in v26.9.0. The
   reason they needed one is that
   `dlopen()`/`LoadLibrary()` open a shared object *by path* and a VFS path has no inode to
   open. It reads the addon's bytes out of the mount and loads them from a private,
@@ -898,9 +898,10 @@ environment — one build, decided about later.
 
 **The package rides inside as an archive node mounts for itself.** The stub runs before
 anything is mounted, so it cannot import this package the ordinary way. It no longer has to:
-`"useVfs": true` with `"vfsArchive"` ([nodejs/node#65675](https://github.com/nodejs/node/pull/65675),
-and the `vfsArchive` that followed it) embeds a ZIP in the executable and mounts it as the
-file system the main script runs from. The stub is injected at the root of that mount, so
+`"useVfs": true` ([nodejs/node#65675](https://github.com/nodejs/node/pull/65675), released in
+v26.9.0) with `"vfsArchive"` ([nodejs/node#65810](https://github.com/nodejs/node/pull/65810),
+still open) embeds a ZIP in the executable and mounts it as the file system the main script
+runs from. The stub is injected at the root of that mount, so
 requiring the launcher is a relative path and nothing else.
 
 That replaced the userland version of the same idea: the verifier bundle as a raw SEA asset,
@@ -1154,7 +1155,8 @@ its attestation from it. Two attestations over one artifact, from one identity: 
 the registry copy, and this project's over the bytes inside it.
 
 > **It cannot run yet.** Every step depends on the `--vfs-mount` / `--vfs-load` work, which
-> is still an open pull request, so there is no `node-version` that would make it pass. The
+> is merged but not yet in a release, so there is no `node-version` that would make it pass
+> until the next 26.x ships. The
 > file is disabled two ways over — it does not end in `.yml`, so GitHub never parses it, and
 > its body is commented out — and it carries the one-line command that turns it back into a
 > live workflow. It is there to be read.
@@ -1876,11 +1878,12 @@ the right one for a release pipeline specifically — less obviously so for ordi
 
 #### Why it ships disabled
 
-None of this can run yet. `node:vfs` and the ZIP support in `node:zlib` are released and
-`ZipProvider` is merged, but the `--vfs-mount` / `--vfs-load` loader is still open, so there
-is no `node-version` GitHub Actions can install that would make the workflow pass, and
-shipping it live would produce a permanently red workflow and a repository that looks
-broken.
+None of this can run yet. Everything it needs is in Node, and most of it is released —
+but the `--vfs-mount` / `--vfs-load` loader merged the day after v26.9.0 was cut, so until
+the next 26.x release there is no `node-version` GitHub Actions can install that would make
+the workflow pass, and shipping it live would produce a permanently red workflow and a
+repository that looks broken. That is a wait of one release, and the header carries the
+command that ends it.
 
 It is kept anyway, at `.github/workflows/release.yml.disabled`: the file does not end in
 `.yml`, so GitHub never parses it, and the body is commented out on top of that. The header

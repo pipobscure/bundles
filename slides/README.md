@@ -62,16 +62,16 @@ moving window over the recent past, not a complete history. The caption says so.
 
 - **Re-run the chart** (above) so the cadence figure is current.
 - **Check the status slide** (`0x14`). It lists seven work packages, and as of
-  **5 Sep 2026** exactly one is not green: the mount/load flags and
-  `registerProvider` (nodejs/node#65748), still open and still moving — the flag
-  took a mount index until 2 Sep and now names its source, so re-read `0x09` and
-  `0x0A` too. Everything else has landed: `node:vfs` and VFS module loading in
-  v26.4, the zip support in `node:zlib` in v26.8, the Zip VFS provider merged
-  2 Sep, SEA assets behind a VFS mount 3 Sep, native addons from a mount 4 Sep —
-  the four merges are waiting on a release. If any of that moved, change the row
-  — and if the flags landed, the headline goes back to "This is in Node." The
-  talk is planned for whenever a compatible Node actually ships, so this slide is
-  the one most likely to be wrong by then. The speaker note repeats this.
+  **18 Sep 2026** every one of them is in Node. Released: `node:vfs` and VFS
+  module loading in v26.4, the zip support in `node:zlib` in v26.8, and in v26.9
+  (16 Sep) the Zip VFS provider, native addons from a mount, and SEA assets behind
+  a VFS mount. The mount/load flags and `registerProvider` (nodejs/node#65748)
+  merged on 17 Sep — one day after v26.9 was cut — so their row reads *next 26.x*
+  until that release exists; then change it to the version. Until it ships,
+  running the demos means a node built from `main`, and the notes on `0x00` and
+  `0x14` say how to put that on stage without overclaiming. The flag took a mount
+  index until 2 Sep and now names its source, so if you last rehearsed before
+  that, re-read `0x09` and `0x0A` too.
 - **Verify the Shai-Hulud framing** on `0x03`. Reporting varies by source and wave; the
   notes recommend "hundreds of packages across two waves in late 2025, and CISA issued an
   advisory" over a precise count you would have to defend.

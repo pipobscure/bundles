@@ -281,6 +281,7 @@ enumeration page instead — every mounted source, in precedence order.
 
 ## Requirements
 
-The same unreleased node the rest of this repository needs — `node:vfs`,
-`ZipProvider`, and the `--vfs-mount` / `--vfs-load` flags. See the root
-[README](../../README.md#requirements).
+The same Node the rest of this repository needs: one with the `--vfs-mount` /
+`--vfs-load` flags, which means the next 26.x release, or `main` until it ships.
+Everything else the server uses — `node:vfs`, `ZipProvider`, the ZIP support in
+`node:zlib` — is in v26.9.0 already. See the root [README](../../README.md#requirements).
