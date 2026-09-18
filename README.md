@@ -595,7 +595,7 @@ Node it can install; the header carries the command that makes it live.
 - **[slides/](slides/)** — *Ship the Tree*, a talk about the project, kept in step with it.
   `slides/index.html` opens in any browser with no build step; press <kbd>S</kbd> for the
   speaker notes, which carry most of the argument.
-  **[Read it here](https://claude.ai/code/artifact/7860e0a8-3d32-4b9e-b5ce-94a36289bc34)** —
+  **[Read it here](https://claude.ai/artifact/FsAKxG5e5rKYaUXArqb6Us)** —
   same deck, published.
 
 ---

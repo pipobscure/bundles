@@ -148,7 +148,7 @@ command in it, and the two "this is built" statements on `0x12` and `0x13`.
 
 The deck is also published as a Claude artifact, linked from the root README:
 
-    https://claude.ai/code/artifact/7860e0a8-3d32-4b9e-b5ce-94a36289bc34
+    https://claude.ai/artifact/FsAKxG5e5rKYaUXArqb6Us
 
 It is the same file — the artifact is the body-only form, which is exactly what
 `index.html` already is — so republishing is a straight upload of this file, not a
