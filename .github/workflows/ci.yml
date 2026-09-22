@@ -44,6 +44,10 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+          # Resolve the range against nodejs.org rather than the action's own
+          # manifest, which trails releases: the day 26.10.0 shipped, it still
+          # answered 26.x with 26.9.0 — a node without --vfs-load.
+          check-latest: true
 
       # `npm install` rather than `npm ci`: package-lock.json is not committed,
       # and `npm ci` refuses to run without one.
