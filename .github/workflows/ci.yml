@@ -1,8 +1,9 @@
 # Build, typecheck and test, on every push to main and every pull request.
 #
-# The matrix is the promise in package.json made checkable: `engines` says
-# node >=26.10.0, so 26.10.0 itself is tested — that is what stops a newer API
-# creeping in unnoticed — alongside whatever the 26 line has become since.
+# It tests exactly the floor package.json promises: `engines` says
+# node >=26.10.0, so 26.10.0 itself is what runs — that is what stops a newer
+# API creeping in unnoticed. A pinned version, so a red run means this
+# repository changed, never that a release moved underneath it.
 #
 # The executable tests need a node whose --build-sea understands "vfsArchive"
 # (nodejs/node#65810). On one that does not, they skip themselves and say why
@@ -27,13 +28,9 @@ concurrency:
 
 jobs:
   test:
-    name: node ${{ matrix.node }}
+    name: node 26.10.0
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['26.10.0', '26.x']
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,11 +40,7 @@ jobs:
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
-          # Resolve the range against nodejs.org rather than the action's own
-          # manifest, which trails releases: the day 26.10.0 shipped, it still
-          # answered 26.x with 26.9.0 — a node without --vfs-load.
-          check-latest: true
+          node-version: '26.10.0'
 
       # `npm install` rather than `npm ci`: package-lock.json is not committed,
       # and `npm ci` refuses to run without one.

@@ -546,7 +546,7 @@ The suite needs Node 26.10 or later. The sixteen tests that build an executable 
 [nodejs/node#65810](https://github.com/nodejs/node/pull/65810); on a Node without it they skip
 themselves and say why, and they run on the first Node that has it. [CI](.github/workflows/ci.yml)
 runs the suite on every push to `main` and every pull request, on 26.10.0 — the floor
-`package.json` promises — and on the latest 26.x.
+`package.json` promises.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
 test PKI is generated on demand by `tools/testpki.ts` and is **never committed** — a private
