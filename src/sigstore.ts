@@ -193,11 +193,11 @@ export async function signer(options: SigstoreSignerOptions = {}): Promise<Sigst
 // leaf first. Fulcio's proof-of-possession is a signature over the token's
 // subject claim, which is what ties the key to the identity.
 async function certify(token: string, keypair: KeyPair, fulcioURL: string): Promise<string[]> {
-    const subject = claims(token)['sub'];
+    const subject = challenge(claims(token));
     if (!subject) throw new Error('identity token carries no subject claim');
 
     const publicKey = keypair.publicKey.export({ format: 'pem', type: 'spki' }).toString();
-    const proof = CRYPTO.sign(null, Buffer.from(String(subject)), keypair.privateKey);
+    const proof = CRYPTO.sign('sha256', Buffer.from(String(subject)), keypair.privateKey);
 
     const res = await fetch(`${fulcioURL.replace(/\/+$/, '')}/api/v2/signingCert`, {
         method: 'POST',
@@ -219,6 +219,17 @@ async function certify(token: string, keypair: KeyPair, fulcioURL: string): Prom
     const certs = (body.signedCertificateEmbeddedSct ?? body.signedCertificateDetachedSct)?.chain?.certificates;
     if (!certs?.length) throw new Error('fulcio returned no certificate chain');
     return certs.map((pem) => (pem.endsWith('\n') ? pem : `${pem}\n`));
+}
+
+// What Fulcio expects the proof of possession to sign: the principal it will
+// certify. For the email-based issuers that is the `email` claim — `sub` there
+// is an opaque account id, and a proof over it is refused as unverifiable. For
+// everything else, CI tokens included, it is `sub`. The same rule sigstore-js
+// applies.
+const EMAIL_ISSUERS = new Set(['https://oauth2.sigstore.dev/auth', 'https://accounts.google.com']);
+
+function challenge(claims: Record<string, unknown>): unknown {
+    return EMAIL_ISSUERS.has(String(claims['iss'])) ? claims['email'] : claims['sub'];
 }
 
 /** What `generateKeyPairSync('ec', …)` hands back. */
