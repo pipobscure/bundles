@@ -36,8 +36,48 @@ test('the dependency closure covers what a lazy require would need', () => {
     assert.deepEqual(files, [...files].sort(), 'sorted');
 });
 
-test('a dependency that is not installed is skipped rather than fatal', () => {
-    assert.deepEqual(dependencyFiles(['@pipobscure/definitely-not-installed'], packageRoot()), []);
+test('a dependency that is not installed is fatal, unless it is optional', () => {
+    // Skipping it would build an archive that fails wherever the code that needs
+    // it runs — which is how this closure once shipped without lru-cache.
+    assert.throws(() => dependencyFiles(['@pipobscure/definitely-not-installed'], packageRoot()), /not installed/);
+
+    const dir = PATH.join(tmp, 'optional');
+    const pkg = PATH.join(dir, 'node_modules', 'has-optional');
+    FS.mkdirSync(pkg, { recursive: true });
+    FS.writeFileSync(PATH.join(pkg, 'package.json'),
+        '{"name":"has-optional","optionalDependencies":{"@pipobscure/definitely-not-installed":"*"}}');
+    assert.deepEqual(dependencyFiles(['has-optional'], dir), ['node_modules/has-optional/package.json']);
+});
+
+test('a package whose exports hide its manifest is still found', () => {
+    // Resolving `name/package.json` fails for these, and used to be read as
+    // "not installed": lru-cache and content-type both went missing that way.
+    const dir = PATH.join(tmp, 'exports');
+    const pkg = PATH.join(dir, 'node_modules', 'sealed');
+    FS.mkdirSync(pkg, { recursive: true });
+    FS.writeFileSync(PATH.join(pkg, 'package.json'), '{"name":"sealed","exports":{".":"./index.js"}}');
+    FS.writeFileSync(PATH.join(pkg, 'index.js'), '');
+    assert.deepEqual(dependencyFiles(['sealed'], dir),
+        ['node_modules/sealed/index.js', 'node_modules/sealed/package.json']);
+});
+
+test('a nested copy is found from the package that depends on it', () => {
+    // Two majors of one package: the hoisted one, and an older one nested under
+    // the package that needs it. Both are members, because both are required.
+    const dir = PATH.join(tmp, 'nested');
+    const top = PATH.join(dir, 'node_modules');
+    const write = (path: string, json: object) => {
+        FS.mkdirSync(PATH.dirname(path), { recursive: true });
+        FS.writeFileSync(path, JSON.stringify(json));
+    };
+    write(PATH.join(top, 'stream', 'package.json'), { name: 'stream', version: '7.0.0' });
+    write(PATH.join(top, 'flush', 'package.json'), { name: 'flush', dependencies: { stream: '^3' } });
+    write(PATH.join(top, 'flush', 'node_modules', 'stream', 'package.json'), { name: 'stream', version: '3.0.0' });
+    assert.deepEqual(dependencyFiles(['stream', 'flush'], dir), [
+        'node_modules/flush/node_modules/stream/package.json',
+        'node_modules/flush/package.json',
+        'node_modules/stream/package.json',
+    ]);
 });
 
 test('a dependency outside the base cannot be a member, and says so', () => {
@@ -53,7 +93,7 @@ test('a dependency outside the base cannot be a member, and says so', () => {
     FS.writeFileSync(PATH.join(dep, 'package.json'), '{"name":"hoisted-dep","main":"index.js"}');
     FS.writeFileSync(PATH.join(dep, 'index.js'), '');
 
-    assert.throws(() => dependencyFiles(['hoisted-dep'], inner), /outside/);
+    assert.throws(() => dependencyFiles(['hoisted-dep'], inner), /not installed under/);
 });
 
 test('moduleFiles combines files, directories and dependencies without duplicates', () => {

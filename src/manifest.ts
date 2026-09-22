@@ -200,13 +200,25 @@ export function parseManifest(content: Buffer | string): ManifestFields {
  */
 export function verifySync(source: ArchiveSource, options: VerifyOptions = {}): VerificationResult {
     const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
-    const opened = options.archive ?? io.open();
-    const reader = readerFor(opened);
+    let reader: ArchiveReader | undefined;
     try {
+        reader = readerFor(options.archive ?? io.open());
         return inspect(reader, io, options);
+    } catch (err) {
+        // An archive whose structure no longer holds together has been altered
+        // as surely as one whose hash is wrong, so it gets the same answer. A
+        // file that is missing or unreadable is still an error: there is
+        // nothing there to call invalid.
+        if (isZipError(err)) return result('invalid', `not a readable ZIP archive: ${message(err)}`);
+        throw err;
     } finally {
-        if (!options.archive) reader.close();
+        if (!options.archive) reader?.close();
     }
+}
+
+function isZipError(err: unknown): boolean {
+    const code = (err as { code?: unknown } | null)?.code;
+    return typeof code === 'string' && code.startsWith('ERR_ZIP_');
 }
 
 /**
@@ -567,19 +579,32 @@ function within(cert: CRYPTO.X509Certificate, now: number): boolean {
     return Date.parse(cert.validFrom) <= now && now <= Date.parse(cert.validTo);
 }
 
+// id-kp-codeSigning (RFC 5280 §4.2.1.12).
+const CODE_SIGNING = '1.3.6.1.5.5.7.3.3';
+
 // Path validation: every link in the supplied chain must be issuer-signed and
 // in-date, and the top of the chain must be, or be issued by, a trusted root.
+//
+// Signing alone is not enough to be a link. The roots include the system store,
+// so a chain that only had to be *issued* would let the key of any publicly
+// trusted certificate — a web server's TLS certificate, say — sign an archive
+// that reports as trusted. So the leaf must say it is for signing code, and
+// everything that vouches for it must be a CA.
 function anchored(chain: CRYPTO.X509Certificate[], roots: CRYPTO.X509Certificate[], now: number): boolean {
+    const [leaf] = chain;
+    if (!leaf || !leaf.keyUsage?.includes(CODE_SIGNING)) return false;
     for (const cert of chain) if (!within(cert, now)) return false;
     for (let i = 0; i < chain.length - 1; i++) {
+        if (!chain[i + 1]!.ca) return false;
         if (!chain[i]!.checkIssued(chain[i + 1]!)) return false;
         if (!chain[i]!.verify(chain[i + 1]!.publicKey)) return false;
     }
-    const top = chain[chain.length - 1];
-    if (!top) return false;
+    const top = chain[chain.length - 1]!;
     for (const root of roots) {
+        // A root named directly is trusted as itself, whatever it is: that is
+        // pinning, and the caller chose it.
         if (top.fingerprint256 === root.fingerprint256) return true;
-        if (top.checkIssued(root) && top.verify(root.publicKey) && within(root, now)) return true;
+        if (root.ca && top.checkIssued(root) && top.verify(root.publicKey) && within(root, now)) return true;
     }
     return false;
 }

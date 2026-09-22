@@ -2,6 +2,7 @@
 import * as PATH from 'node:path';
 import * as VFS from 'node:vfs';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { Manifest, recording } from '../src/recorder.ts';
 import { packageRoot } from '../src/files.ts';
 
@@ -18,6 +19,11 @@ import { packageRoot } from '../src/files.ts';
 // entry point resolved against the mount it made, so the mount is made here.
 //
 //   BUNDLE_MANIFEST=read.manifest node --experimental-vfs tools/observe.ts help
+//
+// `--require <name>...` loads those packages out of the mount instead of running
+// the CLI. Signing through sigstore needs the network, so no run here can take
+// that path — but loading its packages reads everything they pull in at load
+// time, which is where a missing or wrong-version dependency would show.
 
 const destination = process.env['BUNDLE_MANIFEST'];
 if (!destination) {
@@ -35,5 +41,10 @@ const mount = vfs.mount();
 // mount is what makes its sibling lookups (the register preload, the skills)
 // resolve to mounted paths rather than real ones.
 const entry = PATH.join(mount, 'dist', 'main.js');
-process.argv = [process.argv[0]!, entry, ...process.argv.slice(2)];
-await import(pathToFileURL(entry).href);
+if (process.argv[2] === '--require') {
+    const require = createRequire(entry);
+    for (const name of process.argv.slice(3)) require(name);
+} else {
+    process.argv = [process.argv[0]!, entry, ...process.argv.slice(2)];
+    await import(pathToFileURL(entry).href);
+}

@@ -320,8 +320,13 @@ export function verifyBundle(
     // A policy of `undefined` still verifies the chain, the log entry and the
     // signing time; it only skips the "and it must be *this* identity" check,
     // which is the caller's to impose.
+    //
+    // The identity is matched exactly. `@sigstore/verify` hands the policy to
+    // `String.prototype.match`, which makes it an unanchored regular expression:
+    // `pip@pip.fyi` would accept a certificate for `pip@pip-fyi.com`, a domain
+    // anyone can register. Escaped and anchored, it means what it says.
     const policy = identity || issuer
-        ? { ...(identity ? { subjectAlternativeName: identity } : {}), ...(issuer ? { extensions: { issuer } } : {}) }
+        ? { ...(identity ? { subjectAlternativeName: exactly(identity) } : {}), ...(issuer ? { extensions: { issuer } } : {}) }
         : undefined;
     const signer = verifier.verify(entity, policy);
 
@@ -441,6 +446,14 @@ function seedTrustedRootJSON(mirror: string): unknown {
     const seeds = JSON.parse(FS.readFileSync(path, 'utf-8')) as Record<string, { targets?: Record<string, string> }>;
     const encoded = seeds[mirror]?.targets?.['trusted_root.json'];
     return encoded ? JSON.parse(Buffer.from(encoded, 'base64').toString('utf-8')) : null;
+}
+
+/**
+ * A policy string that matches `value` and nothing else, for a verifier that
+ * reads its policy as a regular expression.
+ */
+export function exactly(value: string): string {
+    return `^${value.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')}$`;
 }
 
 // ------------------------------------------------------------------ tokens ---

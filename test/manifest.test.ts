@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { createBundle } from '../src/api.ts';
+import { exactly } from '../src/sigstore.ts';
 import {
     AUTHORITY, buildManifest, parseManifest, parseSignature, formatSignature,
     signatureOf, verifySync,
@@ -205,4 +208,84 @@ test('the trusted root path is only consulted for the archive that names one', a
     assert.equal(res.state, 'valid');
     assert.equal(res.sigstore, undefined);
     assert.equal(ROOT_PEM.endsWith('root.pem'), true);
+});
+
+test('an archive whose structure is broken is invalid, not an error', async () => {
+    // Damage that breaks the ZIP itself — here, a member's size in the central
+    // directory, which now runs past the end of the file — has altered the
+    // archive as surely as a wrong hash has.
+    const archive = await build(source, PATH.join(tmp, 'broken.bundle'));
+    const bytes = FS.readFileSync(archive);
+    const central = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    assert.notEqual(central, -1);
+    bytes.writeUInt32LE(0x7fffffff, central + 20); // its compressed size
+    FS.writeFileSync(archive, bytes);
+
+    const res = verifySync(archive, { extraRoots: roots });
+    assert.equal(res.state, 'invalid');
+    assert.match(res.reason, /not a readable ZIP archive/);
+    // A file that is not there is still an error: there is nothing to call invalid.
+    assert.throws(() => verifySync(PATH.join(tmp, 'missing.bundle')), /ENOENT/);
+});
+
+// A second PKI, to mint what the test PKI deliberately does not: a leaf with no
+// code-signing purpose, and a chain whose middle is not a CA.
+function openssl(args: string[]): void {
+    const res = spawnSync('openssl', args, { encoding: 'utf-8' });
+    if (res.status !== 0) throw new Error(`openssl ${args[0]} failed: ${res.stderr}`);
+}
+
+function issue(dir: string, name: string, ext: string, ca?: { cert: string; key: string }) {
+    const key = PATH.join(dir, `${name}.key`);
+    const cert = PATH.join(dir, `${name}.pem`);
+    const csr = PATH.join(dir, `${name}.csr`);
+    const extfile = PATH.join(dir, `${name}.ext`);
+    FS.writeFileSync(extfile, ext);
+    openssl(['req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+        '-keyout', key, '-out', csr, '-subj', `/CN=${name}`]);
+    openssl(['x509', '-req', '-in', csr, '-out', cert, '-days', '30', '-extfile', extfile,
+        ...(ca ? ['-CA', ca.cert, '-CAkey', ca.key, '-CAcreateserial'] : ['-key', key])]);
+    return { key, cert, pem: FS.readFileSync(cert, 'utf-8') };
+}
+
+async function signedBy(name: string, signer: { key: string }, chain: string): Promise<string> {
+    const output = PATH.join(tmp, `${name}.bundle`);
+    await createBundle({ base: source, files: Object.keys(APP), output, key: FS.readFileSync(signer.key), chain });
+    return output;
+}
+
+test('a chain is trusted only for code signing, and only through CAs', async () => {
+    const dir = PATH.join(tmp, 'purpose');
+    FS.mkdirSync(dir, { recursive: true });
+    const CA = 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n';
+    const root = issue(dir, 'root', CA);
+    const trust = [root.pem];
+
+    // Signed by a certificate for something else — a web server's, say. The
+    // system store would anchor one of those, which is why purpose matters.
+    const tls = issue(dir, 'tls', 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n', root);
+    const byTls = verifySync(await signedBy('tls', tls, tls.pem + root.pem), { extraRoots: trust });
+    assert.equal(byTls.state, 'valid-untrusted');
+
+    // A code-signing leaf issued by something that is not a CA.
+    const notCa = issue(dir, 'not-ca', 'basicConstraints=CA:FALSE\nkeyUsage=keyCertSign,digitalSignature\n', root);
+    const leaf = issue(dir, 'leaf', 'basicConstraints=CA:FALSE\nextendedKeyUsage=codeSigning\n', notCa);
+    const throughNonCa = verifySync(await signedBy('non-ca', leaf, leaf.pem + notCa.pem + root.pem), { extraRoots: trust });
+    assert.equal(throughNonCa.state, 'valid-untrusted');
+
+    // The same leaf shape, issued by the CA directly, is what trust looks like.
+    const good = issue(dir, 'good', 'basicConstraints=CA:FALSE\nextendedKeyUsage=codeSigning\n', root);
+    assert.equal(verifySync(await signedBy('good', good, good.pem + root.pem), { extraRoots: trust }).state, 'valid');
+});
+
+test('a sigstore identity policy matches exactly, not as a pattern', () => {
+    // @sigstore/verify reads the policy with String.prototype.match.
+    const policy = new RegExp(exactly('pip@pip.fyi'));
+    assert.ok(policy.test('pip@pip.fyi'));
+    assert.ok(!policy.test('pip@pip-fyi.com'), 'a dot is not a wildcard');
+    assert.ok(!policy.test('xpip@pip.fyi'), 'anchored at the start');
+    assert.ok(!policy.test('pip@pip.fyi.example'), 'anchored at the end');
+    const workflow = 'https://github.com/o/r/.github/workflows/release.yml@refs/heads/main';
+    assert.ok(new RegExp(exactly(workflow)).test(workflow));
+    assert.ok(!new RegExp(exactly(workflow)).test(`${workflow}-2`));
 });

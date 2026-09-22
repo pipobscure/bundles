@@ -189,13 +189,20 @@ Reports one of four states, and exits with the matching code:
 | `valid` | 0 | Hash, signature and every member digest are sound, and the chain is trusted. |
 | `valid-untrusted` | 1 | All of that is sound; the certificate is not one you can place — or a sigstore trust root is missing, or a required identity did not match. |
 | `unsigned` | 3 | No manifest, or a manifest with no signature. |
-| `invalid` | 2 | The bytes changed since signing, or a member's digest does not match its content. |
+| `invalid` | 2 | The bytes changed since signing, a member's digest does not match its content, or the archive no longer parses as a ZIP at all. |
 
 Note which side of the line "I could not check" falls on. Not being *able* to verify is
 `valid-untrusted`, never `invalid` — conflating them is how people are trained to click
 through warnings.
 
-`--identity` and `--issuer` demand a particular sigstore signer. A mismatch is
+A certificate chain is trusted only for what it was issued for. The leaf must carry the
+code-signing extended key usage, and everything above it must be a CA — otherwise the key
+of any publicly trusted certificate, a web server's TLS certificate included, could sign an
+archive that reads as `valid`. A root given with `--root` that *is* the leaf is trusted as
+itself: that is pinning, and you chose it.
+
+`--identity` and `--issuer` demand a particular sigstore signer, matched exactly — never as
+a pattern. A mismatch is
 `valid-untrusted`: the signature is genuine, it is simply not the one you asked for. An
 archive signed against an ordinary CA carries no identity claim at all, so it also reads as
 `valid-untrusted` under such a policy rather than passing.

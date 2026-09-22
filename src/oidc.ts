@@ -341,9 +341,13 @@ function canOpenBrowser(): boolean {
 
 // Best effort: if this fails the URL has already been printed, and the flow
 // still completes when the user opens it themselves.
+//
+// Windows goes through the URL protocol handler directly rather than
+// `cmd /c start`: cmd would read every `&` in the query string as a command
+// separator, run the pieces after it, and open a truncated URL.
 function openBrowser(url: string): void {
     const [cmd, ...args] = process.platform === 'darwin' ? ['open', url]
-        : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url]
+        : process.platform === 'win32' ? ['rundll32', 'url.dll,FileProtocolHandler', url]
         : ['xdg-open', url];
     try {
         spawn(cmd!, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();

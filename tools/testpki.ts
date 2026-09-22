@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
+import * as CRYPTO from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { packageRoot } from '../src/files.ts';
 
@@ -72,7 +73,8 @@ export function ensureTestPki({ dir = testPkiDir(), force = false }: {
 } = {}): TestPki {
     const pki = testPkiPaths(dir);
     if (force) FS.rmSync(dir, { recursive: true, force: true });
-    else if (complete(pki)) return pki;
+    else if (complete(pki) && current(pki)) return pki;
+    else if (complete(pki)) retire(dir);
 
     FS.mkdirSync(PATH.dirname(dir), { recursive: true });
     const staging = FS.mkdtempSync(`${dir}.staging-`);
@@ -93,6 +95,31 @@ function complete(pki: TestPki): boolean {
     return [pki.root, pki.leaf, pki.key, pki.chain].every((path) => FS.existsSync(path));
 }
 
+// Whether a PKI on disk is one this version would have made. A leaf from before
+// verification required the code-signing purpose no longer verifies, and a
+// checkout that kept one would see every signing test fail for no visible
+// reason.
+function current(pki: TestPki): boolean {
+    try {
+        return new CRYPTO.X509Certificate(FS.readFileSync(pki.leaf)).keyUsage?.includes('1.3.6.1.5.5.7.3.3') ?? false;
+    } catch {
+        return false;
+    }
+}
+
+// Move a stale PKI out of the way so a fresh one can be renamed into place. The
+// rename is atomic, so of the test files that all notice at once exactly one
+// moves it; the rest find it gone, which is what they wanted.
+function retire(dir: string): void {
+    const stale = `${dir}.stale-${process.pid}-${Date.now()}`;
+    try {
+        FS.renameSync(dir, stale);
+    } catch {
+        return;
+    }
+    FS.rmSync(stale, { recursive: true, force: true });
+}
+
 function generate(pki: TestPki): void {
     const rootKey = PATH.join(pki.dir, 'root.key');
     const csr = PATH.join(pki.dir, 'leaf.csr');
@@ -107,7 +134,7 @@ function generate(pki: TestPki): void {
     // A leaf it issues, which is what actually signs.
     openssl(['req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
         '-keyout', pki.key, '-out', csr, '-subj', SUBJECT_LEAF]);
-    FS.writeFileSync(ext, 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n');
+    FS.writeFileSync(ext, 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning\n');
     openssl(['x509', '-req', '-in', csr, '-CA', pki.root, '-CAkey', rootKey, '-CAcreateserial',
         '-out', pki.leaf, '-days', '3650', '-extfile', ext]);
 

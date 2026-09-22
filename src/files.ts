@@ -1,6 +1,5 @@
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 // Working out what belongs in an archive, for the cases where observing a run
@@ -48,42 +47,62 @@ export function walk(dir: string, { exclude = ['node_modules'] }: WalkOptions = 
  * describes the tree that is actually installed rather than what a lock file
  * says should be.
  *
- * A dependency that resolves outside `base` cannot become a member of an
- * archive rooted there; that is an error rather than a silent omission,
- * because a bundle whose closure is incomplete is a bundle that fails at
- * runtime on a machine other than the one that built it.
+ * A dependency that is not installed under `base` — missing, or hoisted above
+ * it, where no member path can name it — is an error rather than a silent
+ * omission, because a bundle whose closure is incomplete is a bundle that
+ * fails at runtime on a machine other than the one that built it. Only an
+ * optional dependency may be absent.
  */
 export function dependencyFiles(names: string[], base: string): string[] {
-    const require = createRequire(PATH.join(base, 'package.json'));
+    const root = PATH.resolve(base);
     const files: string[] = [];
     const seen = new Set<string>();
-    const queue = [...names];
+    // Each dependency is looked up from the package that depends on it, not from
+    // the root: a tree can hold several versions of one package, and which one
+    // a `require` gets depends on where it is asked from.
+    const queue = names.map((name) => ({ name, from: root, optional: false }));
 
     while (queue.length) {
-        const name = queue.shift()!;
-        if (seen.has(name)) continue;
-        seen.add(name);
+        const { name, from, optional } = queue.shift()!;
+        const dir = locate(name, from, root);
+        if (!dir) {
+            if (optional) continue; // optional, and not installed
+            throw new Error(`'${name}', needed by ${PATH.relative(root, from) || 'the root'}, is not installed ` +
+                `under ${root} — a bundle without it fails wherever the code that needs it runs`);
+        }
+        if (seen.has(dir)) continue;
+        seen.add(dir);
 
-        let manifestPath: string;
-        try {
-            manifestPath = require.resolve(`${name}/package.json`);
-        } catch {
-            continue; // an optional dependency that is not installed
-        }
-        const dir = PATH.dirname(manifestPath);
-        const relative = PATH.relative(base, dir);
-        if (relative.startsWith('..') || PATH.isAbsolute(relative)) {
-            throw new Error(`'${name}' resolves to ${dir}, outside ${base} — ` +
-                'it cannot become a member of an archive rooted there');
-        }
+        const relative = PATH.relative(root, dir);
         for (const file of walk(dir)) files.push(posix(relative, file));
 
-        const manifest = JSON.parse(FS.readFileSync(manifestPath, 'utf-8')) as {
+        const manifest = JSON.parse(FS.readFileSync(PATH.join(dir, 'package.json'), 'utf-8')) as {
             dependencies?: Record<string, string>;
+            optionalDependencies?: Record<string, string>;
         };
-        queue.push(...Object.keys(manifest.dependencies ?? {}));
+        const optionals = manifest.optionalDependencies ?? {};
+        for (const dep of Object.keys(manifest.dependencies ?? {})) {
+            queue.push({ name: dep, from: dir, optional: dep in optionals });
+        }
+        for (const dep of Object.keys(optionals)) queue.push({ name: dep, from: dir, optional: true });
     }
     return files.sort();
+}
+
+// Where `name` is installed as seen from `from`: the nearest `node_modules/name`
+// on the way up, the search node's resolver makes. It looks for the directory
+// rather than resolving `name/package.json`, because a package whose `exports`
+// does not list its manifest would refuse that — and be mistaken for missing.
+// The search stops at `root`: a package above it cannot become a member of an
+// archive rooted there, so finding one is the same as not finding one.
+function locate(name: string, from: string, root: string): string | null {
+    for (let dir = from; ; dir = PATH.dirname(dir)) {
+        if (PATH.basename(dir) !== 'node_modules') {
+            const candidate = PATH.join(dir, 'node_modules', name);
+            if (FS.existsSync(PATH.join(candidate, 'package.json'))) return candidate;
+        }
+        if (dir === root || PATH.dirname(dir) === dir) return null;
+    }
 }
 
 export interface ModuleFilesOptions {

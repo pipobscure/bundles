@@ -66,7 +66,7 @@ console.error("* next: 'npm run pack:cli' to build the unsigned archive");
 
 // Drive the CLI through a recording mount of the package root, doing enough
 // real work to be worth checking against: help, a build, a signature, a
-// verification, and a skill install. The manifest lands outside the mount, so
+// verification, a skill install, and loading every runtime dependency. The manifest lands outside the mount, so
 // writing it is not itself a read of the tree being observed.
 function observe(): string[] {
     const scratch = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-observe-'));
@@ -87,6 +87,9 @@ function observe(): string[] {
             ['verify', '--root', pki.root, '--json', signed],
             ['skill', '--list'],
             ['skill', '--dir', PATH.join(scratch, 'skills')],
+            // Signing through sigstore needs the network, so load what it runs
+            // on instead: that reads everything the dependencies pull in.
+            ['--require', ...RUNTIME],
         ];
 
         // One manifest per run and merged afterwards: the recorder truncates on
