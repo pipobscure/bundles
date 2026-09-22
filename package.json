@@ -1,6 +1,6 @@
 {
   "name": "@pipobscure/bundle",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Record what an application reads, archive it, sign it with sigstore, verify it, and mount it as a verifying node:vfs provider so only signed archives run.",
   "keywords": [
     "SEA",
@@ -21,7 +21,7 @@
   "types": "./dist/index.d.ts",
   "main": "./dist/main.js",
   "bin": {
-    "bundle": "./bundle.run"
+    "bundle": "bundle.run"
   },
   "exports": {
     ".": "./dist/index.js",

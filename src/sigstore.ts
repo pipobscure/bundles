@@ -59,7 +59,8 @@ const require = createRequire(import.meta.url);
 
 export const DEFAULT_FULCIO_URL = 'https://fulcio.sigstore.dev';
 export const DEFAULT_REKOR_URL = 'https://rekor.sigstore.dev';
-export const DEFAULT_TSA_URL = 'https://timestamp.sigstore.dev/api/v1/timestamp';
+/** A base URL: `@sigstore/sign` appends `/api/v1/timestamp` itself. */
+export const DEFAULT_TSA_URL = 'https://timestamp.sigstore.dev';
 export const DEFAULT_TUF_MIRROR = 'https://tuf-repo-cdn.sigstore.dev';
 
 /** The comment field the sigstore bundle travels in. */

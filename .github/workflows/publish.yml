@@ -94,7 +94,7 @@ jobs:
           fi
 
   release:
-    name: Release ${{ needs.check.outputs.version }}
+    name: Release
     needs: check
     if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
@@ -156,6 +156,9 @@ jobs:
         with:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          # The job's own read-only token: the audit writes nothing to GitHub,
+          # and this spares the action a token from the Claude GitHub App.
+          github_token: ${{ github.token }}
           prompt: >-
             /audit-bundle build/cli.bundle against build/baseline.bundle
 

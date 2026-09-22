@@ -17,4 +17,13 @@ import { main } from './cli.ts';
 // wants the commands without a subprocess — and the one place that turns a code
 // into an exit is this file.
 
+// A reader that stops early — `bundle verify --json x | head` — closes the pipe
+// under us. That is the reader being done, not a failure worth a stack trace.
+for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EPIPE') process.exit(process.exitCode ?? 0);
+        throw err;
+    });
+}
+
 process.exitCode = await main(process.argv.slice(2));

@@ -73,14 +73,17 @@ function main(): void {
     // The baseline is only worth reviewing against if it is the artifact it
     // claims to be. A tampered or unsigned one would make the diff lie by
     // omission: everything it already contained would read as "unchanged".
-    const identities = values.identity?.length ? values.identity : [undefined];
+    // An empty value — an unset CI variable, typically — must not read as "no
+    // identity required", which would accept a baseline signed by anyone.
+    const named = (values.identity ?? []).filter(Boolean);
+    const identities = named.length ? named : [undefined];
     const results = identities.map((identity) => verifyBundleSync(extracted, { identity, issuer: values.issuer }));
     const res = results.find((r) => r.state === 'valid') ?? results[0]!;
     if (res.state === 'invalid' || res.state === 'unsigned') {
         fail(`the published ${values.member} is ${STATES[res.state].label} — ${res.reason}\n` +
             '  refusing to use it as a comparison basis; a baseline that cannot be placed makes the diff meaningless');
     }
-    if (res.state === 'valid-untrusted' && (values.identity?.length || values.issuer)) {
+    if (res.state === 'valid-untrusted' && (named.length || values.issuer)) {
         // An identity was demanded and not met. On a fresh runner this is also
         // what a missing sigstore trust root looks like, so say which.
         console.error(`! the published ${values.member} did not meet the required identity: ${res.reason}`);
