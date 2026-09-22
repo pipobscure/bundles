@@ -30,23 +30,28 @@ generated: what you read is what is signed.
 
 **Mounting is an ordinary library call.** The server mounts what it serves with
 `vfs.create()` and the two built-in providers, choosing between them by what the
-source *is* rather than what it is called — the same rule `--vfs-mount` uses.
+source *is* rather than what it is called — the same rule `--vfs-load` uses.
 
 ---
 
 ## Why the server mounts the content itself
 
-The obvious design is to let node do it: `./static-server.run --vfs-mount site/`
-and have the program serve whatever is mounted. That does not work, for two
+The obvious design is to let node do it — mount `site/` from the command line
+and have the program serve whatever is mounted. That does not work, for three
 reasons worth knowing:
 
+- **There is no flag for it.** `--vfs-load` mounts exactly one source, the
+  program. v26.10.0 also carried `--vfs-mount`, which mounted without running,
+  and the next patch release removes it
+  ([nodejs/node#66162](https://github.com/nodejs/node/pull/66162)): a program
+  that wants more mounts makes them through `node:vfs`.
 - **Nothing enumerates the mounts.** A mount lives at a reserved path node
   assigns, and no API hands that path back. A program can be *served from* a
   mount it did not make, but it cannot discover one.
 - **The launcher's `--` is load-bearing.** The prefix this package writes ends
   its node invocation with `--`, so everything after the archive's own name is
   the program's argument. That is what makes `./static-server.run --port=9000`
-  reach the program instead of node — and it means a `--vfs-mount` written there
+  reach the program instead of node — and it means a node flag written there
   would never be seen by node anyway.
 
 So the sources are the program's arguments, and the program mounts them. The
@@ -281,7 +286,6 @@ enumeration page instead — every mounted source, in precedence order.
 
 ## Requirements
 
-The same Node the rest of this repository needs: one with the `--vfs-mount` /
-`--vfs-load` flags, which means the next 26.x release, or `main` until it ships.
-Everything else the server uses — `node:vfs`, `ZipProvider`, the ZIP support in
-`node:zlib` — is in v26.9.0 already. See the root [README](../../README.md#requirements).
+The same Node the rest of this repository needs: 26.10 or later, the first
+release with `--vfs-load`. Everything else the server uses — `node:vfs`,
+`ZipProvider`, the ZIP support in `node:zlib` — was in v26.9.0 already. See the root [README](../../README.md#requirements).

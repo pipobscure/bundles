@@ -15,11 +15,10 @@ filesystem, so an archive that does not check out never becomes one and its entr
 never runs. Every member is re-hashed against its signed digest as it is read, for the life
 of the process.
 
-> **Requires the next Node 26 release.** Everything this needs is in Node: most of it is
-> released, through v26.9.0, and the `--vfs-mount` / `--vfs-load` loader — the piece nothing
-> here runs without — merged on 17 September, the day after v26.9.0 shipped. Until the next
-> 26.x release, that means a Node built from `main`. See [Requirements](#requirements).
-> Everything here is experimental.
+> **Requires Node 26.10 or later**, run with `--experimental-vfs`. Every piece this needs is
+> in a released Node; the last, the `--vfs-load` loader, shipped in v26.10.0. Building a
+> single executable additionally needs one open pull request. See
+> [Requirements](#requirements). Everything here is experimental.
 
 ---
 
@@ -438,8 +437,8 @@ be inside what the signature covers — which is where the sigstore bundle rides
 transparency-log entry and timestamp that establish *when* a ten-minute certificate was
 valid. RFC 3161 puts timestamp tokens in CMS `unsignedAttrs` for exactly this reason.
 
-**The mount** is where it stops being advisory. `--vfs-mount` asks registered providers who
-wants a source; this package's provider claims `.bundle` files by name and any file carrying
+**The mount** is where it stops being advisory. `--vfs-load` asks registered providers who
+wants its source; this package's provider claims `.bundle` files by name and any file carrying
 a signature marker by content — so renaming a signed archive cannot quietly downgrade it to
 the unchecked built-in ZIP provider. It verifies before returning a filesystem, and re-hashes
 each member as it is first read, because a `ZipFile` reads lazily from an open descriptor and
@@ -493,17 +492,27 @@ Everything here sits on Node's experimental `node:vfs` (by Matteo Collina) and r
 | **`ZipProvider`**, a VFS provider backed by such an archive | released, v26.9.0 — [nodejs/node#64915](https://github.com/nodejs/node/pull/64915) |
 | **Native addons loaded from a mount** | released, v26.9.0 — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
 | **`"useVfs"`**, a SEA's assets behind a VFS mount | released, v26.9.0 — [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) |
-| **`--vfs-mount` / `--vfs-load`**, and `vfs.registerProvider()` | merged 17 Sep, in the next 26.x release — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
+| **`--vfs-load`**, and `vfs.registerProvider()` | released, v26.10.0 — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
 | **`"vfsArchive"`**, a ZIP as a SEA's file system — `bundle sea` only | open — [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) |
 
-v26.9.0 already has everything a program needs to *be* an archive: it reads ZIP archives,
-turns one into a file system, resolves modules out of it, and loads native addons from it. The
-one thing it lacks is the way to ask for that mount from *outside* the program, which is the
-whole hinge: **`--vfs-mount` / `--vfs-load`** make a mounted tree the thing a program resolves
-and runs from, and the same pull request brings `vfs.registerProvider()` — the extension point
-that lets a preload decide what backs a mount, and therefore the one that makes a *verifying*
-mount possible from userland at all. It merged on 17 September, one day after v26.9.0 was
-cut, so it ships in the next 26.x release. Until then, build Node from `main`.
+v26.9.0 already had everything a program needs to *be* an archive: it reads ZIP archives,
+turns one into a file system, resolves modules out of it, and loads native addons from it.
+v26.10.0 added the way to ask for that mount from *outside* the program, which is the whole
+hinge: **`--vfs-load`** makes a mounted tree the thing a program resolves and runs from, and
+the same pull request brings `vfs.registerProvider()` — the extension point that lets a
+preload decide what backs a mount, and therefore the one that makes a *verifying* mount
+possible from userland at all.
+
+**`--vfs-load` is the only flag.** v26.10.0 also shipped `--vfs-mount`, which mounted a source
+without running it, and the next patch release removes it
+([nodejs/node#66162](https://github.com/nodejs/node/pull/66162)): nothing needs more than one
+mount from the command line, and a program that wants more mounts them through `node:vfs`,
+where it also holds the instance. The same change reserves layer 0 for the `--vfs-load`
+source, so it sits at the same mount point in every thread whatever else is mounted, and
+mounts a program makes itself are numbered from 1. Nothing here uses `--vfs-mount`, and
+mount points stay node's to assign: named mounts
+([nodejs/node#66119](https://github.com/nodejs/node/pull/66119)) were closed rather than
+merged.
 
 [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) is needed only to build an
 executable. It lets a SEA's file system *be* a ZIP archive rather than a list of assets, which
@@ -529,14 +538,15 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 144 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 145 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 
-The suite needs a Node carrying the [requirements](#requirements) — today, one built from
-`main` with [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) applied for the
-executable tests; from the next 26.x release, only that. Against such a build all 144 pass,
-launcher, mount and executable tests included.
+The suite needs Node 26.10 or later. The sixteen tests that build an executable also need
+[nodejs/node#65810](https://github.com/nodejs/node/pull/65810); on a Node without it they skip
+themselves and say why, and they run on the first Node that has it. [CI](.github/workflows/ci.yml)
+runs the suite on every push to `main` and every pull request, on 26.10.0 — the floor
+`package.json` promises — and on the latest 26.x.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
 test PKI is generated on demand by `tools/testpki.ts` and is **never committed** — a private
@@ -574,8 +584,9 @@ does to release itself is something you can do to your own project.
 [`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is the
 whole pipeline as a workflow — CI, pack, fetch the published release, audit the diff, gate,
 sign through sigstore with the workflow's OIDC identity, publish with npm provenance, every
-action pinned to a commit SHA. It is inert until the next 26.x release gives GitHub Actions a
-Node it can install; the header carries the command that makes it live.
+action pinned to a commit SHA. It stays disabled on purpose: it publishes, so turning it on
+needs the secrets it names and a decision, not just a Node that can run it — which 26.10 now
+is. The header carries the command that makes it live.
 
 ---
 

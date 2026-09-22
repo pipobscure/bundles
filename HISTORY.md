@@ -68,17 +68,16 @@ that runs on any installed Node, or as a fully self-contained native executable 
 no Node at all.
 
 It is driven by Node.js itself, in three additions on top of Node's existing experimental
-**virtual file system** (`node:vfs`, by Matteo Collina). All three have landed since this was
-written — two released, the third merged and due in the next 26.x release:
+**virtual file system** (`node:vfs`, by Matteo Collina). All three have shipped since this
+was written, the last of them in v26.10.0:
 
 1. **ZIP archive support in `node:zlib`** —
    [nodejs/node#64339](https://github.com/nodejs/node/pull/64339), released in **v26.8.0** —
    plus a **`ZipProvider`** that mounts such an archive through VFS as a file tree,
    [nodejs/node#64915](https://github.com/nodejs/node/pull/64915), released in **v26.9.0**.
-2. A **`--vfs-mount` / `--vfs-load` module loader** that mounts directories and archives
-   and resolves a program's entry point and all its `require()`/`import` against them —
-   [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), merged on 17 September,
-   the day after v26.9.0 was cut, so it ships in the next 26.x release.
+2. A **`--vfs-load` module loader** that mounts a directory or an archive and resolves a
+   program's entry point and all its `require()`/`import` against it —
+   [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), released in **v26.10.0**.
 3. **`vfs.registerProvider()`**, the extension point that lets a preloaded module
    decide which provider backs a mount — which is what makes a *verifying* mount, or a
    *recording* one, possible from userland at all. It came in the same pull request as the
@@ -129,10 +128,10 @@ one lives:
   - **ZIP archive support in `node:zlib`** ([nodejs/node#64339](https://github.com/nodejs/node/pull/64339),
     released in v26.8.0) and the **`ZipProvider`** that mounts an archive through VFS
     ([nodejs/node#64915](https://github.com/nodejs/node/pull/64915), released in v26.9.0).
-  - The **`--vfs-mount` / `--vfs-load` module loader** that makes a mounted tree the thing a
-    program actually resolves and runs from, and the provider registry that decides what
-    backs a mount — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), merged on
-    17 September and due in the next 26.x release. Loading a **native addon** out of a mount
+  - The **`--vfs-load` module loader** that makes a mounted tree the thing a program
+    actually resolves and runs from, and the provider registry that decides what backs a
+    mount — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748), released in
+    v26.10.0. Loading a **native addon** out of a mount
     was a separate pull request, [nodejs/node#65680](https://github.com/nodejs/node/pull/65680),
     released in v26.9.0.
 - **The SEA group** is recent upstream Node functionality the experiment leans on, carried
@@ -183,38 +182,42 @@ Directories are recognized both explicitly and implicitly; a file opened for wri
 as a new archive entry when its handle is closed. This is what lets a `.zip` be *mounted*
 and treated like a directory.
 
-### 3. `--vfs-mount` / `--vfs-load` startup flags — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — merged, in the next 26.x release)*
+### 3. `--vfs-load` — the keystone *([nodejs/node#65748](https://github.com/nodejs/node/pull/65748) — released in v26.10.0)*
 
 This is what wires VFS into Node's *startup and module resolution* so a mounted tree
-becomes the thing the program actually runs from. Mounting and running stay separate
-concerns — one flag only mounts, the other mounts and runs — so a program can be given
-several mounts and still have exactly one entry point:
+becomes the thing the program actually runs from. One flag does both halves: it mounts a
+source and runs the program out of it.
 
-- **`--vfs-mount=<source>`** mounts `<source>` at a reserved mount point Node assigns.
-  Repeatable, and the target is deliberately not yours to choose: mounts therefore never
-  shadow a real path, and no invocation can redirect one tree onto another.
+- **`--vfs-load=<source>`** mounts `<source>` at a reserved mount point Node assigns, and
+  runs the entry point out of that mount, resolving it *and all subsequent `require()` /
+  `import`* against it instead of the real filesystem. It may be given at most once. The
+  mount's own `package.json` `"main"` decides what runs; a positional argument is the
+  program's own argument (from `argv[2]` on), never an entry-point override. `argv[1]`
+  reports the *source* rather than the mount point — which is what lets a launcher archive
+  read its own bytes and verify itself.
   - The provider is chosen from the **source itself, not its name**: a **directory** is
     mounted with `RealFSProvider`, and a **file whose bytes are a ZIP archive** with
     `ZipProvider` — so an archive can be called anything at all.
-- **`--vfs-load=<source>`** mounts `<source>` exactly as `--vfs-mount` does *and* runs the
-  entry point out of that mount, resolving it *and all subsequent `require()` / `import`*
-  against it instead of the real filesystem. It may be given at most once. The mount's own
-  `package.json` `"main"` decides what runs; a positional argument is the program's own
-  argument (from `argv[2]` on), never an entry-point override. `argv[1]` reports the
-  *source* rather than the generated mount point — which is what lets a launcher archive
-  read its own bytes and verify itself.
-  - Both options append to one list, so mounts happen in the order written:
-    `--vfs-mount=a --vfs-load=b --vfs-mount=c` mounts `a`, `b`, `c` and runs `b`. Mounting
-    the same source twice mounts it twice, and the entry point comes from the mount
-    `--vfs-load` contributed rather than from the earlier one.
-  - It named a mount by 0-based *index* until early September 2026, which meant counting
-    `--vfs-mount`s out by hand and left the flag's value optional — and an optional value
-    needs an alias onto a hidden index flag, the trick `--inspect=<port>` uses. Naming the
-    source instead removed the flag, the range check and the counting.
+  - The mount point is deliberately not yours to choose, so a mount never shadows a real
+    path and no invocation can redirect one tree onto another. It is not yours to *name*
+    either: named mounts ([nodejs/node#66119](https://github.com/nodejs/node/pull/66119))
+    were proposed and closed.
+- **It shipped with a second flag, and is losing it.** v26.10.0 also carries
+  `--vfs-mount`, which mounted a source without running it; the two appended to one list,
+  so `--vfs-load`'s entry point had to be recovered from its position among the mounts. The
+  next patch release removes it ([nodejs/node#66162](https://github.com/nodejs/node/pull/66162)),
+  on the grounds that nothing needs more than one mount from the command line — a program
+  that wants more mounts them through `node:vfs`, where it also holds the instance — and
+  reserves **layer 0** for the `--vfs-load` source, so it sits at the same mount point in
+  every thread whatever else has been mounted, with a program's own mounts numbered from 1.
+  - Before that, `--vfs-load` selected a mount by 0-based *index*, until early September
+    2026 — which meant counting `--vfs-mount`s out by hand and left the flag's value
+    optional, and an optional value needs an alias onto a hidden index flag, the trick
+    `--inspect=<port>` uses. Naming the source removed the flag, the range check and the
+    counting; dropping `--vfs-mount` removes the list the index pointed into.
 - **`--vfs-load` is refused in `NODE_OPTIONS`**: which entry point runs is the command
   line's decision, and the environment must not be able to redirect any invocation on the
-  machine. `--vfs-mount` is permitted there, and those mounts are made *before* the command
-  line's — with no index to protect, the order no longer changes what runs.
+  machine.
 - The entry-point rule is precisely what makes a **self-mounting shebang** work:
   `#!/usr/bin/env -S node --vfs-load`. The kernel appends the script's own path as the value
   of the trailing `--vfs-load`, so the script mounts *itself* and runs its embedded
@@ -334,7 +337,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 144 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 145 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -539,7 +542,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.bundle
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 144 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 145 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -982,7 +985,7 @@ gap, and is the one route by which `app.run` runs verified at all.
 
 Building an archive needs a file list, and the honest way to get one is to run the
 application and write down what it read. That used to be `--vfs-manifest=<file>`, a flag
-that poked an observer slot inside `node:vfs`. With mounting reduced to `--vfs-mount` and
+that poked an observer slot inside `node:vfs`. With mounting reduced to `--vfs-load` and
 provider selection the one place a mount can be influenced, the same job is better done by
 a **provider** — which is what `src/recorder.ts` is:
 
@@ -1154,9 +1157,9 @@ one OIDC token; Fulcio certifies it for the signature, and `npm publish --proven
 its attestation from it. Two attestations over one artifact, from one identity: npm's over
 the registry copy, and this project's over the bytes inside it.
 
-> **It cannot run yet.** Every step depends on the `--vfs-mount` / `--vfs-load` work, which
-> is merged but not yet in a release, so there is no `node-version` that would make it pass
-> until the next 26.x ships. The
+> **It is disabled, not blocked.** Every step depends on `--vfs-load`, which shipped in
+> v26.10.0, so there is now a `node-version` it can run on; what it still needs is its
+> secrets, a committed lockfile for its `npm ci`, and a decision to publish. The
 > file is disabled two ways over — it does not end in `.yml`, so GitHub never parses it, and
 > its body is commented out — and it carries the one-line command that turns it back into a
 > live workflow. It is there to be read.
@@ -1265,7 +1268,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/release.yml.disabled
                   the release pipeline, inert until the node work lands
-  test/           144 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           145 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/
@@ -1878,12 +1881,11 @@ the right one for a release pipeline specifically — less obviously so for ordi
 
 #### Why it ships disabled
 
-None of this can run yet. Everything it needs is in Node, and most of it is released —
-but the `--vfs-mount` / `--vfs-load` loader merged the day after v26.9.0 was cut, so until
-the next 26.x release there is no `node-version` GitHub Actions can install that would make
-the workflow pass, and shipping it live would produce a permanently red workflow and a
-repository that looks broken. That is a wait of one release, and the header carries the
-command that ends it.
+Until v26.10.0 none of this could run: there was no `node-version` GitHub Actions could
+install that carried `--vfs-load`, and shipping it live would have produced a permanently red
+workflow and a repository that looked broken. That reason is gone — CI now runs the suite on
+26.10.0 on every push — and what keeps this one disabled is that it publishes: it wants its
+secrets, a committed `package-lock.json` for its `npm ci`, and someone deciding to turn it on.
 
 It is kept anyway, at `.github/workflows/release.yml.disabled`: the file does not end in
 `.yml`, so GitHub never parses it, and the body is commented out on top of that. The header
