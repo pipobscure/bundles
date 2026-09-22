@@ -11,7 +11,7 @@ import { STATES } from '../src/cli.ts';
 
 // Fetches the currently published bundle, to review the new one *against*.
 //
-// A release is rarely the first one, and reviewing 679 members from scratch
+// A release is rarely the first one, and reviewing 904 members from scratch
 // every time is both expensive and worse: it is the same reading over the same
 // unchanged dependency tree, which is exactly the kind of review that decays
 // into a rubber stamp. What actually deserves attention is the difference —
@@ -24,7 +24,11 @@ import { STATES } from '../src/cli.ts';
 // against, which is the same chain of custody HISTORY.md's implementation
 // notes §3 describe, used here for review rather than for trust.
 //
-//   node tools/baseline.ts --identity <san> --issuer <url>
+//   node tools/baseline.ts --identity <san> [--identity <san>...] --issuer <url>
+//
+// `--identity` may be given more than once, and the baseline is accepted if it
+// was signed as any of them — which is what a hand-signed first release,
+// followed by releases the workflow signs, needs.
 //
 // The first release has no baseline. That is a real state, not an error: with
 // `--allow-missing` this writes nothing, says so, and the audit falls back to
@@ -38,7 +42,7 @@ const { values } = parseArgs({
         spec:     { type: 'string' },
         output:   { type: 'string', default: PATH.join('build', 'baseline.bundle') },
         member:   { type: 'string', default: 'bundle.run' },
-        identity: { type: 'string' },
+        identity: { type: 'string', multiple: true },
         issuer:   { type: 'string' },
         'allow-missing': { type: 'boolean' },
     },
@@ -69,15 +73,14 @@ function main(): void {
     // The baseline is only worth reviewing against if it is the artifact it
     // claims to be. A tampered or unsigned one would make the diff lie by
     // omission: everything it already contained would read as "unchanged".
-    const res = verifyBundleSync(extracted, {
-        identity: values.identity,
-        issuer: values.issuer,
-    });
+    const identities = values.identity?.length ? values.identity : [undefined];
+    const results = identities.map((identity) => verifyBundleSync(extracted, { identity, issuer: values.issuer }));
+    const res = results.find((r) => r.state === 'valid') ?? results[0]!;
     if (res.state === 'invalid' || res.state === 'unsigned') {
         fail(`the published ${values.member} is ${STATES[res.state].label} — ${res.reason}\n` +
             '  refusing to use it as a comparison basis; a baseline that cannot be placed makes the diff meaningless');
     }
-    if (res.state === 'valid-untrusted' && (values.identity || values.issuer)) {
+    if (res.state === 'valid-untrusted' && (values.identity?.length || values.issuer)) {
         // An identity was demanded and not met. On a fresh runner this is also
         // what a missing sigstore trust root looks like, so say which.
         console.error(`! the published ${values.member} did not meet the required identity: ${res.reason}`);

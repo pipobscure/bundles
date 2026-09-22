@@ -1077,7 +1077,7 @@ exec node --experimental-vfs \
 <span class="p">$</span> head -c 77 node_modules/.bin/bundle
 <span class="y">#!/bin/sh
 exec node … --vfs-load="$0" -- "$@"</span></div>
-      <p class="sub" style="font-size:16px;max-width:44ch">No wrapper script. 677 members, sigstore included &mdash;
+      <p class="sub" style="font-size:16px;max-width:44ch">No wrapper script. 904 members, sigstore included &mdash;
         the dependency tree stops being something you fetch and becomes a fixed set
         <span class="mono" style="color:var(--accent)">/audit-bundle</span> can read in full.</p>
     </div>
@@ -1088,7 +1088,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
       </div>
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># version N verifies version N+1</span>
 <span class="p">$</span> bundle verify \
-    <span class="y">--identity</span> <span class="o">'…/release.yml@refs/heads/main'</span> \
+    <span class="y">--identity</span> <span class="o">'…/publish.yml@refs/heads/main'</span> \
     <span class="y">--issuer</span>   <span class="o">'token.actions.githubusercontent.com'</span> \
     bundle.run</div>
       <p class="sub" style="font-size:16px;max-width:44ch">Pinned to the release <b style="color:var(--ink)">workflow</b>,

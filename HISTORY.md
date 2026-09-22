@@ -549,7 +549,7 @@ Building the tool the way the tool says to build things — the same four steps:
 
 ```sh
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
-                            #   -> build/cli.manifest, build/cli.bundle (679 members)
+                            #   -> build/cli.manifest, build/cli.bundle (904 members)
 
 npm run sign:cli:local      # 4: refuses, because nothing has been audited yet
 BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
@@ -1099,7 +1099,7 @@ build step can read. So the skill writes a JSON verdict beside its prose report:
 
 ```json
 { "sha256": "f59a1a0a…", "baselineSha256": "e18542c9…", "mode": "sign",
-  "verdict": "pass", "members": 679, "reviewed": 12, "findings": [],
+  "verdict": "pass", "members": 904, "reviewed": 12, "findings": [],
   "summary": "12 members changed since 0.1.3; the sigstore tree is upstream and unmodified" }
 ```
 
@@ -1107,11 +1107,11 @@ build step can read. So the skill writes a JSON verdict beside its prose report:
 verdict passed *and* names those exact bytes. That is the whole gate, and it works the same
 locally and in CI.
 
-[`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is that
-pipeline as a workflow. It runs:
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) is that pipeline as a
+workflow. On a push to `main` whose `package.json` version npm does not have yet, it runs:
 
 ```
-CI  →  pack  →  fetch the published release  →  audit the diff  →  gate  →  sign  →  publish
+test  →  pack  →  fetch the published release  →  audit the diff  →  gate  →  sign  →  publish
 ```
 
 Step 3 is [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
@@ -1137,7 +1137,7 @@ repository's own skill:
   run: node dist/main.js audit --check --baseline build/baseline.bundle build/cli.bundle
 ```
 
-**Why a diff.** Re-reading 679 unchanged members every release is the kind of review that
+**Why a diff.** Re-reading 904 unchanged members every release is the kind of review that
 decays into a rubber stamp; a small diff gets read properly. `tools/baseline.ts` fetches the
 currently published package with `npm pack` — which downloads without installing or running
 anything — pulls its `bundle.run` out, and **verifies it before using it**, optionally
@@ -1266,9 +1266,9 @@ bundles/
                     baseline.ts   fetch and verify the published release, to diff against
                     audit.ts      prepare the audit, and gate signing on its verdict
                     prepublish.ts refuse to publish a stale or unsigned CLI
-  .github/workflows/release.yml.disabled
-                  the release pipeline, inert until the node work lands
-  test/           145 tests over the format, both providers, the API, the CLI, the SEA and the package
+  .github/workflows/ci.yml       build, typecheck and test on node 26.10.0
+  .github/workflows/publish.yml  the release pipeline: publishes any version npm lacks
+  test/           150 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/
@@ -1310,7 +1310,7 @@ happened is a changelog, and the interesting part is usually the gap.
 | **§2 the audit skill** | Built, as `skills/audit-bundle/`. |
 | **§3 the tool as a bundle of itself** | Built. The published package carries its own CLI as one signed archive and the `bundle` command is a launcher for it; the sigstore dependencies became members, as this section said they would have to. |
 | **§4 the self-validating executable** | Built, as `src/sea.ts` and `bundle sea`. The VFS mount that drives a SEA, applied to the archive appended to it. |
-| **§5 the audit as a build step** | Built, as `bundle audit`, `tools/baseline.ts` and `.github/workflows/release.yml.disabled`. The review moves from something you do to an archive you received to something that happens between `create` and `sign`. |
+| **§5 the audit as a build step** | Built, as `bundle audit`, `tools/baseline.ts` and `.github/workflows/publish.yml`. The review moves from something you do to an archive you received to something that happens between `create` and `sign`. |
 
 ---
 
@@ -1569,11 +1569,12 @@ it is how package managers already handle their own updates:
 bundle@0.1 (you have it)  --verify-->  bundle@0.2.bundle  --verify-->  bundle@0.3.bundle
 ```
 
-Each release is signed through sigstore by the release workflow, so the identity to pin is
-a workflow ref rather than a person:
+Each release is signed through sigstore by the publish workflow, so the identity to pin is
+a workflow ref rather than a person — except 0.0.1, published by hand before the workflow
+existed and signed as its maintainer:
 
 ```sh
-bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/release.yml@refs/heads/main' \
+bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main' \
               --issuer   'https://token.actions.githubusercontent.com' \
               bundle.run
 ```
@@ -1636,7 +1637,7 @@ about the *npm* copy rather than about the model.
 - **npm publication continues, and carries the signed bundle inside it.** The open question
   resolved into "both, in one package": the registry copy is the library (an `exports` map
   of ESM entry points, typed), and beside it sits `bundle.run` — the CLI as one signed
-  archive, 677 members including the whole sigstore dependency tree. `bin` points *straight
+  archive, 904 members including the whole sigstore dependency tree. `bin` points *straight
   at it*: it carries a `#!/bin/sh` prefix that mounts and runs itself, so
   `npx @pipobscure/bundle` executes the signed artifact with nothing in between. That keeps
   the model honest without pretending the registry does not exist.
@@ -1768,7 +1769,7 @@ whether the policy belongs to the publisher or to the deployment.
 ### 5. The audit as a build step, and a gate that can act on it
 
 > **Built**, as `tools/audit.ts`, the verdict contract in `skills/audit-bundle/SKILL.md`,
-> and `.github/workflows/release.yml`.
+> and `.github/workflows/publish.yml`.
 
 #### The claim
 
@@ -1823,7 +1824,7 @@ argument, not a tool.
 
 #### Reviewing the diff, not the archive
 
-Reviewing 679 members from scratch every release is expensive and, worse, is the same
+Reviewing 904 members from scratch every release is expensive and, worse, is the same
 reading over the same unchanged dependency tree — the kind of review that decays into a
 rubber stamp precisely because nothing ever changes in most of it. What deserves attention
 is the difference: which members appeared, which vanished, and what changed inside the ones
@@ -1879,20 +1880,21 @@ The cost is real and worth naming: pinned SHAs do not pick up security fixes on 
 so they have to be updated deliberately, with the diff read. That is the trade, and it is
 the right one for a release pipeline specifically — less obviously so for ordinary CI.
 
-#### Why it ships disabled
+#### How it is switched on
 
-Until v26.10.0 none of this could run: there was no `node-version` GitHub Actions could
-install that carried `--vfs-load`, and shipping it live would have produced a permanently red
-workflow and a repository that looked broken. That reason is gone — CI now runs the suite on
-26.10.0 on every push — and what keeps this one disabled is that it publishes: it wants its
-secrets, a committed `package-lock.json` for its `npm ci`, and someone deciding to turn it on.
+For a long time it could not be: until v26.10.0 there was no `node-version` GitHub Actions
+could install that carried `--vfs-load`, so the workflow sat in the repository as
+`release.yml.disabled`, commented out, to be read rather than run. Once 26.10 shipped it
+became `publish.yml`, with two changes that make it cheap to leave on:
 
-It is kept anyway, at `.github/workflows/release.yml.disabled`: the file does not end in
-`.yml`, so GitHub never parses it, and the body is commented out on top of that. The header
-carries the one command that turns it back into a live workflow, and the result round-trips
-to valid YAML. The reasoning is the part worth keeping — this file *is* the argument, made
-concrete, and a design note that described a pipeline nobody could read would be worth
-less.
+- **The trigger is the version, not a tag.** Every push to `main` asks the registry whether
+  `package.json`'s version exists; only when it does not does the release job run.
+- **There is no npm token.** npm's trusted publishing takes the job's OIDC token — the same
+  one Fulcio certifies — so the only long-lived secret left is the audit's API key.
+
+The first release, 0.0.1, was published by hand and signed through sigstore as its
+maintainer; the workflow's baseline step accepts that identity alongside its own, so the
+chain of custody runs through it.
 
 #### What this does not claim
 

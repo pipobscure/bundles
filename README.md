@@ -588,12 +588,12 @@ tooling. It runs before signing, reads the JSON verdict the skill writes, and re
 that verdict passed *and* pins the sha256 of the bytes on disk. Everything this repository
 does to release itself is something you can do to your own project.
 
-[`.github/workflows/release.yml.disabled`](.github/workflows/release.yml.disabled) is the
-whole pipeline as a workflow — CI, pack, fetch the published release, audit the diff, gate,
-sign through sigstore with the workflow's OIDC identity, publish with npm provenance, every
-action pinned to a commit SHA. It stays disabled on purpose: it publishes, so turning it on
-needs the secrets it names and a decision, not just a Node that can run it — which 26.10 now
-is. The header carries the command that makes it live.
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) is the whole pipeline as a
+workflow — test, pack, fetch the published release, audit the diff, gate, sign through
+sigstore with the workflow's OIDC identity, publish through npm trusted publishing, every
+action pinned to a commit SHA. It runs on every push to `main` and does nothing unless
+`package.json` names a version npm does not have yet: bumping the version *is* the release.
+There is no npm token anywhere; npm trusts that workflow file by name.
 
 ---
 

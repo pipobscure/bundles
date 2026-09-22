@@ -1,0 +1,200 @@
+# Publishes to npm whenever main carries a version npm does not have yet.
+#
+# Bumping `version` in package.json and pushing it is the whole release
+# procedure. Every other push finds its version already published and stops
+# after one `npm view`.
+#
+# A release goes through the four steps this project says a bundle is built in,
+# with the audit as a real gate:
+#
+#   1. test          everything must pass before anything is packaged
+#   2. create        the unsigned CLI bundle
+#   3. baseline      fetch the published bundle, and verify it
+#      audit         review the new one *against* it; a JSON verdict, pinned to bytes
+#      gate          refuse to go on without a clean verdict over exactly those bytes
+#   4. sign          sigstore, with this workflow's own OIDC identity
+#      publish       npm trusted publishing, from the same identity
+#
+# There is no npm token. npm trusts this workflow file by name, configured on
+# the package's npm settings page (Trusted Publisher: GitHub Actions,
+# pipobscure/bundles, workflow `publish.yml`), and the job's OIDC token is the
+# credential. The same token is what Fulcio certifies the signature with, so
+# the bytes inside the package and the package itself are attested by one
+# identity. Provenance comes with trusted publishing.
+#
+# Needs one secret: ANTHROPIC_API_KEY, for the audit.
+#
+# Every action is pinned to a full commit SHA rather than a tag. A tag is a
+# mutable pointer: whoever can move `v1` can change what runs inside a job that
+# holds an OIDC token able to sign and publish releases. That is the supply-chain
+# attack this whole project is about.
+
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  # The identity a release carries, and the one a consumer pins.
+  RELEASE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish.yml@refs/heads/main
+  RELEASE_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  check:
+    name: Is this version published?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+
+      # `npm view` exits non-zero for a package that does not exist at all and
+      # prints nothing for a version that does not; both mean "publish".
+      - name: Compare package.json with the registry
+        id: check
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$(npm view "$name@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "::notice::$name@$version is already published"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$name@$version is not published yet; releasing it"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    name: Release ${{ needs.check.outputs.version }}
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Fulcio takes the signing identity from this token, and npm trusted
+      # publishing authenticates with it. Nothing else holds a credential.
+      id-token: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          registry-url: https://registry.npmjs.org
+
+      # `npm install` rather than `npm ci`: package-lock.json is not committed.
+      - name: Install dependencies
+        run: npm install
+
+      # ---- 1. nothing gets packaged that does not pass ------------------------
+      - name: Build, typecheck and test
+        run: npm test
+
+      # ---- 2. the unsigned bundle ---------------------------------------------
+      - name: Manifest — observe what the CLI reads, and close over it
+        run: npm run manifest:cli
+
+      - name: Pack — the unsigned bundle
+        run: npm run pack:cli
+
+      # ---- 3. baseline, audit, gate -------------------------------------------
+      # The published release becomes the comparison basis, verified before it is
+      # used: a baseline that cannot be placed would make the diff lie by
+      # omission. It must be signed by this workflow, or by the maintainer who
+      # signed the releases published by hand before it existed.
+      - name: Baseline — the release that is already out there
+        run: |
+          npm run trust
+          node --no-warnings --experimental-vfs tools/baseline.ts \
+            --identity "$RELEASE_IDENTITY" \
+            --identity "${{ vars.BUNDLE_MAINTAINER_IDENTITY }}" \
+            --allow-missing
+
+      # Installed by the tool itself, so CI uses the same skill a contributor would.
+      - name: Install the audit skill
+        run: node --no-warnings dist/main.js skill
+
+      - name: Audit — review the difference before signing
+        uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1
+        env:
+          BUNDLE_AUDIT_VERDICT: build/cli.audit.json
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: >-
+            /audit-bundle build/cli.bundle against build/baseline.bundle
+
+            This is a pre-signing audit. build/cli.bundle is the unsigned bundle this
+            workflow just built for ${{ github.repository }} and is about to sign;
+            build/baseline.bundle is the currently published release, already verified
+            as genuinely signed. If the baseline file is absent, review every member
+            instead and say so.
+
+            Use diff mode: review what changed, and call out every member added or
+            removed even when each individual diff looks harmless. Write the
+            machine-readable verdict to build/cli.audit.json, including baselineSha256
+            when you reviewed a diff. The build gates on that file and will not sign
+            without a pass pinned to this archive's sha256.
+          claude_args: |
+            --max-turns 120
+            --allowedTools "Bash,Read,Glob,Grep,Write"
+
+      # Kept whether the gate passes or not, so a refused release leaves its
+      # reasoning behind rather than only a red X.
+      - name: Keep the verdict with the run
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: audit-verdict
+          path: build/cli.audit.json
+          if-no-files-found: warn
+
+      # ---- 4. sign, and publish -----------------------------------------------
+      # sign:cli gates on the verdict itself before it signs. No --key: sigstore
+      # takes the identity from the ambient OIDC token, so the release is signed
+      # as this workflow rather than as a person.
+      - name: Gate on the audit, then sign — sigstore, as this workflow
+        run: npm run sign:cli
+
+      - name: Verify what was just signed
+        run: |
+          node --no-warnings dist/main.js verify \
+            --identity "$RELEASE_IDENTITY" --issuer "$RELEASE_ISSUER" bundle.run
+
+      - name: Keep the artifacts with the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle
+          path: |
+            bundle.run
+            build/cli.manifest
+            build/cli.audit.json
+
+      # prepublishOnly refuses a package whose signed CLI is missing, unsigned,
+      # or stale relative to this tree. Trusted publishing needs npm 11.5.1 or
+      # later; node 26.10.0 ships with one.
+      - name: Publish to npm
+        run: npm publish --access public
