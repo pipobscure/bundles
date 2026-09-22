@@ -1,0 +1,55 @@
+# Build, typecheck and test, on every push to main and every pull request.
+#
+# The matrix is the promise in package.json made checkable: `engines` says
+# node >=26.10.0, so 26.10.0 itself is tested — that is what stops a newer API
+# creeping in unnoticed — alongside whatever the 26 line has become since.
+#
+# The executable tests need a node whose --build-sea understands "vfsArchive"
+# (nodejs/node#65810). On one that does not, they skip themselves and say why
+# rather than fail, and they start running on the first node that has it.
+#
+# Every action is pinned to a full commit SHA, as in the release workflow: a
+# tag is a mutable pointer, and this project is about not trusting those.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['26.10.0', '26.x']
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      # `npm install` rather than `npm ci`: package-lock.json is not committed,
+      # and `npm ci` refuses to run without one.
+      - name: Install dependencies
+        run: npm install
+
+      # Builds, typechecks and runs the suite — the same command as locally.
+      - name: Test
+        run: npm test

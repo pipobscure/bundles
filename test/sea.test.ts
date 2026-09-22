@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSea, createSeaBase, verifierFiles, stubSource } from '../src/sea.ts';
+import { buildSea, createSeaBase, verifierFiles, stubSource, type SeaBaseResult } from '../src/sea.ts';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { APP, CHAIN_PEM, LEAF_KEY, ROOT_PEM, scratch, testSigner, tree } from './helpers.ts';
 
@@ -21,7 +21,37 @@ await createBundle({ base: source, files: Object.keys(APP), output: APP_BUNDLE }
 
 // The base is what takes the time; every executable below reuses it.
 const BASE = PATH.join(tmp, 'sea-base');
-const base = await createSeaBase({ output: BASE, sigstore: false, bootstrap: { roots: [ROOT_PEM] } });
+
+// Building one needs a node whose --build-sea understands "vfsArchive"
+// (nodejs/node#65810). One without it builds a binary that cannot start, and
+// createSeaBase's own self-test refuses it and says why. That is a capability
+// the runtime lacks rather than a fault in this package, so every case that
+// needs an executable is skipped with that reason — and runs again, unchanged,
+// on the first node that has it. Any other failure is a failure.
+let base: SeaBaseResult | undefined;
+let SKIP: string | false = false;
+try {
+    base = await createSeaBase({ output: BASE, sigstore: false, bootstrap: { roots: [ROOT_PEM] } });
+} catch (err) {
+    if (!(err instanceof Error) || !/vfsArchive/.test(err.message)) throw err;
+    SKIP = `node ${process.versions.node} cannot build an executable: no "vfsArchive" (nodejs/node#65810)`;
+}
+const needsSea = { skip: SKIP };
+
+// All the setup happens here, before any test is registered. A top-level await
+// between two tests is a race with the runner: when the tests before it finish
+// quickly — skipped, say — the runner reaches the end, its after-hook deletes
+// the scratch directory, and the await is still writing into it.
+
+const SIGNED_APP = PATH.join(tmp, 'app.signed.bundle');
+await signBundle({ source: APP_BUNDLE, output: SIGNED_APP, signer: testSigner() });
+
+// BASE has a root baked in, which is what most of these want. One more with no
+// policy at all is what the environment-driven cases need: with a trusted root
+// already inside the binary, nothing it is handed is ever untrusted.
+const OPEN_BASE = PATH.join(tmp, 'open-base');
+if (!SKIP) await createSeaBase({ output: OPEN_BASE, sigstore: false });
+
 
 function run(executable: string, args: string[] = [], env: NodeJS.ProcessEnv = {}) {
     return spawnSync(executable, args, { encoding: 'utf-8', env: { ...process.env, ...env } });
@@ -65,10 +95,10 @@ test('the generated stub requires the launcher and lets it decide the shape', ()
     assert.match(stub, /"allowUntrusted": true/);
 });
 
-test('the base is a runnable node binary with the verifier inside it', () => {
-    assert.ok(base.size > 1_000_000, `${base.size} bytes`);
+test('the base is a runnable node binary with the verifier inside it', needsSea, () => {
+    assert.ok(base!.size > 1_000_000, `${base!.size} bytes`);
     assert.ok(FS.statSync(BASE).mode & 0o111);
-    assert.ok(base.verifier.includes('package.json'));
+    assert.ok(base!.verifier.includes('package.json'));
 
     // On its own it has no archive at the end, so there is nothing to verify
     // and nothing to run — and it says so rather than doing something.
@@ -76,7 +106,7 @@ test('the base is a runnable node binary with the verifier inside it', () => {
     assert.notEqual(res.status, 0);
 });
 
-test('a signed container verifies itself and runs the application inside it', async () => {
+test('a signed container verifies itself and runs the application inside it', needsSea, async () => {
     const output = PATH.join(tmp, 'app.sea');
     const res = await buildSea({
         app: APP_BUNDLE, output, base: BASE, signer: testSigner(),
@@ -97,7 +127,7 @@ test('a signed container verifies itself and runs the application inside it', as
     FS.rmSync(output);
 });
 
-test('the application inside runs from the mount, not from any real directory', async () => {
+test('the application inside runs from the mount, not from any real directory', needsSea, async () => {
     const reporting = tree(tmp, {
         'package.json': '{ "name": "where", "type": "module", "main": "index.js" }',
         'index.js': 'console.log(JSON.stringify({ file: import.meta.filename, dir: import.meta.dirname }));',
@@ -119,7 +149,7 @@ test('the application inside runs from the mount, not from any real directory', 
     FS.rmSync(output);
 });
 
-test('a CommonJS application is run as CommonJS', async () => {
+test('a CommonJS application is run as CommonJS', needsSea, async () => {
     const commonjs = tree(tmp, {
         'package.json': '{ "name": "cjs", "main": "index.js" }',
         'index.js': 'console.log("commonjs ran", typeof require, __filename.endsWith("index.js"));',
@@ -135,7 +165,7 @@ test('a CommonJS application is run as CommonJS', async () => {
     FS.rmSync(output);
 });
 
-test('a container whose bytes changed refuses to run anything', async () => {
+test('a container whose bytes changed refuses to run anything', needsSea, async () => {
     const output = PATH.join(tmp, 'tampered.sea');
     await buildSea({ app: APP_BUNDLE, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
 
@@ -155,7 +185,7 @@ test('a container whose bytes changed refuses to run anything', async () => {
     FS.rmSync(output);
 });
 
-test('an unsigned container refuses to run, however well formed it is', async () => {
+test('an unsigned container refuses to run, however well formed it is', needsSea, async () => {
     const output = PATH.join(tmp, 'unsigned.sea');
     const res = await buildSea({ app: APP_BUNDLE, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
     assert.equal(res.signed, false);
@@ -166,7 +196,7 @@ test('an unsigned container refuses to run, however well formed it is', async ()
     FS.rmSync(output);
 });
 
-test('a trust root baked in at build time needs nothing from the environment', async () => {
+test('a trust root baked in at build time needs nothing from the environment', needsSea, async () => {
     // BASE was built with `bootstrap: { roots: [ROOT_PEM] }`, which is the
     // point of baking anything in: an executable that is run by its own name
     // has no flags and no preload to configure it.
@@ -178,7 +208,7 @@ test('a trust root baked in at build time needs nothing from the environment', a
     FS.rmSync(output);
 });
 
-test('a container with nothing baked in takes its policy from the environment', async () => {
+test('a container with nothing baked in takes its policy from the environment', needsSea, async () => {
     // The other half: build once, decide where it is allowed to run later.
     const plainBase = PATH.join(tmp, 'plain-base');
     await createSeaBase({ output: plainBase, sigstore: false });
@@ -201,7 +231,7 @@ test('a container with nothing baked in takes its policy from the environment', 
     FS.rmSync(output);
 });
 
-test('a container built through the CLI is the same self-validating thing', async () => {
+test('a container built through the CLI is the same self-validating thing', needsSea, async () => {
     const output = PATH.join(tmp, 'cli.sea');
     const { main } = await import('../src/cli.ts');
     const { collector } = await import('./helpers.ts');
@@ -225,16 +255,8 @@ test('a container built through the CLI is the same self-validating thing', asyn
 // command line. Every case below reuses BASE, so none of them pays for a second
 // 150 MB copy of node.
 
-const SIGNED_APP = PATH.join(tmp, 'app.signed.bundle');
-await signBundle({ source: APP_BUNDLE, output: SIGNED_APP, signer: testSigner() });
 
-// BASE has a root baked in, which is what most of these want. One more with no
-// policy at all is what the environment-driven cases need: with a trusted root
-// already inside the binary, nothing it is handed is ever untrusted.
-const OPEN_BASE = PATH.join(tmp, 'open-base');
-await createSeaBase({ output: OPEN_BASE, sigstore: false });
-
-test('the base runs an archive named on its command line', () => {
+test('the base runs an archive named on its command line', needsSea, () => {
     const ran = run(BASE, [SIGNED_APP, 'from', 'the', 'command', 'line'],
         { BUNDLE_ROOTS: ROOT_PEM });
     assert.equal(ran.status, 0, ran.stderr);
@@ -244,7 +266,7 @@ test('the base runs an archive named on its command line', () => {
     assert.match(ran.stdout, /from,the,command,line/);
 });
 
-test('the verifying node refuses what it cannot vouch for, and runs nothing', () => {
+test('the verifying node refuses what it cannot vouch for, and runs nothing', needsSea, () => {
     // Unsigned: there is no signature to check, so there is nothing to trust.
     const unsigned = run(BASE, [APP_BUNDLE], { BUNDLE_ROOTS: ROOT_PEM });
     assert.notEqual(unsigned.status, 0);
@@ -268,7 +290,7 @@ test('the verifying node refuses what it cannot vouch for, and runs nothing', ()
     assert.doesNotMatch(refused.stdout, /hello from a signed bundle/);
 });
 
-test('a runtime with no policy of its own takes one from flags or the environment', () => {
+test('a runtime with no policy of its own takes one from flags or the environment', needsSea, () => {
     const fromEnv = run(OPEN_BASE, [SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
     assert.equal(fromEnv.status, 0, fromEnv.stderr);
 
@@ -281,7 +303,7 @@ test('a runtime with no policy of its own takes one from flags or the environmen
     assert.equal(allowed.status, 0, allowed.stderr);
 });
 
-test('--verify reports on an archive without running it', () => {
+test('--verify reports on an archive without running it', needsSea, () => {
     const good = run(BASE, ['--verify', SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
     assert.equal(good.status, 0, good.stderr);
     assert.match(good.stdout, /^VALID/m);
@@ -292,7 +314,7 @@ test('--verify reports on an archive without running it', () => {
     assert.match(bad.stdout, /^UNSIGNED/m);
 });
 
-test('the runtime says what it is, and what it wants', () => {
+test('the runtime says what it is, and what it wants', needsSea, () => {
     const version = run(BASE, ['--version']);
     assert.equal(version.status, 0, version.stderr);
     assert.match(version.stdout, /@pipobscure\/bundle/);
@@ -310,7 +332,7 @@ test('the runtime says what it is, and what it wants', () => {
     assert.match(unknown.stderr, /unknown option --frobnicate/);
 });
 
-test('a runtime built with a policy of its own takes none from its command line', async () => {
+test('a runtime built with a policy of its own takes none from its command line', needsSea, async () => {
     const sealed = PATH.join(tmp, 'sealed-node');
     // Deliberately relative: a policy is baked *here* and read *there*, so the
     // build has to anchor it. A binary carrying `build/certs/root.pem` would
@@ -340,7 +362,7 @@ test('a runtime built with a policy of its own takes none from its command line'
     FS.rmSync(sealed);
 });
 
-test('the same base becomes a self-validating executable by appending an app', async () => {
+test('the same base becomes a self-validating executable by appending an app', needsSea, async () => {
     // The composition the two shapes share: `sign --prefix` over the runtime
     // that was serving as a launcher a moment ago.
     const output = PATH.join(tmp, 'appended.sea');
