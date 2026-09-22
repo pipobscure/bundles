@@ -20,6 +20,8 @@
 #      gate          refuse to go on without a clean verdict over exactly those bytes
 #   4. sign          sigstore, with this workflow's own OIDC identity
 #      publish       npm trusted publishing, from the same identity
+#   5. github        a GitHub release carrying the signed bundle.run, marked
+#                    latest — the CLI for anyone with node and nothing else
 #
 # There is no npm token. npm trusts this workflow file by name, configured on
 # the package's npm settings page (Trusted Publisher: GitHub Actions,
@@ -267,3 +269,56 @@ jobs:
         run: |
           npm --version
           npm publish --access public --loglevel verbose
+
+  # A GitHub release for every npm release, carrying the same signed bundle.run
+  # byte for byte, so the CLI can be had with node alone — no npm, no install.
+  #
+  # Its own job, because it is the only one that can write to the repository:
+  # the job that ran the audit (an agent with a shell) and holds the signing
+  # token never gets contents: write, and this one never gets id-token.
+  github-release:
+    name: GitHub release
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch what the release job signed and published
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bundle
+
+      - name: Create the release, marked latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check.outputs.version }}
+          TARGET: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          chmod +x bundle.run
+          cat > notes.md <<EOF
+          \`@pipobscure/bundle\` $VERSION — the same release as [npm](https://www.npmjs.com/package/@pipobscure/bundle/v/$VERSION).
+
+          **\`bundle.run\`** is the whole CLI in one signed file. It needs Node 26.10 or later and nothing else:
+
+          \`\`\`sh
+          chmod +x bundle.run
+          ./bundle.run --help
+          \`\`\`
+
+          It was signed through sigstore by this repository's publish workflow. Running it does not check it; to check it with a copy you already trust:
+
+          \`\`\`sh
+          bundle verify \\
+            --identity '$RELEASE_IDENTITY' \\
+            --issuer '$RELEASE_ISSUER' \\
+            bundle.run
+          \`\`\`
+
+          \`cli.audit.json\` is the audit verdict it was signed under, pinned to the unsigned archive's sha256.
+          EOF
+          cp build/cli.audit.json cli.audit.json
+          gh release create "v$VERSION" bundle.run cli.audit.json \
+            --target "$TARGET" --title "v$VERSION" --notes-file notes.md --latest
+
