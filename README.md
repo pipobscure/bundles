@@ -39,6 +39,21 @@ npm install @pipobscure/bundle      # the library
 npx @pipobscure/bundle --help       # the CLI, without installing
 ```
 
+Or skip npm altogether. Every release on GitHub carries the same signed `bundle.run`, and
+Node 26.10 or later is all it needs:
+
+```sh
+curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.run
+chmod +x bundle.run
+./bundle.run --help
+```
+
+Releases are signed by the [publish workflow](.github/workflows/publish.yml), so the
+identity to pin when you check one is
+`https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main`, issuer
+`https://token.actions.githubusercontent.com`. The audit verdict each was signed under sits
+beside it as `cli.audit.json`.
+
 The `bundle` command npm installs **is** the signed archive. `bin` points straight at
 `bundle.run` — the CLI, its skill and its whole dependency tree in one file, behind a two-line
 `#!/bin/sh` prefix that mounts it and runs it. There is no wrapper script in between, which
