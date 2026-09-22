@@ -260,5 +260,10 @@ jobs:
       # prepublishOnly refuses a package whose signed CLI is missing, unsigned,
       # or stale relative to this tree. Trusted publishing needs npm 11.5.1 or
       # later; node 26.10.0 ships with one.
+      # --loglevel verbose shows the trusted-publishing exchange (npm redacts
+      # tokens), which is the only place a refused publish says why: the
+      # registry itself answers an unauthorized PUT with a bare 404.
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          npm --version
+          npm publish --access public --loglevel verbose
