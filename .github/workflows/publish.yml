@@ -171,6 +171,16 @@ jobs:
       - name: Install the audit skill
         run: node --no-warnings dist/main.js skill
 
+      # What the federation rule is matched against: the claims of the OIDC token
+      # GitHub mints for this job, with the audience the audit requests. Only the
+      # decoded payload is printed — never the token, which is a credential.
+      - name: Show the identity the audit will present
+        run: |
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r .value)
+          echo "$token" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null \
+            | jq '{iss, aud, sub, repository, repository_owner, ref, event_name, job_workflow_ref}'
+
       - name: Audit — review the difference before signing
         id: audit
         uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1
@@ -181,6 +191,8 @@ jobs:
           anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           # The non-human identity the rule lets this job act as.
           anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          # Only needed when the rule covers more than one workspace.
+          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           # The job's own read-only token: the audit writes nothing to GitHub,
           # and this spares the action a token from the Claude GitHub App.
           github_token: ${{ github.token }}
