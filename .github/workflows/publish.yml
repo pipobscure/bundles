@@ -1,8 +1,14 @@
 # Publishes to npm whenever main carries a version npm does not have yet.
 #
 # Bumping `version` in package.json and pushing it is the whole release
-# procedure. Every other push finds its version already published and stops
-# after one `npm view`.
+# procedure. This runs once CI has passed on a push to main — the commit it
+# releases is the one CI tested — and every push whose version is already
+# published stops after one `npm view`.
+#
+# Why after CI rather than on the push itself: the audit step's action accepts
+# `workflow_run` and `workflow_dispatch` but not `push`. Waiting for CI is the
+# better order anyway, and the job's OIDC identity is unchanged by it: still
+# this file, at refs/heads/main.
 #
 # A release goes through the four steps this project says a bundle is built in,
 # with the audit as a real gate:
@@ -42,7 +48,9 @@
 name: Publish
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -61,6 +69,12 @@ env:
 jobs:
   check:
     name: Is this version published?
+    # Only after a green CI run for a push to main — not a pull request's run,
+    # and not a failed one. A manual dispatch releases the tip of main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -71,6 +85,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The commit CI tested, not whatever main points at by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -110,6 +126,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The commit CI tested, not whatever main points at by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

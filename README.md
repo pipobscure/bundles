@@ -591,7 +591,7 @@ does to release itself is something you can do to your own project.
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml) is the whole pipeline as a
 workflow — test, pack, fetch the published release, audit the diff, gate, sign through
 sigstore with the workflow's OIDC identity, publish through npm trusted publishing, every
-action pinned to a commit SHA. It runs on every push to `main` and does nothing unless
+action pinned to a commit SHA. It runs whenever CI passes on `main` and does nothing unless
 `package.json` names a version npm does not have yet: bumping the version *is* the release.
 There is no npm token anywhere; npm trusts that workflow file by name.
 

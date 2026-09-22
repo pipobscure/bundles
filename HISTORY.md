@@ -1108,7 +1108,8 @@ verdict passed *and* names those exact bytes. That is the whole gate, and it wor
 locally and in CI.
 
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml) is that pipeline as a
-workflow. On a push to `main` whose `package.json` version npm does not have yet, it runs:
+workflow. When CI passes on a push to `main` whose `package.json` version npm does not have
+yet, it runs:
 
 ```
 test  →  pack  →  fetch the published release  →  audit the diff  →  gate  →  sign  →  publish
@@ -1888,8 +1889,10 @@ could install that carried `--vfs-load`, so the workflow sat in the repository a
 `release.yml.disabled`, commented out, to be read rather than run. Once 26.10 shipped it
 became `publish.yml`, with two changes that make it cheap to leave on:
 
-- **The trigger is the version, not a tag.** Every push to `main` asks the registry whether
-  `package.json`'s version exists; only when it does not does the release job run.
+- **The trigger is the version, not a tag.** Every green CI run on `main` asks the registry
+  whether `package.json`'s version exists; only when it does not does the release job run.
+  It hangs off CI (`workflow_run`) rather than the push, because the audit's action does not
+  accept `push` events — and releasing only what CI has already passed is the better order.
 - **There is no npm token.** npm's trusted publishing takes the job's OIDC token — the same
   one Fulcio certifies. The audit reaches Anthropic by workload identity federation with
   that token too, so the release job holds no long-lived secret at all.
