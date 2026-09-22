@@ -37,6 +37,9 @@
 #                                 issuer https://token.actions.githubusercontent.com,
 #                                 subject repo:pipobscure/bundles:ref:refs/heads/main
 #
+# ANTHROPIC_SERVICE_ACCOUNT_ID (svac_...) is optional, for a rule that acts as
+# a service account.
+#
 # and BUNDLE_MAINTAINER_IDENTITY, the sigstore identity hand-signed releases
 # carry (see the baseline step).
 #
@@ -174,6 +177,8 @@ jobs:
         with:
           anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          # Optional: only when the rule acts as a service account.
+          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           # The job's own read-only token: the audit writes nothing to GitHub,
           # and this spares the action a token from the Claude GitHub App.
           github_token: ${{ github.token }}
