@@ -1127,7 +1127,8 @@ repository's own skill:
   env:
     BUNDLE_AUDIT_VERDICT: build/cli.audit.json
   with:
-    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+    anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
     prompt: "/audit-bundle build/cli.bundle against build/baseline.bundle …"
     claude_args: |
       --max-turns 120
@@ -1890,7 +1891,8 @@ became `publish.yml`, with two changes that make it cheap to leave on:
 - **The trigger is the version, not a tag.** Every push to `main` asks the registry whether
   `package.json`'s version exists; only when it does not does the release job run.
 - **There is no npm token.** npm's trusted publishing takes the job's OIDC token — the same
-  one Fulcio certifies — so the only long-lived secret left is the audit's API key.
+  one Fulcio certifies. The audit reaches Anthropic by workload identity federation with
+  that token too, so the release job holds no long-lived secret at all.
 
 The first release, 0.0.1, was published by hand and signed through sigstore as its
 maintainer; the workflow's baseline step accepts that identity alongside its own, so the
