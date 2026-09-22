@@ -3,8 +3,8 @@ import * as FS from 'node:fs';
 import { isMainThread } from 'node:worker_threads';
 
 // Manifest recording, in userland: the replacement for the `--vfs-manifest`
-// flag now that mounting is `--vfs-mount` and provider selection is the only
-// place a mount can be influenced.
+// flag now that mounting from the command line is `--vfs-load` and provider
+// selection is the only place that mount can be influenced.
 //
 //   node -r @pipobscure/bundle/record --vfs-load=./lib
 //
@@ -24,10 +24,11 @@ import { isMainThread } from 'node:worker_threads';
 //     was opened but never read is harmless in a bundle, while a streamed file
 //     that is missing from one is not.
 //
-//   * Recording is a property of a mount rather than of the process, so with
-//     several `--vfs-mount` directories every recorded path lands in the same
-//     list. With one mount — the case the flag supported at all — it is the
-//     same file the flag produced.
+//   * Recording is a property of a mount rather than of the process. The
+//     command line mounts exactly one source — `--vfs-load` is the only flag
+//     left that mounts anything — so in the ordinary case it is the same file
+//     the flag produced; a program that mounts more directories of its own
+//     through a recording provider adds them to the same list.
 
 export interface ManifestOptions {
     /**
@@ -129,8 +130,8 @@ export function recording<T extends ProviderClass>(Base: T, manifest: Manifest):
 }
 
 /**
- * Register a recording `RealFSProvider` so a `--vfs-mount` of a directory is
- * backed by it. Meant to be preloaded, before the mounts are made:
+ * Register a recording `RealFSProvider` so a directory loaded with
+ * `--vfs-load` is backed by it. Meant to be preloaded, before the mount is made:
  *
  *   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
  *       -r @pipobscure/bundle/record --vfs-load=./lib

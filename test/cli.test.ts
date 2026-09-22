@@ -140,7 +140,7 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
 
     // And the application gets its own arguments, including ones that look like
-    // node flags. The obvious prefix — a bare `env -S node … --vfs-mount` — puts
+    // node flags. The obvious prefix — a bare `env -S node … --vfs-load` — puts
     // the kernel-appended path last, so there is nowhere to write the `--` that
     // stops node claiming `--help`, and every dash argument goes to the runtime
     // instead of the program.

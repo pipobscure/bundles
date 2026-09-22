@@ -520,7 +520,7 @@ function openArchive(path: string): ZLIB.ZipFile {
         // A path that is itself a mount point resolves to the mounted tree
         // rather than to bytes, and opening a directory as a ZIP fails deep
         // inside with a confusing message. (A container's *own* path is not one
-        // of these: `--vfs-mount` leaves it readable, which is what lets a
+        // of these: `--vfs-load` leaves it readable, which is what lets a
         // launcher verify itself. This is for a directory mount, or a mount
         // deliberately placed over an archive.)
         let isDir = false;

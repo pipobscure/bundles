@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as VFS from 'node:vfs';
+import { spawnSync } from 'node:child_process';
 import { Manifest, recording, register } from '../src/recorder.ts';
-import { scratch } from './helpers.ts';
+import { ROOT, scratch } from './helpers.ts';
 
-// The recording provider that replaces the `--vfs-manifest` flag. These mount a
-// VFS directly rather than going through `--vfs-mount`, because node consults
-// registered providers for a mounted *file* and mounts a directory with its own
-// `RealFSProvider` without asking — so a directory mount cannot be influenced
-// from a preload, and the mount has to be made here.
+// The recording provider that replaces the `--vfs-manifest` flag. Most of these
+// mount a VFS directly, because what they check is the provider — which reads
+// it records, how it composes — and a direct mount puts the mount point in the
+// test's hands. The last one goes through `--vfs-load` with the preload, which
+// is the way the recorder is actually used.
 
 const FILES: Record<string, string> = {
     'index.js': 'export const main = true;\n',
@@ -151,4 +152,48 @@ test('the recorded list is what create() consumes', async () => {
     });
     // Every line has to resolve against the mount root as a --base.
     for (const line of lines) assert.ok(FS.existsSync(PATH.join(dir, line)), line);
+});
+
+test('the preload records a real --vfs-load run: what it read, and nothing it did not', () => {
+    // The recipe the README gives, end to end: a preload, one flag, and a
+    // program that reads some of its tree. Everything else in this file mounts
+    // by hand; this is the one that proves the flag and the preload meet.
+    const dir = PATH.join(tmp, `loaded-${counter++}`);
+    const tree: Record<string, string> = {
+        'package.json': JSON.stringify({ type: 'module', main: 'index.js' }),
+        'index.js': [
+            "import { readFileSync } from 'node:fs';",
+            "import { join } from 'node:path';",
+            "import { used } from './lib/used.js';",
+            "readFileSync(join(import.meta.dirname, 'data', 'used.txt'));",
+            'console.log(used);',
+        ].join('\n'),
+        'lib/used.js': "export const used = 'ran';\n",
+        'lib/unused.js': "export const unused = 'never imported';\n",
+        'data/used.txt': 'read at runtime\n',
+        'data/unused.txt': 'never read\n',
+    };
+    for (const [name, content] of Object.entries(tree)) {
+        FS.mkdirSync(PATH.join(dir, PATH.dirname(name)), { recursive: true });
+        FS.writeFileSync(PATH.join(dir, name), content);
+    }
+
+    const out = `${dir}.manifest`;
+    const ran = spawnSync(process.execPath, [
+        '--no-warnings', '--experimental-vfs',
+        '-r', PATH.join(ROOT, 'src', 'record.ts'),
+        `--vfs-load=${dir}`,
+    ], { encoding: 'utf-8', env: { ...process.env, BUNDLE_MANIFEST: out } });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /^ran$/m);
+
+    const recorded = new Set(FS.readFileSync(out, 'utf-8').split('\n').filter(Boolean));
+    for (const name of ['package.json', 'index.js', 'lib/used.js', 'data/used.txt']) {
+        assert.ok(recorded.has(name), `${name} was read and should be listed`);
+    }
+    // The point of observing rather than listing: what the run never touched
+    // is not in the archive it describes.
+    for (const name of ['lib/unused.js', 'data/unused.txt']) {
+        assert.ok(!recorded.has(name), `${name} was never read and should not be listed`);
+    }
 });

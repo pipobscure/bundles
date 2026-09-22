@@ -2,8 +2,8 @@ import { preload, sibling } from './preload.ts';
 import type * as Recorder from './recorder.ts';
 
 // The preload that puts manifest recording back where `--vfs-manifest` used to
-// be: registering a recording provider is all it does, so `--vfs-mount` finds
-// it already in place when it picks a provider for a directory.
+// be: registering a recording provider is all it does, so `--vfs-load` finds it
+// already in place when it picks a provider for a directory.
 //
 //   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
 //       -r @pipobscure/bundle/record --vfs-load=./lib

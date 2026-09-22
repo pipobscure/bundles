@@ -3,13 +3,14 @@
 // overrides, and mounting. Declarations merge with the shipped ones, so only
 // the gaps are filled here.
 declare module "node:vfs" {
-    import type { Stats, PathLike } from "node:fs";
+    import type { Stats } from "node:fs";
     import type { FileHandle } from "node:fs/promises";
     import type { ZipBuffer, ZipFile } from "node:zlib";
 
     /**
-     * How `--vfs-mount` picks a provider for its source: the first registered
-     * provider whose `canHandle()` accepts it wins, ahead of node's built-ins.
+     * How `--vfs-load` picks a provider for the source it mounts: the first
+     * registered provider whose `canHandle()` accepts it wins, ahead of node's
+     * built-ins.
      */
     interface ProviderRegistration {
         /** Reported in diagnostics. */
@@ -74,8 +75,13 @@ declare module "node:vfs" {
     }
 
     interface VirtualFileSystem {
-        /** Mount this VFS, at `path` or at a generated mount point. Returns it. */
-        mount(path?: PathLike): string;
+        /**
+         * Mount this VFS and return the mount point, which node assigns. There
+         * is no choosing it and no naming it: the reserved root belongs to
+         * node, the `--vfs-load` source has its own layer in it, and every
+         * mount a program makes is numbered after that one.
+         */
+        mount(): string;
         unmount(): void;
         readonly mounted: boolean;
         readonly mountPoint: string | undefined;

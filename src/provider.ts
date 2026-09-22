@@ -25,7 +25,7 @@ import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './m
 //     copy that was verified, not a fresh read of the file.
 //
 // Registering this with `vfs.registerProvider()` puts it ahead of the built-in
-// ZIP provider, so `--vfs-mount` hands it the source first. It claims files by
+// ZIP provider, so `--vfs-load` hands it the source first. It claims files by
 // extension (`.bundle`) *and* by content — anything carrying our signature
 // marker — so renaming a signed archive cannot quietly downgrade it to the
 // unverified built-in provider.
@@ -109,8 +109,8 @@ export function open(path: string, options?: ProviderOptions | Settings): Bundle
 }
 
 /**
- * Register this provider with `node:vfs` so the `--vfs-mount` startup flag
- * selects it for signed archives. Meant to be preloaded, before `--vfs-mount`
+ * Register this provider with `node:vfs` so the `--vfs-load` startup flag
+ * selects it for signed archives. Meant to be preloaded, before `--vfs-load`
  * picks a provider:
  *
  *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle

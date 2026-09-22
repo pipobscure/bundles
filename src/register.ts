@@ -2,7 +2,7 @@ import { preload, sibling } from './preload.ts';
 import type * as Provider from './provider.ts';
 
 // The preload entry point: registering the signed-archive provider is all this
-// does, so `--vfs-mount` finds it already in place when it picks a provider for
+// does, so `--vfs-load` finds it already in place when it picks a provider for
 // its source.
 //
 //   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle

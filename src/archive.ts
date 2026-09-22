@@ -178,7 +178,7 @@ export function keySigner({ key, chain, signAlg = 'sha256' }: {
 
 // Writes `prefix` (when given) then the archive to `out`, without closing
 // `out`. With no prefix the result is a plain archive — a `.bundle` meant to be
-// run through `--vfs-mount`; with one it is a self-running container (a shebang
+// run through `--vfs-load`; with one it is a self-running container (a shebang
 // launcher or a SEA binary) that carries the same archive in its tail. When a
 // `signer` is given, the whole file is signed. The hash runs over the prefix
 // and then over the archive up to (but not including) the EOCD comment; that
