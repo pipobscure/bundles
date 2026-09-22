@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { main, USAGE, STATES, COMMANDS } from '../src/cli.ts';
 import { createBundle } from '../src/api.ts';
 import {
@@ -135,8 +135,8 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
     // A prefixed output is made executable, and the prefix is a working
     // launcher — so the archive runs by being run, with no flags to remember.
     assert.ok(FS.statSync(output).mode & 0o111);
-    const ran = spawnSync(output, ['x'], { encoding: 'utf-8' });
-    assert.equal(ran.status, 0, ran.stderr);
+    const ran = execute(output, ['x']);
+    assert.equal(ran.status, 0, ran.stderr ?? String(ran.error));
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
 
     // And the application gets its own arguments, including ones that look like
@@ -144,8 +144,8 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
     // the kernel-appended path last, so there is nowhere to write the `--` that
     // stops node claiming `--help`, and every dash argument goes to the runtime
     // instead of the program.
-    const dashed = spawnSync(output, ['--help', '-v'], { encoding: 'utf-8' });
-    assert.equal(dashed.status, 0, dashed.stderr);
+    const dashed = execute(output, ['--help', '-v']);
+    assert.equal(dashed.status, 0, dashed.stderr ?? String(dashed.error));
     assert.match(dashed.stdout, /hello from a signed bundle \[sub\] --help,-v/);
     assert.doesNotMatch(dashed.stdout, /Usage: node/);
 });
@@ -210,8 +210,8 @@ test('sign --launcher uses the packaged prefix, so nobody hunts for it', async (
     assert.deepEqual(FS.readFileSync(output).subarray(0, FS.statSync(SHELL_BASE).size),
         FS.readFileSync(SHELL_BASE));
     assert.ok(FS.statSync(output).mode & 0o111);
-    const ran = spawnSync(output, ['x'], { encoding: 'utf-8' });
-    assert.equal(ran.status, 0, ran.stderr);
+    const ran = execute(output, ['x']);
+    assert.equal(ran.status, 0, ran.stderr ?? String(ran.error));
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
 });
 
@@ -268,3 +268,15 @@ test('the certificate fixtures the suite signs with are the repository ones', ()
     assert.ok(FS.existsSync(ROOT_PEM));
     assert.equal(testSigner().signAlg, 'sha256');
 });
+
+// Run a file this suite has just written. Test files run in parallel, and a
+// process forked elsewhere at the wrong moment can briefly inherit the write
+// handle, so exec fails with ETXTBSY for a file nothing is writing any more.
+// That is the kernel being cautious, not the launcher failing: try again.
+function execute(file: string, args: string[]): SpawnSyncReturns<string> {
+    for (let attempt = 0; ; attempt++) {
+        const ran = spawnSync(file, args, { encoding: 'utf-8' });
+        if ((ran.error as NodeJS.ErrnoException | undefined)?.code !== 'ETXTBSY' || attempt === 20) return ran;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+}
