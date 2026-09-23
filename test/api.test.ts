@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
     createBundle, signBundle, verifyBundle, verifyBundleSync, inspectBundle,
     runBundle, fileSigner, mountArgv, registerPath,
 } from '../src/api.ts';
-import { APP, CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, scratch, testSigner, tree } from './helpers.ts';
+import { APP, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, scratch, testSigner, tree } from './helpers.ts';
 
 // The programmatic drive — the export an embedder uses instead of the CLI. What
 // it has to get right is that it does the same thing the CLI does, with the
@@ -119,6 +120,37 @@ test('runBundle mounts a valid archive and runs it', async () => {
     const res = runBundle(signed, { roots, args: ['a', 'b'], stdio: 'pipe' });
     assert.equal(res.status, 0, res.stderr ?? '');
     assert.match(res.stdout!, /hello from a signed bundle \[sub\] a,b/);
+});
+
+test('a CLI running out of a mount still runs an archive, in its own process', async () => {
+    // The published CLI *is* an archive, so its modules live at a mount point
+    // no child process can see — and `node -r <preload>` there names a path
+    // that does not exist. That is the ordinary way this tool is installed, so
+    // it gets a test: a package whose main is this CLI, mounted with
+    // --vfs-load, asked to run a signed archive.
+    const unsigned = PATH.join(tmp, 'mounted.bundle');
+    const signed = PATH.join(tmp, 'mounted.signed.bundle');
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+    await signBundle({ source: unsigned, output: signed, signer: testSigner() });
+
+    const cli = PATH.join(tmp, 'mounted-cli');
+    FS.mkdirSync(cli, { recursive: true });
+    FS.cpSync(PATH.join(ROOT, 'dist'), PATH.join(cli, 'dist'), { recursive: true });
+    FS.writeFileSync(PATH.join(cli, 'package.json'),
+        '{ "name": "mounted-cli", "type": "module", "main": "dist/main.js" }');
+
+    const from = (args: string[]) => spawnSync(process.execPath,
+        ['--no-warnings', '--experimental-vfs', `--vfs-load=${cli}`, '--', ...args],
+        { encoding: 'utf-8' });
+
+    const ran = from(['run', '--root', ROOT_PEM, signed, '--', 'a', 'b']);
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /hello from a signed bundle \[sub\] a,b/);
+
+    // ...and it refuses exactly as the child-process path refuses.
+    const refused = from(['run', signed]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /refusing to run .*valid-untrusted/);
 });
 
 test('runBundle refuses an archive it will not vouch for', async () => {

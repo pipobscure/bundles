@@ -240,6 +240,11 @@ bundle run --root ca.pem app.signed.bundle -- --your --app --args
 Re-execs Node with the preload and the mount, so what runs is what the child's own bootstrap
 verified. Everything after `--` is the application's argv.
 
+A child needs the preload on a real path, and there is not one when `bundle` is itself
+running out of an archive — which is how npm installs it. Then the archive is verified and
+mounted in the CLI's own process instead. The checking is identical, and the same refusals
+come back with the same exit codes; what is lost is the separate process.
+
 ### `skill`
 
 ```sh
@@ -560,7 +565,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 145 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 151 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

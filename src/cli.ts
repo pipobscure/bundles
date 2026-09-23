@@ -1,7 +1,7 @@
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
-import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
+import { createBundle, signBundle, verifyBundle, runBundle, runHere, preloadReachable, fileSigner } from './api.ts';
 import { members } from './archive.ts';
 import { launcherPath } from './files.ts';
 import * as AUDIT from './audit.ts';
@@ -303,7 +303,7 @@ export function report(res: VerificationResult, json: boolean, io: Console): voi
 
 // Run an archive the way a mount does. Everything after `--` is the
 // application's own argv.
-function run(args: string[], io: Console): number {
+async function run(args: string[], io: Console): Promise<number> {
     const split = args.indexOf('--');
     const mine = split < 0 ? args : args.slice(0, split);
     const theirs = split < 0 ? [] : args.slice(split + 1);
@@ -320,12 +320,18 @@ function run(args: string[], io: Console): number {
     const archive = positionals[0];
     if (!archive) throw new Error('run: an archive path is required');
 
+    const settings = {
+        roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
+        allowUntrusted: values.untrusted, args: theirs,
+    };
+
     let res;
     try {
-        res = runBundle(archive, {
-            roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
-            allowUntrusted: values.untrusted, args: theirs,
-        });
+        // A child process is the better answer — the application gets a process
+        // of its own — but it needs the preload on a real path, which there is
+        // not when this CLI is itself running out of an archive.
+        if (!preloadReachable()) return await runHere(archive, settings);
+        res = runBundle(archive, settings);
     } catch (err) {
         if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
         const state = (err as { state?: VerificationState }).state;
