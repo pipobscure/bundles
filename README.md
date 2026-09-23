@@ -237,13 +237,15 @@ different bytes, a verdict reached against a different baseline, or one that fai
 bundle run --root ca.pem app.signed.bundle -- --your --app --args
 ```
 
-Re-execs Node with the preload and the mount, so what runs is what the child's own bootstrap
-verified. Everything after `--` is the application's argv.
+Checks the archive, mounts it through the verifying provider, and runs what is inside — in
+this process, the way a verifying runtime does. Every member is re-hashed against its signed
+digest as it is read, for as long as the process lives. Everything after `--` is the
+application's argv.
 
-A child needs the preload on a real path, and there is not one when `bundle` is itself
-running out of an archive — which is how npm installs it. Then the archive is verified and
-mounted in the CLI's own process instead. The checking is identical, and the same refusals
-come back with the same exit codes; what is lost is the separate process.
+There is no child and no preload: the provider is already registered in the process doing
+the mounting. What that costs is isolation — the application shares the process, with this
+package's modules loaded in it. For a process of its own, spawn one with the arguments
+[`mountArgv`](#using-it-from-code) names.
 
 ### `skill`
 
@@ -278,8 +280,8 @@ await signBundle({ source: 'app.bundle', output: 'app.run', prefix: 'shell-base'
 const { members, signed, hash } = inspectBundle('app.run');
 const { state, reason, identity } = await verifyBundle('app.run', { roots: ['ca.pem'] });
 
-// Mount it through the verifying provider, in a child process, and run it.
-const { status } = runBundle('app.signed.bundle', { roots: ['ca.pem'], args: ['--help'] });
+// Mount it through the verifying provider and run it, in this process.
+const status = await runBundle('app.signed.bundle', { roots: ['ca.pem'], args: ['--help'] });
 ```
 
 **Signers.** A signer is `{ chain, signAlg, sign(digest) }`. The chain goes into the archive

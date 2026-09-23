@@ -111,15 +111,28 @@ test('inspectBundle reports what an archive claims, before any of it is believed
     assert.equal(after.manifest?.chain.length, 2);
 });
 
+// The application runs in this process and writes to this stdout, so tests
+// that care what it printed have to borrow the stream for the duration.
+async function capture(run: () => Promise<number>): Promise<{ status: number; stdout: string }> {
+    const write = process.stdout.write.bind(process.stdout);
+    let stdout = '';
+    process.stdout.write = ((chunk: string | Uint8Array) => { stdout += String(chunk); return true; }) as typeof process.stdout.write;
+    try {
+        return { status: await run(), stdout };
+    } finally {
+        process.stdout.write = write;
+    }
+}
+
 test('runBundle mounts a valid archive and runs it', async () => {
     const unsigned = PATH.join(tmp, 'run.bundle');
     const signed = PATH.join(tmp, 'run.signed.bundle');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await signBundle({ source: unsigned, output: signed, signer: testSigner() });
 
-    const res = runBundle(signed, { roots, args: ['a', 'b'], stdio: 'pipe' });
-    assert.equal(res.status, 0, res.stderr ?? '');
-    assert.match(res.stdout!, /hello from a signed bundle \[sub\] a,b/);
+    const res = await capture(() => runBundle(signed, { roots, args: ['a', 'b'] }));
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /hello from a signed bundle \[sub\] a,b/);
 });
 
 test('a CLI running out of a mount still runs an archive, in its own process', async () => {
@@ -159,10 +172,10 @@ test('runBundle refuses an archive it will not vouch for', async () => {
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await signBundle({ source: unsigned, output: signed, signer: testSigner() });
 
-    assert.throws(() => runBundle(signed, { roots: [], stdio: 'pipe' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
+    await assert.rejects(() => runBundle(signed, { roots: [] }), { code: 'ERR_BUNDLE_UNTRUSTED' });
     // ...unless told that an unanchored chain is acceptable.
-    const res = runBundle(signed, { roots: [], allowUntrusted: true, stdio: 'pipe' });
-    assert.equal(res.status, 0, res.stderr ?? '');
+    const res = await capture(() => runBundle(signed, { roots: [], allowUntrusted: true }));
+    assert.equal(res.status, 0);
 });
 
 test('mountArgv names a register preload that is really there', () => {

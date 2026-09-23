@@ -1,7 +1,6 @@
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import type { Writable } from 'node:stream';
 import { bundle, rebundle, keySigner, members, type EmitResult, type Signer } from './archive.ts';
 import {
@@ -82,19 +81,6 @@ export interface RunOptions {
     allowUntrusted?: boolean | undefined;
     /** Arguments handed to the application inside the archive. */
     args?: string[] | undefined;
-    /** Extra environment for the child, merged over `process.env`. */
-    env?: NodeJS.ProcessEnv | undefined;
-    /** How the child's stdio is wired (default: 'inherit'). */
-    stdio?: 'inherit' | 'pipe' | undefined;
-}
-
-export interface RunResult {
-    /** The child's exit status, or null when it was killed by a signal. */
-    status: number | null;
-    signal: NodeJS.Signals | null;
-    /** Captured only when `stdio` was 'pipe'. */
-    stdout?: string | undefined;
-    stderr?: string | undefined;
 }
 
 /** What an archive says about itself, with no trust decision attached. */
@@ -194,31 +180,26 @@ export function inspectBundle(source: string): Inspection {
 }
 
 /**
- * Mount a signed archive and run the application inside it, in a child process
- * with the verifying provider preloaded — so the archive is checked and mounted
- * by the child's own bootstrap, and what runs is what was verified.
+ * Check a signed archive, mount it through the verifying provider, and run what
+ * is inside — in this process. The mount is the enforcement: the provider
+ * verifies before it hands back a filesystem, and every member is re-hashed
+ * against its signed digest as it is read, for as long as the process lives.
  *
- * Verification happens here too, before the child is spawned. That buys nothing
- * the child does not already enforce; it buys a legible refusal instead of an
- * uncaught error thrown from inside node's startup.
+ * This used to re-exec node with `-r <preload> --vfs-load <archive>`, which
+ * gave the application a process of its own and cost more than it was worth:
+ * a preload has to be a real file, and it is not when this package is itself
+ * running out of an archive — which is how the published CLI runs. Mounting
+ * here needs no preload, because the provider is registered in the process
+ * doing the mounting.
  *
- * A child is only possible when the preload is on the real filesystem; when it
- * is not, `preloadReachable()` says so and `runHere()` does the same work in
- * this process, through the same verifying mount.
+ * What is given up is isolation: the application shares this process, and this
+ * package's modules are loaded in it. Anyone who wants a child can have one —
+ * `mountArgv()` names the node arguments for it.
  */
-/**
- * Run a signed archive in *this* process, through the same verifying mount a
- * child would make. What `runBundle` falls back to when the preload a child
- * would need is not on the real filesystem — see `preloadReachable()`.
- *
- * The isolation a child gives is gone: the application shares this process, and
- * this package's modules are already loaded in it. The verification is not:
- * every member is still re-hashed against its signed digest as it is read.
- */
-export async function runHere(archive: string, options: RunOptions = {}): Promise<number> {
+export async function runBundle(archive: string, options: RunOptions = {}): Promise<number> {
     const { run } = await import('./launch.ts');
-    // The application reads `process.argv.slice(2)`, the same as it would in a
-    // child, and `argv[1]` names the archive it came out of.
+    // The application reads `process.argv.slice(2)`, and `argv[1]` names the
+    // archive it came out of — the shape `--vfs-load` gives it.
     ensureRunnable(archive, options);
 
     const argv = process.argv;
@@ -227,33 +208,14 @@ export async function runHere(archive: string, options: RunOptions = {}): Promis
         await run(archive, {
             roots: options.roots, identity: options.identity, issuer: options.issuer,
             allowUntrusted: options.allowUntrusted,
-            // A refusal is the CLI's to report, exactly as it reports the
-            // child's; the default here would print and exit.
+            // A refusal is the caller's to report; the default here would
+            // print a line and exit the process.
             onRefuse: (reason) => { throw Object.assign(new Error(reason), { code: 'ERR_BUNDLE_UNTRUSTED' }); },
         });
     } finally {
         process.argv = argv;
     }
     return Number(process.exitCode ?? 0);
-}
-
-export function runBundle(archive: string, options: RunOptions = {}): RunResult {
-    const roots = options.roots ?? [];
-    ensureRunnable(archive, options);
-
-    const env: NodeJS.ProcessEnv = { ...process.env, ...options.env };
-    if (roots.length) env['BUNDLE_ROOTS'] = roots.join(PATH.delimiter);
-    if (options.identity) env['BUNDLE_IDENTITY'] = options.identity;
-    if (options.issuer) env['BUNDLE_ISSUER'] = options.issuer;
-    if (options.allowUntrusted) env['BUNDLE_ALLOW_UNTRUSTED'] = '1';
-
-    const child: SpawnSyncReturns<string> = spawnSync(
-        process.execPath,
-        [...mountArgv(archive), ...(options.args ?? [])],
-        { stdio: options.stdio ?? 'inherit', env, encoding: 'utf-8' },
-    );
-    if (child.error) throw child.error;
-    return { status: child.status, signal: child.signal, stdout: child.stdout, stderr: child.stderr };
 }
 
 /**
@@ -281,10 +243,9 @@ export function registerPath(): string {
     return PATH.join(PATH.dirname(import.meta.filename), `register${ext}`);
 }
 
-// The refusal both run paths share: verify before anything is mounted, so an
-// archive that will not be run says so once, legibly, with the state that
-// decides the exit code — rather than as an error out of a mount or out of
-// node's own startup.
+// Verify before anything is mounted, so an archive that will not run says so
+// once, legibly, with the state that decides the exit code — rather than as an
+// error thrown out of a mount.
 function ensureRunnable(archive: string, options: RunOptions): void {
     const res = verifyBundleSync(archive, {
         roots: options.roots ?? [], deep: false, identity: options.identity, issuer: options.issuer,
@@ -294,24 +255,6 @@ function ensureRunnable(archive: string, options: RunOptions): void {
         throw Object.assign(new Error(`refusing to run '${archive}': ${res.state} — ${res.reason}`),
             { code: 'ERR_BUNDLE_UNTRUSTED', state: res.state });
     }
-}
-
-/**
- * Whether a plain `node -r <preload>` could load the verifying provider — that
- * is, whether `registerPath()` names a file on the real filesystem.
- *
- * It does not when this package is itself running out of a mount, which is the
- * ordinary case: the published CLI *is* an archive, so its modules live at a
- * mount point that belongs to this process and to no other. A child would be
- * told to preload a path it cannot see, so `runBundle` mounts in process
- * instead. Asking a child settles it, because a child has the mounts of a fresh
- * node and this process cannot see its own filesystem from outside.
- */
-export function preloadReachable(preload = registerPath()): boolean {
-    const probe = spawnSync(process.execPath,
-        ['--no-warnings', '-e', 'process.exit(require("node:fs").existsSync(process.argv[1]) ? 0 : 1)', preload],
-        { stdio: 'ignore' });
-    return probe.status === 0;
 }
 
 // `roots` may name PEM files or carry PEM text; `verifySync` wants text.

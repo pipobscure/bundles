@@ -739,8 +739,8 @@ await signBundle({ source: 'app.bundle', output: 'app.run', prefix: 'shell-base'
 const { members, signed, hash } = inspectBundle('app.run');
 const { state, reason, identity } = await verifyBundle('app.run', { roots: ['root.pem'] });
 
-// Mount it through the verifying provider, in a child process, and run it.
-const { status } = runBundle('app.signed.bundle', { roots: ['root.pem'], args: ['--help'] });
+// Mount it through the verifying provider and run it, in this process.
+const status = await runBundle('app.signed.bundle', { roots: ['root.pem'], args: ['--help'] });
 ```
 
 The layer underneath is exported too, for callers assembling members themselves rather than
@@ -848,9 +848,16 @@ register({
 A preload runs under the CommonJS loader, so it must not contain a top-level `await` — but
 ESM syntax is otherwise fine, and `--import` works as well as `-r`.
 
-`bundle run <archive> [-- <args>]` is the same thing with the flags filled in: it re-execs
-`node` with the preload and `--vfs-load`, so what runs is what the child's own bootstrap
-verified.
+`bundle run <archive> [-- <args>]` is the same thing without the flags: it registers the
+provider, mounts the archive and runs the entry point in its own process.
+
+It used to re-exec `node` with the preload and `--vfs-load`, which gave the application a
+process of its own. That cost more than it was worth: `-r` needs a real file, and there is
+none when this package is itself running out of an archive — which is how the published CLI
+runs, so `bundle run` failed there with `MODULE_NOT_FOUND` for the whole of 0.0.1 and 0.0.2.
+Mounting in process needs no preload, because the provider is registered in the process
+doing the mounting. Anyone who wants the child can spawn it; `mountArgv()` names the
+arguments.
 
 ### The verifying runtime, in two shapes
 

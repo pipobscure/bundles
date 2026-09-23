@@ -28,7 +28,6 @@ export {
     type SignOptions,
     type VerifyBundleOptions,
     type RunOptions,
-    type RunResult,
     type Inspection,
 } from './api.ts';
 
