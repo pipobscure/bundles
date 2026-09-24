@@ -1114,10 +1114,11 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   <h2>One signed file,<br>every machine that has Node.</h2>
   <div class="cols w" style="margin-top:22px">
     <div class="stack">
-      <div class="cmd"><span class="c"># publish: a release, and the file is the release</span>
+      <div class="cmd"><span class="c"># publish: the release *is* the file</span>
 <span class="p">$</span> bundle sign <span class="y">--launcher</span> <span class="y">--output</span> app.nzip app.run
 <span class="p">$</span> gh release create v1.0.0 app.nzip</div>
       <div class="cmd" style="margin-top:12px;border-left-color:var(--ok)"><span class="c"># install: fetch, verify, then put on PATH</span>
+<span class="p">$</span> npx @pipobscure/bundle install <span class="c"># -&gt; bundle</span>
 <span class="p">$</span> bundle install <span class="o">https://…/download/app.nzip</span>
   VALID &mdash; signed by …/release.yml@refs/heads/main
 <span class="p">$</span> app <span class="c"># and later: bundle update</span></div>
@@ -1129,10 +1130,10 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
       <div class="card">
         <div class="eyebrow" style="margin-bottom:11px">Why this is now portable</div>
         <p style="color:var(--ink-dim);font-size:16.5px;line-height:1.5">JavaScript in the archive is
-          architecture-neutral &mdash; one file, every target. Native code is not, so a tool that has some ships
-          <b style="color:var(--ink)">one archive per platform</b>, each signed and audited on its own.</p>
-        <div class="cmd sm" style="margin-top:12px">app-linux-x64.nzip   app-darwin-arm64.nzip
-app-win32-x64.nzip   <span class="c"># same tool, three signatures</span></div>
+          architecture-neutral. Native code is not &mdash; so carry <b style="color:var(--ink)">all of them</b>, and
+          bind the one this machine needs at startup. Still one file, one signature, one audit.</p>
+        <div class="cmd sm" style="margin-top:12px">lib/linux-x64/core.so   lib/darwin-arm64/core.dylib
+<span class="c"># dlopen(`lib/${process.platform}-${process.arch}/…`)</span></div>
       </div>
       <p class="sub" style="font-size:16px;max-width:40ch">The extension is load-bearing on Windows only: install
         registers <code style="color:var(--accent)">.nzip</code> so the name alone runs it. Unix uses the
@@ -1142,10 +1143,10 @@ app-win32-x64.nzip   <span class="c"># same tool, three signatures</span></div>
   </div>
   <div class="kicker"><span class="mono">no installer. no install step.</span><span></span></div>
   <div class="notes" hidden>
-    <p class="say">"This is the part I only got to build because 26.10 shipped. A CLI is now one signed file you can put on a release page, and getting it is one command that checks a signature before anything touches your disk."</p>
+    <p class="say">"This is the part I only got to build because 26.10 shipped. A CLI is now one signed file you can put on a release page — one file for every operating system and every architecture — and getting it is one command that checks a signature before anything touches your disk."</p>
     <p><b>Everything on this slide is released Node.</b> No open pull requests: the mount and the loader are v26.10, the zip support is v26.8, the provider is v26.9. The only userland part is the signing and the fetching, which is the package.</p>
     <p><b>The comparison to make out loud</b> is <em>curl | sh</em>. Same one-line convenience, minus the two properties that make it dangerous: nothing is executed to install, and nothing is written until the signature verifies. Then say the honest half — the first install is trust-on-first-use unless you pass <em>--identity</em>, and after that the recorded identity is required on every update.</p>
-    <p><b>On multi-arch, be precise.</b> Pure JavaScript is one artifact for every OS and architecture, which is the happy case. The moment there is a native addon or an FFI library inside, it is one archive per platform — the runtime has no opinion about what is in the file, so this is a publishing decision rather than a limitation of the mechanism. <em>examples/native-cli</em> in the repo is a Rust CLI packaged this way if anyone asks.</p>
+    <p><b>On multi-arch, the answer is better than people expect.</b> Pure JavaScript is one artifact for every OS and architecture. Native code does not have to break that: an archive is a file *tree*, so it can carry a library per platform and pick at startup — <em>dlopen(`lib/${process.platform}-${process.arch}/core.so`)</em> — because node loads a shared object straight out of a mount, and <em>node:ffi</em> or a <em>.node</em> addon both work from there. One file, one signature, one audit, every machine. What it costs is bytes: you ship every architecture to everybody, which is a size trade rather than a portability one, and publishing per-platform archives remains available if that trade is wrong for you. <em>examples/native-cli</em> in the repo is a Rust CLI called through node:ffi if anyone asks.</p>
     <p><b>If someone asks about Windows</b>: the file association is what replaces <em>#!</em> there, <em>bundle install</em> registers it for the current user with no administrator, and the tests for it run on windows-latest in CI. One artifact still serves both, because unix reads the prefix and ignores the name while Windows reads the name and ignores the prefix.</p>
     <p><b>Cut this slide</b> before the limitations one if you are short; it is the most recent and the least load-bearing for the argument.</p>
   </div>

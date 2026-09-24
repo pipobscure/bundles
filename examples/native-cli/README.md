@@ -87,13 +87,35 @@ main(keep.length, pointers);
 `keep` is not decoration: those buffers have to stay reachable for the duration
 of the call, or the library reads freed memory.
 
+## One archive, every architecture
+
+The `.so` this example carries is for one platform and one architecture, because
+one is all it needs. That is not the limit it looks like: an archive is a file
+*tree*, so a real tool carries a library per target and binds the right one at
+startup.
+
+```js
+const lib = new DynamicLibrary(join(dirname(import.meta.filename),
+    'lib', `${process.platform}-${process.arch}`, `core.${suffix}`));
+```
+
+```
+lib/linux-x64/core.so       lib/darwin-arm64/core.dylib
+lib/linux-arm64/core.so     lib/win32-x64/core.dll
+```
+
+Still one file, one signature, one audit, on every machine. What it costs is
+bytes — everyone gets every architecture — so publishing per-platform archives
+stays available when that trade is the wrong one.
+
+The one thing to do deliberately is the **file list**: an observation run sees
+only the library it loaded, so the others have to be added on purpose. That is
+what a computed closure is for (see [`moduleFiles`](../../README.md#using-it-from-code)),
+and the audit then reviews every one of them — which is the point, since the
+architectures you are not running are the ones nobody looks at.
+
 ## What this does not answer
 
-- **Cross-platform archives.** The `.so` in the archive is for one platform and
-  one architecture. A real tool would either ship one archive per target, or
-  carry several libraries and pick at runtime — at which point the observation
-  step only sees the one it loaded, and the file list has to be built
-  deliberately.
 - **Windows.** `suffix` is `dll` there and the launcher problem is its own
   question; see [`../echo-argv/windows/`](../echo-argv/windows/).
 - **Whether this should be a `.node` addon instead.** If the native side wants

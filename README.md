@@ -35,17 +35,25 @@ of the process.
 ## Install
 
 ```sh
-npm install @pipobscure/bundle      # the library
-npx @pipobscure/bundle --help       # the CLI, without installing
+npx @pipobscure/bundle install      # -> a signed `bundle` on your PATH
+bundle --help
+bundle update                       # later, when there is a new release
 ```
 
-Or skip npm altogether. Every release on GitHub carries the same signed archive, and Node
-26.10 or later is all it needs:
+That is the whole install: npm fetches the package once, and what stays behind is the signed
+archive itself, on your PATH and keeping itself current. Or take it from the release page and
+skip npm altogether — Node 26.10 or later is all it needs:
 
 ```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
 chmod +x bundle.nzip
-./bundle.nzip --help
+./bundle.nzip install                # the same thing: fetch, verify, put on PATH
+```
+
+As a library instead:
+
+```sh
+npm install @pipobscure/bundle
 ```
 
 The `.nzip` extension is what makes an archive runnable on Windows, where the association is
