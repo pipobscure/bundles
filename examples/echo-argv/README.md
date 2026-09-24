@@ -96,3 +96,11 @@ What does not:
   then there are two files to sign, to audit and to keep in step.
 - **Nothing stops a name it does not know**, so handle the `default` case: the
   archive cannot tell which symlinks someone made.
+
+## Windows
+
+None of the above is `#!`, so none of it is Windows. [`windows/`](windows/) has
+the three candidate mechanisms — a `.cmd` prefix, a `.nzip` file association,
+and why PowerShell cannot work — and [`windows/probe.cmd`](windows/probe.cmd),
+which settles the parts no documentation answers: whether cmd.exe stops reading
+before the archive, and whether a link's name reaches the program there too.
