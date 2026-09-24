@@ -297,11 +297,6 @@ jobs:
           TARGET: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           chmod +x bundle.nzip
-          # `bundle.run` was this asset's name up to 0.0.5, and an install made
-          # by that version refetches exactly that URL. The same bytes go out
-          # under both names so a copy already in the world can still update
-          # itself; the `.run` name goes away once nothing asks for it.
-          cp bundle.nzip bundle.run
           cat > notes.md <<EOF
           \`@pipobscure/bundle\` $VERSION — the same release as [npm](https://www.npmjs.com/package/@pipobscure/bundle/v/$VERSION).
 
@@ -324,6 +319,6 @@ jobs:
           \`cli.audit.json\` is the audit verdict it was signed under, pinned to the unsigned archive's sha256.
           EOF
           cp build/cli.audit.json cli.audit.json
-          gh release create "v$VERSION" bundle.nzip bundle.run cli.audit.json \
+          gh release create "v$VERSION" bundle.nzip cli.audit.json \
             --target "$TARGET" --title "v$VERSION" --notes-file notes.md --latest
 
