@@ -24,7 +24,7 @@ xdg-open index.html          # or just drag it into a browser
 | <kbd>?</kbd> | controls |
 
 The pace timer turns **red** when you are behind the plan for the current slide and
-**green** when you are ahead. Planned runtime is **28:15** of content across 24 slides.
+**green** when you are ahead. Planned runtime is **29:15** of content across 25 slides.
 That is tight for a 30-minute slot with questions, so decide your cuts in advance rather
 than discovering them on stage: `0x13` (the tool as a bundle of itself) goes first — it is
 the most satisfying beat in Act III and the least load-bearing — then `0x11` (open it with
@@ -61,7 +61,7 @@ moving window over the recent past, not a complete history. The caption says so.
 ## Before you present — checklist
 
 - **Re-run the chart** (above) so the cadence figure is current.
-- **Check the status slide** (`0x14`). It lists seven work packages, and as of
+- **Check the status slide** (the "This is in Node" table). It lists seven work packages, and as of
   **22 Sep 2026** every one of them is released: `node:vfs` and VFS module loading
   in v26.4, the zip support in `node:zlib` in v26.8, in v26.9 (16 Sep) the Zip VFS
   provider, native addons from a mount, and SEA assets behind a VFS mount, and in
@@ -69,6 +69,12 @@ moving window over the recent past, not a complete history. The caption says so.
   demos run on a stock 26.10. `--vfs-mount` also shipped in 26.10 and leaves in
   the next patch (nodejs/node#66162); the deck no longer mentions it, so if you
   last rehearsed with two flags, re-read `0x09` and `0x0A`.
+- **Re-type the install/publish slide's commands** before you show them. They
+  are the ones an audience will copy, and they are the newest thing in the deck:
+  `bundle sign --launcher`, `bundle install <url>`, `bundle update`. The archive
+  extensions mean something — `.run` is unsigned, `.nzip` is signed — so a slide
+  that mixes them up says the opposite of what it means.
+
 - **Verify the Shai-Hulud framing** on `0x03`. Reporting varies by source and wave; the
   notes recommend "hundreds of packages across two waves in late 2025, and CISA issued an
   advisory" over a precise count you would have to defend.
@@ -76,7 +82,7 @@ moving window over the recent past, not a complete history. The caption says so.
   notes cover all three. Signing works for real — `bundle sign` with no `--key` opens a
   GitHub sign-in — but it needs network and a browser, so decide in advance whether you
   trust the room's wifi with it.
-- **The audit (`0x12`) is built and is now a build step**, not a closing demo:
+- **The audit is built and is now a build step**, not a closing demo:
   `observe → create → audit → sign`, with `tools/audit.ts --check` refusing to sign
   without a clean verdict pinned to the archive's sha256. Run `/audit-bundle` once before
   the talk to check the skill still behaves, and plant something findable in the tree if
@@ -123,8 +129,8 @@ moving window over the recent past, not a complete history. The caption says so.
 | `0x00` | | title |
 | `0x01`–`0x06` | I — where this comes from | the recurring problems, then examples: durchblicker, Bloomberg ×2, TC39, prior art |
 | `0x07`–`0x0C` | II — the primitive | mechanism vs policy, trees not blobs, `baseOffset`, mount/load, `registerProvider`, why the signature format stays out of the runtime |
-| `0x0D`–`0x13` | III — the optional layer | the signing scheme, then six demos — ending with the tool applying all of it to itself |
-| `0x14`–`0x17` | IV — close | status, limitations, the ask, questions |
+| `0x0D`–`0x14` | III — the optional layer | the signing scheme, then six demos — the tool applying all of it to itself, then shipping one to somebody else |
+| `0x15`–`0x18` | IV — close | status, limitations, the ask, questions |
 
 Slide offsets, act labels and kicker numbers are all derived from position at runtime, so
 inserting or reordering a slide cannot leave them inconsistent.
@@ -140,8 +146,9 @@ To add a slide, copy an existing `<section>`, set `data-act` and `data-t`, and l
 
 Keep the deck in step with the repository as the tool changes; it is a talk about a thing
 that is still moving, and a slide asserting something the code stopped doing is worse than
-no slide. The claims most likely to rot are the status table (`0x14`), anything with a
-command in it, and the two "this is built" statements on `0x12` and `0x13`.
+no slide. The claims most likely to rot are the status table, anything with a command in
+it, the two "this is built" statements before it, and the install/publish slide
+— whose commands are the ones a reader is most likely to type.
 
 The deck is also published as a Claude artifact, linked from the root README:
 
