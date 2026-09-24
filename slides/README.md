@@ -84,7 +84,7 @@ moving window over the recent past, not a complete history. The caption says so.
   the review — the refusal is the point.
 - **`0x13` claims the tool ships as a bundle of itself**, which is true as of this build:
   `npm run release:cli` then `npm run sign:cli`. Check `npm pack --dry-run` still lists
-  `bundle.run`, and that `package.json`'s `bin` still points straight at it — the slide's
+  `bundle.nzip`, and that `package.json`'s `bin` still points straight at it — the slide's
   whole point is that there is no wrapper script, and a regression there makes it false.
 - **Terminal hygiene:** font size up, scrollback cleared, short prompt, already `cd`'d in,
   and `cp app.run /tmp/app.run.bak` before the tamper demo so the later demos still work.

@@ -8,7 +8,7 @@ import { STATES } from '../src/cli.ts';
 // The gate on `npm publish`.
 //
 // The published package's `bundle` command *is* the signed archive: `bin`
-// points straight at `bundle.run`, a shebang-prefixed container that mounts and
+// points straight at `bundle.nzip`, a shebang-prefixed container that mounts and
 // runs itself. There is no wrapper in between, which is the point — nothing
 // unsigned stands between somebody typing `npx @pipobscure/bundle` and the
 // artifact this project asks them to check.
@@ -20,7 +20,7 @@ import { STATES } from '../src/cli.ts';
 //
 // What is checked:
 //
-//   1. `bundle.run` exists and carries a signature.
+//   1. `bundle.nzip` exists and carries a signature.
 //   2. It verifies — integrity and the signature over it. Trust is reported but
 //      not required: a sigstore-signed release is `valid-untrusted` on a
 //      machine with no trust root yet, and that is a property of the machine.
@@ -28,7 +28,7 @@ import { STATES } from '../src/cli.ts';
 //      signed archive from two commits ago cannot ride along unnoticed.
 
 const ROOT = packageRoot();
-const ARCHIVE = PATH.join(ROOT, 'bundle.run');
+const ARCHIVE = PATH.join(ROOT, 'bundle.nzip');
 const FRESH = PATH.join(ROOT, 'build', 'cli.bundle');
 
 if (!FS.existsSync(ARCHIVE)) {

@@ -142,7 +142,7 @@ that cannot run. npm builds its shims with `cmd-shim`, which reads the target's
 `#!` line and turns it into an interpreter; ours says `#!/bin/sh`, so the
 generated `bundle.cmd` runs `/bin/sh` — as a path on the current drive, with no
 PATH lookup and no Git Bash fallback. Running cmd-shim over our real
-`bundle.run` here produces exactly that.
+`bundle.nzip` here produces exactly that.
 
 Worth knowing before fixing it: cmd-shim's own fixtures show that a target with
 **no** shebang gets a `.cmd` that executes the target directly. So an archive

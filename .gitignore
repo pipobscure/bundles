@@ -1,7 +1,7 @@
 node_modules/
 dist/
 build/
-bundle.run
+bundle.nzip
 *.tsbuildinfo
 package-lock.json
 .claude/

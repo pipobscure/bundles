@@ -41,7 +41,7 @@ const { values } = parseArgs({
     options: {
         spec:     { type: 'string' },
         output:   { type: 'string', default: PATH.join('build', 'baseline.bundle') },
-        member:   { type: 'string', default: 'bundle.run' },
+        member:   { type: 'string', multiple: true },
         identity: { type: 'string', multiple: true },
         issuer:   { type: 'string' },
         'allow-missing': { type: 'boolean' },
@@ -64,9 +64,13 @@ function main(): void {
     const packed = fetchTarball();
     if (!packed) return;
 
-    const extracted = PATH.join(scratch, 'package', values.member!);
-    if (!FS.existsSync(extracted)) {
-        missing(`${SPEC} carries no ${values.member} — it predates the signed-CLI layout`);
+    // The signed CLI was called `bundle.run` up to 0.0.5 and `bundle.nzip`
+    // after it — the extension moved because it is what makes an archive
+    // runnable on Windows. A baseline may be either.
+    const names = values.member?.length ? values.member : ['bundle.nzip', 'bundle.run'];
+    const extracted = names.map((name) => PATH.join(scratch, 'package', name)).find((path) => FS.existsSync(path));
+    if (!extracted) {
+        missing(`${SPEC} carries none of ${names.join(', ')} — it predates the signed-CLI layout`);
         return;
     }
 
@@ -80,13 +84,13 @@ function main(): void {
     const results = identities.map((identity) => verifyBundleSync(extracted, { identity, issuer: values.issuer }));
     const res = results.find((r) => r.state === 'valid') ?? results[0]!;
     if (res.state === 'invalid' || res.state === 'unsigned') {
-        fail(`the published ${values.member} is ${STATES[res.state].label} — ${res.reason}\n` +
+        fail(`the published CLI is ${STATES[res.state].label} — ${res.reason}\n` +
             '  refusing to use it as a comparison basis; a baseline that cannot be placed makes the diff meaningless');
     }
     if (res.state === 'valid-untrusted' && (named.length || values.issuer)) {
         // An identity was demanded and not met. On a fresh runner this is also
         // what a missing sigstore trust root looks like, so say which.
-        console.error(`! the published ${values.member} did not meet the required identity: ${res.reason}`);
+        console.error(`! the published CLI did not meet the required identity: ${res.reason}`);
         console.error('  if this run has no sigstore trust root cached, that is the cause; otherwise the');
         console.error('  published artifact was not signed by the release workflow and should be investigated');
         fail('refusing to use an unplaceable baseline');

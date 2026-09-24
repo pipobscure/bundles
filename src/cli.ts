@@ -131,8 +131,10 @@ install options:                    usage: install [options] [url]
 
   with no url, this package installs itself from its own published release,
   requiring the identity its publish workflow signs with — so
-  'npx @pipobscure/bundle install' leaves a signed 'bundle.run' on your PATH
-  that 'bundle update' keeps current.
+  'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
+  'bundle update' keeps current. The archive is named '.nzip', and the name it
+  installs under drops that everywhere but Windows, where the extension is what
+  makes it runnable.
 
   nothing is written until the signature verifies. Whoever signed the first
   install is recorded, and every later 'update' of that name must match — so

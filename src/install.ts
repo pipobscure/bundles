@@ -43,7 +43,7 @@ const require = createRequire(import.meta.url);
  * mirror; the identity still has to match, unless `--identity` says otherwise.
  */
 export const SELF = {
-    url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.run',
+    url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
     identity: 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main',
     issuer: 'https://token.actions.githubusercontent.com',
 } as const;
@@ -340,15 +340,27 @@ function write(installs: Record<string, InstallRecord>): void {
  * the URL. Either way it is reduced to a bare file name — a `Content-Disposition`
  * is a suggestion from someone else's server, and a suggestion that can contain
  * `../` is an arbitrary write.
+ *
+ * Then the extension is decided rather than accepted, because `.nzip` is not
+ * decoration: on Windows it is the whole mechanism — the association is by
+ * extension — so it is put on. Everywhere else it is noise between a person and
+ * the command they mean to type, so it comes off, and `bundle.nzip` installs as
+ * `bundle`. Any other extension is left alone; it is the publisher's business.
  */
 export function fileName(response: Response, url: string): string {
     const suggested = disposition(response.headers.get('content-disposition'));
     const fallback = decodeURIComponent(new URL(url).pathname.split('/').pop() || '');
     const chosen = safe(suggested) || safe(fallback);
     if (!chosen) throw new Error(`cannot tell what to call the file from ${url} — pass --name`);
-    // On Windows the extension is what makes it runnable, through the .nzip
-    // association; elsewhere the extension means nothing and is left alone.
-    return process.platform === 'win32' && !/\.nzip$/i.test(chosen) ? `${chosen}.nzip` : chosen;
+    return commandName(chosen);
+}
+
+/** `chosen` as it should sit on the PATH: with `.nzip` on Windows, without it elsewhere. */
+function commandName(chosen: string): string {
+    if (process.platform === 'win32') return /\.nzip$/i.test(chosen) ? chosen : `${chosen}.nzip`;
+    const bare = chosen.replace(/\.nzip$/i, '');
+    // ...unless dropping it would leave nothing, as `.nzip` alone would.
+    return bare || chosen;
 }
 
 function disposition(header: string | null): string {

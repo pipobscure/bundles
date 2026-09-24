@@ -20,9 +20,11 @@ const roots = [ROOT_PEM];
 
 // Installing never touches the registry here: a test suite has no business
 // rewriting the PATHEXT of the machine it runs on. What that code does instead
-// gets `examples/echo-argv/windows/probe.cmd`, and its parsing is unit-tested
-// below. On Windows an archive is named `.nzip` so the association can find it,
-// which is visible in the name every install ends up with.
+// is tested by `windows.test.ts`, and its parsing is unit-tested below.
+//
+// The name an archive installs under is not the name it was served as: Windows
+// needs `.nzip`, because the association is by extension, and nothing else
+// wants it, because it sits between a person and the command they type.
 const options = { roots, associate: false };
 const installed = (name: string) => (WINDOWS ? `${name}.nzip` : name);
 
@@ -178,6 +180,13 @@ test('the installed name comes from the server, and cannot escape the directory'
     assert.equal(named(undefined), installed('tool.run'));
     assert.equal(named('attachment; filename="pnpm.run"'), installed('pnpm.run'));
     assert.equal(named("attachment; filename*=UTF-8''pnpm%20cli.run"), installed('pnpm cli.run'));
+
+    // `.nzip` is the one extension this tool decides for itself: it goes on for
+    // Windows, where it is the mechanism, and comes off everywhere else, so
+    // `bundle.nzip` is the command `bundle`.
+    assert.equal(named('attachment; filename="bundle.nzip"'), WINDOWS ? 'bundle.nzip' : 'bundle');
+    assert.equal(named(undefined, 'https://example.com/d/pnpm.nzip'), WINDOWS ? 'pnpm.nzip' : 'pnpm');
+    assert.equal(named('attachment; filename=".nzip"'), WINDOWS ? '.nzip' : '.nzip', 'never left with no name');
     // A filename is a suggestion from somebody else's server: it names a file,
     // never a path, and never a switch.
     assert.equal(named('attachment; filename="../../etc/cron.d/x"'), installed('x'));
@@ -194,7 +203,7 @@ test('install with no url means this package, from its own release', async () =>
     const { main } = await import('../src/cli.ts');
     const { self, SELF } = await import('../src/install.ts');
 
-    assert.equal(SELF.url, 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.run');
+    assert.equal(SELF.url, 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip');
     assert.match(SELF.identity, /publish\.yml@refs\/heads\/main$/);
 
     process.env['BUNDLE_SELF_SOURCE'] = URL_;

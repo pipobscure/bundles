@@ -400,7 +400,7 @@ can see rather than something the README asserts.
 // Record a clean verdict reached by a person instead of by the skill.
 
 // --- 4. sign ----------------------------------------------------------------
-"sign:cli":       "node dist/main.js audit --check … && node dist/main.js sign --launcher --output bundle.run build/cli.bundle",
+"sign:cli":       "node dist/main.js audit --check … && node dist/main.js sign --launcher --output bundle.nzip build/cli.bundle",
 // The gate runs first and exits non-zero without a clean verdict pinned to these bytes.
 // Then sigstore — CI identity if there is one, otherwise a GitHub sign-in.
 "sign:cli:local": "… --check && node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem …",
@@ -410,7 +410,7 @@ can see rather than something the README asserts.
 // Steps 1-3, stopping at the gate. Step 4 is deliberately not chained on: it needs a
 // verdict, and a verdict is not a script's to give.
 
-"verify:cli":     "node dist/main.js verify bundle.run",
+"verify:cli":     "node dist/main.js verify bundle.nzip",
 "trust":          "node dist/main.js trust",
 // Refresh the sigstore trust root (over TUF) into the local cache. Verification never
 // reaches for the network, so this is the explicit step that feeds it.
@@ -554,9 +554,9 @@ npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at th
 
 npm run sign:cli:local      # 4: refuses, because nothing has been audited yet
 BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
-npm run sign:cli:local      # 4: now allowed -> bundle.run
+npm run sign:cli:local      # 4: now allowed -> bundle.nzip
 
-./bundle.run --help         # the artifact runs itself; this is what npm links as `bundle`
+./bundle.nzip --help         # the artifact runs itself; this is what npm links as `bundle`
 ```
 
 To sign through sigstore instead — this opens a browser, or uses the CI identity when there
@@ -564,7 +564,7 @@ is one:
 
 ```sh
 npm run trust               # fetch the sigstore trust root, once
-npm run sign:cli            # -> bundle.run, signed by whoever you signed in as
+npm run sign:cli            # -> bundle.nzip, signed by whoever you signed in as
 npm run verify:cli          # -> VALID, with the identity that signed it
 ```
 
@@ -1150,7 +1150,7 @@ repository's own skill:
 **Why a diff.** Re-reading 904 unchanged members every release is the kind of review that
 decays into a rubber stamp; a small diff gets read properly. `tools/baseline.ts` fetches the
 currently published package with `npm pack` — which downloads without installing or running
-anything — pulls its `bundle.run` out, and **verifies it before using it**, optionally
+anything — pulls its `bundle.nzip` out, and **verifies it before using it**, optionally
 requiring the release workflow's own identity. A baseline that cannot be placed would make
 the diff lie by omission: everything it already contained would read as "unchanged" and
 therefore go unread. With no baseline at all — the first release — it says so and the audit
@@ -1353,7 +1353,7 @@ bundles/
   package.json    the build / pack:cli / sign:cli / verify:cli / trust / test scripts
 ```
 
-Build outputs — `dist/`, `build/cli.bundle` and the signed `bundle.run` — are generated
+Build outputs — `dist/`, `build/cli.bundle` and the signed `bundle.nzip` — are generated
 by those scripts and are not in the repository.
 
 **Environment variables**
@@ -1651,7 +1651,7 @@ existed and signed as its maintainer:
 ```sh
 bundle verify --identity 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main' \
               --issuer   'https://token.actions.githubusercontent.com' \
-              bundle.run
+              bundle.nzip
 ```
 
 `--identity` and `--issuer` already exist and already report a mismatch as
@@ -1711,7 +1711,7 @@ about the *npm* copy rather than about the model.
 
 - **npm publication continues, and carries the signed bundle inside it.** The open question
   resolved into "both, in one package": the registry copy is the library (an `exports` map
-  of ESM entry points, typed), and beside it sits `bundle.run` — the CLI as one signed
+  of ESM entry points, typed), and beside it sits `bundle.nzip` — the CLI as one signed
   archive, 904 members including the whole sigstore dependency tree. `bin` points *straight
   at it*: it carries a `#!/bin/sh` prefix that mounts and runs itself, so
   `npx @pipobscure/bundle` executes the signed artifact with nothing in between. That keeps

@@ -39,14 +39,18 @@ npm install @pipobscure/bundle      # the library
 npx @pipobscure/bundle --help       # the CLI, without installing
 ```
 
-Or skip npm altogether. Every release on GitHub carries the same signed `bundle.run`, and
-Node 26.10 or later is all it needs:
+Or skip npm altogether. Every release on GitHub carries the same signed archive, and Node
+26.10 or later is all it needs:
 
 ```sh
-curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.run
-chmod +x bundle.run
-./bundle.run --help
+curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
+chmod +x bundle.nzip
+./bundle.nzip --help
 ```
+
+The `.nzip` extension is what makes an archive runnable on Windows, where the association is
+by extension. On unix it means nothing, so `bundle install` drops it and leaves you a command
+called `bundle`.
 
 Releases are signed by the [publish workflow](.github/workflows/publish.yml), so the
 identity to pin when you check one is
@@ -55,14 +59,14 @@ identity to pin when you check one is
 beside it as `cli.audit.json`.
 
 The `bundle` command npm installs **is** the signed archive. `bin` points straight at
-`bundle.run` — the CLI, its skill and its whole dependency tree in one file, behind a two-line
+`bundle.nzip` — the CLI, its skill and its whole dependency tree in one file, behind a two-line
 `#!/bin/sh` prefix that mounts it and runs it. There is no wrapper script in between, which
 is the point: nothing unsigned stands between you and the artifact, and
 
 ```sh
-head -c 100 "$(npm root)/@pipobscure/bundle/bundle.run"   # what it will do
-unzip -l    "$(npm root)/@pipobscure/bundle/bundle.run"   # everything it contains
-bundle verify "$(npm root)/@pipobscure/bundle/bundle.run" # who signed it
+head -c 100 "$(npm root)/@pipobscure/bundle/bundle.nzip"   # what it will do
+unzip -l    "$(npm root)/@pipobscure/bundle/bundle.nzip"   # everything it contains
+bundle verify "$(npm root)/@pipobscure/bundle/bundle.nzip" # who signed it
 ```
 
 answer every question about it without running anything. See
@@ -70,8 +74,8 @@ answer every question about it without running anything. See
 
 Running it by name does not verify it — the kernel gives a `#!` launcher no preload to carry
 a provider, and this package says so rather than pretending otherwise. Verification is a
-separate act, done with a copy of `bundle` you already trust: `bundle verify bundle.run` to
-check it, or `bundle run bundle.run -- <args>` to execute it through the verifying mount.
+separate act, done with a copy of `bundle` you already trust: `bundle verify bundle.nzip` to
+check it, or `bundle run bundle.nzip -- <args>` to execute it through the verifying mount.
 
 ---
 
@@ -283,8 +287,8 @@ signs with. So
 npx @pipobscure/bundle install
 ```
 
-is the whole bootstrap: npm fetches it once, and what stays behind is a signed
-`bundle.run` that keeps itself current.
+is the whole bootstrap: npm fetches it once, and what stays behind is a signed archive on
+your PATH — called `bundle`, or `bundle.nzip` on Windows — that keeps itself current.
 
 **Whoever signed the first install is recorded**, and every later `update` of
 that name must match. That is trust on first use, said plainly — the first fetch
@@ -645,7 +649,7 @@ Building the tool the way the tool says to build things — the same four steps:
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
 npm run sign:cli:local      # 4: refuses — nothing has been audited yet
 BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
-npm run sign:cli:local      # 4: now allowed -> bundle.run
+npm run sign:cli:local      # 4: now allowed -> bundle.nzip
 ```
 
 | Script | |

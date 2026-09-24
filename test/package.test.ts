@@ -40,7 +40,10 @@ test('the bin is the signed archive, not a script that runs one', () => {
     // rather than its presence. `prepublishOnly` is what refuses to publish
     // without it.
     const bin = manifest.bin['bundle']!;
-    assert.match(bin, /\.run$/, 'the bin should be the archive itself');
+    // `.nzip` because that is the extension Windows associates with node; the
+    // name it *installs* under drops it everywhere else, which is `install`'s
+    // business rather than the package's.
+    assert.match(bin, /\.nzip$/, 'the bin should be the archive itself');
     assert.ok(!bin.startsWith('./dist/'), 'the bin should not be a compiled shim');
     assert.ok(manifest.files.includes(bin.replace(/^\.\//, '')),
         `${bin} must be in "files" or the published package has no bin`);
