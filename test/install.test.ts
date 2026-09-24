@@ -159,6 +159,34 @@ test('update refuses an archive signed by somebody else', async () => {
     assert.deepEqual(FS.readFileSync(PATH.join(BIN, installed('tool.run'))), second, 'the installed copy is untouched');
 });
 
+test('uninstall takes a name, a url, or nothing at all', async () => {
+    const { selfName, self } = await import('../src/install.ts');
+
+    // By name.
+    await install(URL_, { ...options, name: 'by-name.run' });
+    assert.equal(uninstall('by-name.run').name, 'by-name.run');
+    assert.equal(FS.existsSync(PATH.join(BIN, 'by-name.run')), false);
+
+    // By the URL it came from, which is what a person remembers when the name
+    // was the server's idea.
+    await install(URL_, { ...options, name: 'by-url.run' });
+    assert.equal(uninstall(URL_).name, 'by-url.run');
+    assert.equal(Object.hasOwn(records(), 'by-url.run'), false);
+
+    // With nothing: this package's own install, found by the URL it came from
+    // whatever it ended up called.
+    await install(URL_, { ...options, name: 'renamed-self.run' });
+    const all = records();
+    all['renamed-self.run'] = { ...all['renamed-self.run']!, url: self().url };
+    FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
+    assert.equal(uninstall().name, 'renamed-self.run');
+
+    // ...and the errors say what there is rather than only what there is not.
+    assert.throws(() => uninstall('nothing-like-this'), /nothing installed as/);
+    assert.throws(() => uninstall('https://example.invalid/x.nzip'), /nothing installed from/);
+    assert.throws(() => uninstall(), new RegExp(`this package is not installed as '${selfName()}'`));
+});
+
 test('update with no name checks everything, and uninstall forgets one', async () => {
     served.bytes = first;
     served.etag = '"one"';

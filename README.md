@@ -298,15 +298,27 @@ is the one you have to judge, which is what `--identity` is for.
 
 ```sh
 bundle update            # check everything installed
-bundle update tool.run   # check one
+bundle update tool       # check one
 bundle update --list     # what is installed, from where, signed by whom
-bundle update --remove tool.run
 ```
 
 Each check is a conditional request carrying the ETag recorded at install time,
 so a server with nothing new answers `304` and nothing is downloaded. When there
 is something new it is verified — against the pinned identity — before it
 replaces anything.
+
+### `uninstall`
+
+```sh
+bundle uninstall tool                        # by name
+bundle uninstall https://example.com/tool.nzip   # by where it came from
+bundle uninstall                             # this package's own install
+```
+
+Deletes the file and forgets the record. With neither a name nor a URL it
+removes what `bundle install` left behind — found by the URL it came from,
+whatever it ended up called. The `.nzip` association on Windows is left alone:
+other archives may need it, and it is not this one's to take away.
 
 ### `skill`
 
@@ -628,7 +640,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 169 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 170 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

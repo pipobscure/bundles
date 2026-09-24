@@ -28,6 +28,7 @@ commands:
   run       mount a signed archive and run it
   install   fetch a signed archive from a URL and put it on your PATH
   update    refetch what was installed, and replace it if it changed
+  uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root used to check sigstore signatures
   skill     install this package's bundle-auditing skill into a project
@@ -145,10 +146,15 @@ update options:                     usage: update [options] [name]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --untrusted       accept a good signature from an unanchored chain
   -l, --list            list what is installed, and stop
-      --remove <name>   forget an install and delete the file it placed
 
   with no name, every install is checked. Each is a conditional request with
   the recorded ETag, so nothing is downloaded twice.
+
+uninstall options:                  usage: uninstall [name | url]
+
+  deletes the file and forgets the record. With neither a name nor a url it
+  removes this package's own install — what 'bundle install' left behind. The
+  .nzip association on Windows is left alone: other archives may need it.
 
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
@@ -176,7 +182,7 @@ const CONSOLE: Console = {
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, run, install, update, sea, trust, skill,
+    create, sign, audit, verify: check, run, install, update, uninstall, sea, trust, skill,
 };
 
 /**
@@ -421,17 +427,10 @@ async function update(args: string[], io: Console): Promise<number> {
             root:      { type: 'string', short: 'r', multiple: true },
             untrusted: { type: 'boolean' },
             list:      { type: 'boolean', short: 'l' },
-            remove:    { type: 'string' },
         },
     });
 
     const INSTALL = await import('./install.ts');
-
-    if (values.remove) {
-        const record = INSTALL.uninstall(values.remove);
-        io.out(`removed ${record.name} from ${record.dir}`);
-        return 0;
-    }
 
     if (values.list) {
         const all = Object.values(INSTALL.records());
@@ -463,6 +462,18 @@ async function update(args: string[], io: Console): Promise<number> {
         io.err(`error: ${message(err)}`);
         return state ? STATES[state].code : 2;
     }
+}
+
+// Remove an install: the file, and the record of where it came from. With no
+// argument it is this package's own, which is what somebody who typed
+// `bundle uninstall` means.
+async function uninstall(args: string[], io: Console): Promise<number> {
+    const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+    const INSTALL = await import('./install.ts');
+    const record = INSTALL.uninstall(positionals[0]);
+    io.out(`removed ${record.name} from ${record.dir}`);
+    io.err(`  it came from ${record.url}`);
+    return 0;
 }
 
 // The audit gate. The review itself needs judgement, so this command does the

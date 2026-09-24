@@ -232,15 +232,47 @@ export async function update(name: string | undefined, options: InstallOptions =
     return results;
 }
 
-/** Forget an install, and remove the file it put on the PATH. */
-export function uninstall(name: string): InstallRecord {
+/**
+ * Forget an install, and remove the file it put on the PATH.
+ *
+ * `which` is a name, a URL, or nothing — and nothing means this package's own
+ * install, which is what somebody typing `bundle uninstall` means. The file
+ * association on Windows is left alone: other archives may rely on it, and it
+ * is not this one's to take away.
+ */
+export function uninstall(which?: string): InstallRecord {
     const all = records();
-    const record = all[name];
-    if (!record) throw new Error(`nothing installed as '${name}'`);
+    const name = resolve(all, which);
+    const record = all[name]!;
     FS.rmSync(PATH.join(record.dir, name), { force: true });
     delete all[name];
     write(all);
     return record;
+}
+
+/** The name this package installs itself under, which the extension decides. */
+export function selfName(): string {
+    return commandName('bundle.nzip');
+}
+
+// Which install is meant: the one named, the one fetched from that URL, or —
+// when nothing is said — this package's own.
+function resolve(all: Record<string, InstallRecord>, which: string | undefined): string {
+    const installed = Object.keys(all);
+    const known = installed.length ? `installed: ${installed.sort().join(', ')}` : 'nothing is installed';
+
+    if (which === undefined) {
+        const mine = installed.find((name) => all[name]!.url === self().url) ?? selfName();
+        if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
+        return mine;
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(which)) {
+        const found = installed.find((name) => all[name]!.url === which);
+        if (!found) throw new Error(`nothing installed from ${which} — ${known}`);
+        return found;
+    }
+    if (!all[which]) throw new Error(`nothing installed as '${which}' — ${known}`);
+    return which;
 }
 
 // ------------------------------------------------------------------ the act ---
