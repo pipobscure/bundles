@@ -849,8 +849,11 @@ register({
 A preload runs under the CommonJS loader, so it must not contain a top-level `await` — but
 ESM syntax is otherwise fine, and `--import` works as well as `-r`.
 
-`bundle run <archive> [-- <args>]` is the same thing without the flags: it registers the
-provider, mounts the archive and runs the entry point in its own process.
+`bundle run <archive> [args...]` is the same thing without the flags: it registers the
+provider, mounts the archive and runs the entry point in its own process. Its own options
+come before the archive, and everything after the archive is the program's — it stops
+parsing at the first thing that is not its own, because a command that forwards has to know
+when to stop. `--` is accepted and no longer needed.
 
 It used to re-exec `node` with the preload and `--vfs-load`, which gave the application a
 process of its own. That cost more than it was worth: `-r` needs a real file, and there is
