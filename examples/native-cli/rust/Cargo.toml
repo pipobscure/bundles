@@ -1,0 +1,17 @@
+[package]
+name = "native-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "EUPL-1.2"
+publish = false
+
+# A C-ABI shared library: no node headers, no N-API, nothing that knows this
+# will be called from JavaScript. `node:ffi` opens it the way anything else
+# would.
+[lib]
+name = "native_cli"
+crate-type = ["cdylib"]
+
+[profile.release]
+strip = true

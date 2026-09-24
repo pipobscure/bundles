@@ -1,0 +1,9 @@
+{
+  "name": "@example/native-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A CLI whose program is a Rust shared library, called through node:ffi — the example of bundling something that is not JavaScript.",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "EUPL-1.2"
+}

@@ -5,3 +5,7 @@ bundle.run
 *.tsbuildinfo
 package-lock.json
 .claude/
+examples/native-cli/rust/target/
+examples/native-cli/*.so
+examples/native-cli/*.dylib
+examples/native-cli/*.dll
