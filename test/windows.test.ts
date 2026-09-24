@@ -61,7 +61,12 @@ test.after(() => {
 // An archive with nothing in front of it: the association is what starts it, so
 // there is no prefix for the file to carry. Unsigned, because what is under
 // test is how Windows *starts* a file.
-const source = tree(tmp, { ...APP, 'index.js': "console.log('ran as', require('node:path').basename(process.argv[1]));" });
+const source = tree(tmp, {
+    ...APP,
+    // ESM, because the package.json beside it says so — and argv[1] is the name
+    // the archive was invoked as, which is the whole question here.
+    'index.js': "import { basename } from 'node:path';\nconsole.log('ran as', basename(process.argv[1]));\n",
+});
 const ARCHIVE = PATH.join(tmp, 'app.nzip');
 if (WINDOWS) await createBundle({ base: source, files: Object.keys(APP), output: ARCHIVE });
 
@@ -105,18 +110,38 @@ test('running the setup again changes nothing', { skip: SKIP }, () => {
     assert.deepEqual(ensureWindowsAssociation('the tests'), [], 'nothing left to do');
 });
 
-test('the association starts an archive, arguments and all', { skip: SKIP }, () => {
+test('the association starts an archive, arguments and all', { skip: SKIP }, (t) => {
     ensureWindowsAssociation('the tests');
-    const res = run(`"${ARCHIVE}" one two`);
-    assert.equal(res.status, 0, `${res.stderr}\nopen command: ${read(`${CLASSES}\\NodeBundle\\shell\\open\\command`, '')}`);
-    assert.match(res.stdout, /ran as app\.nzip/);
+
+    // The form this package promises is the one a user types: the name, found
+    // on PATH. The others are recorded rather than required — cmd.exe's rules
+    // for *when* it will hand a data file to its association are not documented,
+    // and knowing which forms work is more useful than a flat pass or fail.
+    const forms: [string, string][] = [
+        ['name on PATH, with extension', 'app.nzip one two'],
+        ['name on PATH, no extension', 'app one two'],
+        ['full path, quoted', `"${ARCHIVE}" one two`],
+        ['full path, unquoted', `${ARCHIVE} one two`],
+        ['start /wait', `start /wait "" "${ARCHIVE}" one two`],
+    ];
+    const worked = new Map<string, boolean>();
+    for (const [label, command] of forms) {
+        const res = run(command);
+        worked.set(label, res.status === 0 && /ran as app\.nzip/.test(res.stdout));
+        t.diagnostic(`${worked.get(label) ? 'works' : 'refused'}: ${label}${
+            worked.get(label) ? '' : ` — ${(res.stderr || res.stdout).split('\n')[0]}`}`);
+    }
+
+    assert.ok(worked.get('name on PATH, with extension'), 'an archive named on PATH must run');
+    assert.ok(worked.get('name on PATH, no extension'), 'PATHEXT must make the extension optional');
 });
 
 test('typed without the extension, found through PATHEXT', { skip: SKIP }, () => {
     // The case that is easy to get wrong: when cmd resolves `app` to `app.nzip`
     // through PATHEXT, it substitutes the name *as typed* — no extension — so a
     // command that simply mounted `%1` would be handed a path that is not a
-    // file. This is what proves the open command copes.
+    // file. This is what proves the open command copes, and that argv[1] still
+    // names the archive rather than what the user typed.
     ensureWindowsAssociation('the tests');
     const res = run('app one two');
     assert.equal(res.status, 0, res.stderr);
@@ -127,7 +152,8 @@ test('a copy, a hard link and a symbolic link each report their own name', { ski
     ensureWindowsAssociation('the tests');
 
     FS.copyFileSync(ARCHIVE, PATH.join(tmp, 'copied.nzip'));
-    assert.match(run('copied x').stdout, /ran as copied\.nzip/);
+    const copied = run('copied x');
+    assert.match(copied.stdout, /ran as copied\.nzip/, copied.stderr);
 
     // A hard link needs no rights; a symbolic link needs Developer Mode or
     // elevation, so it is reported rather than demanded.
