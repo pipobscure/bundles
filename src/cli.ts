@@ -26,6 +26,8 @@ commands:
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
+  install   fetch a signed archive from a URL and put it on your PATH
+  update    refetch what was installed, and replace it if it changed
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root used to check sigstore signatures
   skill     install this package's bundle-auditing skill into a project
@@ -117,6 +119,35 @@ sea options:                        usage: sea [options] [archive]
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
 
+install options:                    usage: install [options] [url]
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --identity <san>  require this sigstore signing identity
+      --issuer <url>    require this sigstore OIDC issuer
+      --untrusted       install one whose signature is good but untrusted
+  -n, --name <name>     install under this name, rather than the one the
+                        server suggests (Content-Disposition, else the URL)
+  -d, --dir <dir>       where to install (default: ~/.local/bin, or
+                        %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
+
+  with no url, this package installs itself from its own published release,
+  requiring the identity its publish workflow signs with — so
+  'npx @pipobscure/bundle install' leaves a signed 'bundle.run' on your PATH
+  that 'bundle update' keeps current.
+
+  nothing is written until the signature verifies. Whoever signed the first
+  install is recorded, and every later 'update' of that name must match — so
+  pass --identity if you know who you expect, rather than trusting the first
+  answer a server gives you.
+
+update options:                     usage: update [options] [name]
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --untrusted       accept a good signature from an unanchored chain
+  -l, --list            list what is installed, and stop
+      --remove <name>   forget an install and delete the file it placed
+
+  with no name, every install is checked. Each is a conditional request with
+  the recorded ETag, so nothing is downloaded twice.
+
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
 
@@ -143,7 +174,7 @@ const CONSOLE: Console = {
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, run, sea, trust, skill,
+    create, sign, audit, verify: check, run, install, update, sea, trust, skill,
 };
 
 /**
@@ -326,6 +357,104 @@ async function run(args: string[], io: Console): Promise<number> {
             roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
             allowUntrusted: values.untrusted, args: theirs,
         });
+    } catch (err) {
+        if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
+        const state = (err as { state?: VerificationState }).state;
+        io.err(`error: ${message(err)}`);
+        return state ? STATES[state].code : 2;
+    }
+}
+
+// Fetch a signed archive and put it on the PATH — `curl | sh` with the parts
+// that make that dangerous taken out: nothing runs to install it, and nothing
+// lands anywhere until it verifies.
+async function install(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            root:      { type: 'string', short: 'r', multiple: true },
+            identity:  { type: 'string' },
+            issuer:    { type: 'string' },
+            untrusted: { type: 'boolean' },
+            name:      { type: 'string', short: 'n' },
+            dir:       { type: 'string', short: 'd' },
+        },
+    });
+    const INSTALL = await import('./install.ts');
+
+    // With no URL, this package installs itself: the published release, signed
+    // by the workflow that publishes it. `npx @pipobscure/bundle install` is
+    // then the whole bootstrap — npm fetches it once, and what stays behind is
+    // a signed archive that updates itself from its own releases.
+    const itself = !positionals[0] ? INSTALL.self() : undefined;
+    const url = positionals[0] ?? itself!.url;
+    if (itself) io.err(`* installing this package itself from ${url}`);
+
+    try {
+        const record = await INSTALL.install(url, {
+            roots: values.root ?? [], name: values.name, dir: values.dir,
+            identity: values.identity ?? itself?.identity,
+            issuer: values.issuer ?? itself?.issuer,
+            allowUntrusted: values.untrusted,
+            log: (line) => io.err(line),
+        });
+        io.out(`${record.name} installed in ${record.dir}`);
+        return 0;
+    } catch (err) {
+        if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
+        const state = (err as { state?: VerificationState }).state;
+        io.err(`error: ${message(err)}`);
+        return state ? STATES[state].code : 2;
+    }
+}
+
+// Re-ask the URL an install came from, and replace what is there if the answer
+// changed — provided it is still signed by whoever signed the first one.
+async function update(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            root:      { type: 'string', short: 'r', multiple: true },
+            untrusted: { type: 'boolean' },
+            list:      { type: 'boolean', short: 'l' },
+            remove:    { type: 'string' },
+        },
+    });
+
+    const INSTALL = await import('./install.ts');
+
+    if (values.remove) {
+        const record = INSTALL.uninstall(values.remove);
+        io.out(`removed ${record.name} from ${record.dir}`);
+        return 0;
+    }
+
+    if (values.list) {
+        const all = Object.values(INSTALL.records());
+        if (!all.length) io.out('nothing installed');
+        for (const record of all.sort((a, b) => a.name.localeCompare(b.name))) {
+            io.out(`${record.name}`);
+            io.out(`  from:   ${record.url}`);
+            if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
+            else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
+            io.out(`  sha256: ${record.sha256}`);
+            io.out(`  since:  ${record.at}`);
+        }
+        return 0;
+    }
+
+    try {
+        const results = await INSTALL.update(positionals[0], {
+            roots: values.root ?? [], allowUntrusted: values.untrusted,
+            log: (line) => io.err(line),
+        });
+        const changed = results.filter((result) => result.state === 'updated');
+        io.out(changed.length
+            ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
+            : `${results.length} checked, nothing changed`);
+        return 0;
     } catch (err) {
         if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
         const state = (err as { state?: VerificationState }).state;

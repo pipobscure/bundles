@@ -247,6 +247,55 @@ the mounting. What that costs is isolation — the application shares the proces
 package's modules loaded in it. For a process of its own, spawn one with the arguments
 [`mountArgv`](#using-it-from-code) names.
 
+### `install`
+
+```sh
+bundle install https://example.com/tool.run     # fetch, verify, put on PATH
+bundle install                                  # this package, from its own release
+```
+
+`curl | sh` with the two dangerous parts removed: nothing is executed to install
+it, and nothing lands on disk that did not verify first. The archive is fetched,
+checked, and renamed into place — an archive that fails verification never
+exists at its destination.
+
+The name comes from the server's `Content-Disposition`, or the last segment of
+the URL, reduced to a bare file name: a suggestion from somebody else's server
+names a file, never a path. `--name` overrides it. The file goes to
+`~/.local/bin` (`%LOCALAPPDATA%\bundle\bin` on Windows, `BUNDLE_INSTALL_DIR`
+anywhere), is made executable, and you are told if that directory is not on your
+`PATH`. On Windows it also registers `.nzip` for the current user and adds it to
+`PATHEXT`, which is what makes an archive runnable by name there.
+
+**With no URL it installs this package itself**, from its own published release,
+requiring the identity its [publish workflow](.github/workflows/publish.yml)
+signs with. So
+
+```sh
+npx @pipobscure/bundle install
+```
+
+is the whole bootstrap: npm fetches it once, and what stays behind is a signed
+`bundle.run` that keeps itself current.
+
+**Whoever signed the first install is recorded**, and every later `update` of
+that name must match. That is trust on first use, said plainly — the first fetch
+is the one you have to judge, which is what `--identity` is for.
+
+### `update`
+
+```sh
+bundle update            # check everything installed
+bundle update tool.run   # check one
+bundle update --list     # what is installed, from where, signed by whom
+bundle update --remove tool.run
+```
+
+Each check is a conditional request carrying the ETag recorded at install time,
+so a server with nothing new answers `304` and nothing is downloaded. When there
+is something new it is verified — against the pinned identity — before it
+replaces anything.
+
 ### `skill`
 
 ```sh
@@ -567,7 +616,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 151 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 162 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 
