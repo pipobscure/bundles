@@ -31,6 +31,9 @@ const installed = (name: string) => (WINDOWS ? `${name}.nzip` : name);
 const HOME = PATH.join(tmp, 'home');
 const BIN = PATH.join(HOME, 'bin');
 process.env['BUNDLE_INSTALL_DIR'] = BIN;
+// These tests install for real, including through the CLI; none of them may
+// leave a file association behind on the machine running them.
+process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
 process.env['XDG_STATE_HOME'] = PATH.join(HOME, 'state');
 process.env['LOCALAPPDATA'] = PATH.join(HOME, 'AppData');
 

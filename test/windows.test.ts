@@ -83,16 +83,18 @@ function run(command: string): { status: number | null; stdout: string; stderr: 
 }
 
 test('the Windows setup registers .nzip and extends PATHEXT', { skip: SKIP }, () => {
-    const notes = ensureWindowsAssociation('the tests');
-    assert.ok(notes.length, 'it should say what it did');
+    ensureWindowsAssociation('the tests');
 
+    // What is asserted is the state, not what the call said about it: another
+    // test file may have got there first, and either way the question is
+    // whether the registry now holds what it should.
     assert.equal(read(`${CLASSES}\\.nzip`, ''), 'NodeBundle');
     const command = read(`${CLASSES}\\NodeBundle\\shell\\open\\command`, '');
-    assert.match(command ?? '', /--experimental-vfs/);
-    assert.match(command ?? '', /--vfs-load=/);
+    assert.match(command ?? '', /--experimental-vfs/, `stored: ${command}`);
+    assert.match(command ?? '', /--vfs-load=/, `stored: ${command}`);
     // The extension is put back when the shell hands over a name without one,
     // which is what PATHEXT resolution does.
-    assert.match(command ?? '', /%1\.nzip/);
+    assert.match(command ?? '', /%1\.nzip/, `stored: ${command}`);
 
     const pathext = read(ENVIRONMENT, 'PATHEXT');
     assert.ok(pathext?.split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP'), pathext ?? '(unset)');
@@ -106,7 +108,7 @@ test('running the setup again changes nothing', { skip: SKIP }, () => {
 test('the association starts an archive, arguments and all', { skip: SKIP }, () => {
     ensureWindowsAssociation('the tests');
     const res = run(`"${ARCHIVE}" one two`);
-    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.status, 0, `${res.stderr}\nopen command: ${read(`${CLASSES}\\NodeBundle\\shell\\open\\command`, '')}`);
     assert.match(res.stdout, /ran as app\.nzip/);
 });
 
