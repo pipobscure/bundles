@@ -437,10 +437,10 @@ function associate(): string[] {
 function extendPathExt(): string[] {
     if ((process.env['PATHEXT'] ?? '').split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP')) return [];
 
+    // Already written, just not visible in this process's environment yet —
+    // that is a terminal that predates the install, not something to do again.
     const mine = query('HKCU\\Environment', 'PATHEXT');
-    if (mine !== null && mine.split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP')) {
-        return ['.NZIP is already on your PATHEXT — open a new terminal for it to take effect'];
-    }
+    if (mine !== null && mine.split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP')) return [];
 
     const value = mine === null ? '%PATHEXT%;.NZIP' : `${mine.replace(/;+$/, '')};.NZIP`;
     // REG_EXPAND_SZ so a `%PATHEXT%` in the value means what it says. `setx`

@@ -52,7 +52,11 @@ rem  Both are unsigned: what is under test is how Windows *starts* them.
 
 rem The batch prefix, written by node so the CRLFs and the trailing Ctrl-Z
 rem (0x1A, the DOS end-of-file marker) are exactly right.
-node -e "require('fs').writeFileSync(process.argv[1], ['@echo off','node --no-warnings --experimental-vfs --vfs-load=\"%%~f0\" -- %%*','exit /b %%errorlevel%%'].join('\r\n') + '\r\n\x1a')" "%WORK%\cmd-base"
+rem `%~f0` is the batch file *as invoked*, made absolute — and when cmd found it
+rem through PATHEXT (you typed `app`, it ran `app.cmd`) that name has no
+rem extension, so the qualified path does not exist. Hence the fallback: if the
+rem file is not there, try the name cmd actually opened.
+node -e "require('fs').writeFileSync(process.argv[1], ['@echo off','set \"SELF=%%~f0\"','if not exist \"%%SELF%%\" set \"SELF=%%~f0%%~x0\"','if not exist \"%%SELF%%\" set \"SELF=%%~f0.cmd\"','node --no-warnings --experimental-vfs --vfs-load=\"%%SELF%%\" -- %%*','exit /b %%errorlevel%%'].join('\r\n') + '\r\n\x1a')" "%WORK%\cmd-base"
 
 node --no-warnings "%CLI%" create --base "%EXAMPLE%" --files "%WORK%\list" --prefix "%WORK%\cmd-base" --output "%WORK%\app.cmd" >nul 2>&1 || (echo error: could not build app.cmd & exit /b 70)
 node --no-warnings "%CLI%" create --base "%EXAMPLE%" --files "%WORK%\list" --output "%WORK%\app.nzip" >nul 2>&1 || (echo error: could not build app.nzip & exit /b 70)
@@ -116,6 +120,21 @@ if errorlevel 1 (
 
   call :capture "app" one two
   call :expect "7. PATHEXT finds app.nzip when you type `app`" "app.nzip"
+
+  rem If 7 failed, this says why: what the shell substituted for %1. Registering
+  rem a ProgID that only echoes its arguments is the cheapest way to see it.
+  reg add "HKCU\Software\Classes\%PROGID%Echo\shell\open\command" /ve /d "cmd.exe /c echo ARG1=[%%1] REST=[%%~2] > \"%WORK%\arg.txt\"" /f >nul 2>&1
+  reg add "HKCU\Software\Classes\.nzipecho" /ve /d "%PROGID%Echo" /f >nul 2>&1
+  copy /y "%WORK%\app.nzip" "%WORK%\app.nzipecho" >nul
+  set "PATHEXT=%PATHEXT%;.NZIPECHO"
+  call "app" one two >nul 2>&1
+  if exist "%WORK%\arg.txt" (
+    for /f "usebackq delims=" %%l in ("%WORK%\arg.txt") do echo   note      the association was handed %%l
+  ) else (
+    echo   note      could not observe what the association substitutes
+  )
+  reg delete "HKCU\Software\Classes\%PROGID%Echo" /f >nul 2>&1
+  reg delete "HKCU\Software\Classes\.nzipecho" /f >nul 2>&1
 
   mklink /h "%WORK%\second.nzip" "%WORK%\app.nzip" >nul 2>&1
   if errorlevel 1 (
