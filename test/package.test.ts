@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import * as CRYPTO from 'node:crypto';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { moduleFiles, packageRoot } from '../src/files.ts';
-import { ROOT_PEM, SHELL_BASE, scratch, testSigner } from './helpers.ts';
+import { ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner } from './helpers.ts';
+
+// Running the bin *by name* is the `#!` mechanism, which Windows does not have.
+// What it has instead is tested by examples/echo-argv/windows/probe.cmd.
+const SHEBANG = WINDOWS ? 'the #! launcher is a unix mechanism; see examples/echo-argv/windows' : false;
 
 // The package as it is published: the exports map, and the `bundle` command npm
 // installs — which is a launcher for this package's own signed CLI rather than
@@ -42,21 +47,25 @@ test('the bin is the signed archive, not a script that runs one', () => {
 });
 
 test('the four things the package is for each have an entry point', async () => {
+    // An absolute path is not an ES module specifier on Windows — `D:\…` reads
+    // as a URL scheme — so every one of these goes through a file: URL.
+    const from = (target: string) => import(pathToFileURL(PATH.join(ROOT, target)).href);
+
     // 1. Driving everything from code.
-    const api = await import(PATH.join(ROOT, manifest.exports['.']!));
+    const api = await from(manifest.exports['.']!);
     for (const name of ['createBundle', 'signBundle', 'verifyBundle', 'runBundle', 'inspectBundle']) {
         assert.equal(typeof api[name], 'function', name);
     }
     // 2. A hook that records what a run reads, to build a manifest from.
-    const recorder = await import(PATH.join(ROOT, manifest.exports['./recorder']!));
+    const recorder = await from(manifest.exports['./recorder']!);
     assert.equal(typeof recorder.register, 'function');
     assert.equal(typeof recorder.recording, 'function');
     // 3. A hook that validates an archive when it is mounted.
-    const provider = await import(PATH.join(ROOT, manifest.exports['./provider']!));
+    const provider = await from(manifest.exports['./provider']!);
     assert.equal(typeof provider.register, 'function');
     assert.equal(typeof provider.open, 'function');
     // 4. Building a self-validating executable.
-    const sea = await import(PATH.join(ROOT, manifest.exports['./sea']!));
+    const sea = await from(manifest.exports['./sea']!);
     assert.equal(typeof sea.bootstrap, 'function');
     assert.equal(typeof sea.buildSea, 'function');
 });
@@ -84,7 +93,7 @@ test('the package root export does not need --experimental-vfs to import', () =>
     // flag in — which is why the two providers have their own entry points.
     const res = spawnSync(process.execPath, [
         '--no-warnings', '--input-type=module',
-        '-e', `import * as B from ${JSON.stringify(PATH.join(ROOT, manifest.exports['.']!))};
+        '-e', `import * as B from ${JSON.stringify(pathToFileURL(PATH.join(ROOT, manifest.exports['.']!)).href)};
                console.log(typeof B.createBundle);`,
     ], { encoding: 'utf-8' });
     assert.equal(res.status, 0, res.stderr);
@@ -159,7 +168,7 @@ function bin(): Promise<void> {
     return building;
 }
 
-test('the bin is the signed archive, and it runs itself', async () => {
+test('the bin is the signed archive, and it runs itself', { skip: SHEBANG }, async () => {
     await bin();
     // Executable, because `sign --prefix` made it so — npm links it directly
     // and the kernel runs the shebang.
@@ -182,7 +191,7 @@ test('the bin is inspectable without running it', async () => {
     assert.ok(inspectBundle(BIN).members.includes('package.json'));
 });
 
-test('the CLI it runs comes out of the archive, not from the files beside it', async () => {
+test('the CLI it runs comes out of the archive, not from the files beside it', { skip: SHEBANG }, async () => {
     await bin();
     // With the loose CLI gone, anything that still answers was served by the
     // mount — so the bin really is the archive running itself.

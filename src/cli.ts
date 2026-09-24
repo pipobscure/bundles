@@ -587,7 +587,7 @@ async function sea(args: string[], io: Console): Promise<number> {
             bootstrap,
         });
         io.err(`* wrote ${built.output} (${built.size} bytes, ${built.verifier.length} verifier members)`);
-        io.err(`* run an archive with it: ${values.output} <archive> [args...]`);
+        io.err(`* run an archive with it: ${built.output} <archive> [args...]`);
         return 0;
     }
 

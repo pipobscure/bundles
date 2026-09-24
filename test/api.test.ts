@@ -7,7 +7,7 @@ import {
     createBundle, signBundle, verifyBundle, verifyBundleSync, inspectBundle,
     runBundle, fileSigner, mountArgv, registerPath,
 } from '../src/api.ts';
-import { APP, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, scratch, testSigner, tree } from './helpers.ts';
+import { APP, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner, tree } from './helpers.ts';
 
 // The programmatic drive — the export an embedder uses instead of the CLI. What
 // it has to get right is that it does the same thing the CLI does, with the
@@ -72,7 +72,9 @@ test('a prefixed archive is made executable and keeps its prefix intact', async 
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await signBundle({ source: unsigned, output, prefix: SHELL_BASE, signer: testSigner() });
 
-    assert.ok(FS.statSync(output).mode & 0o111, 'the output should be executable');
+    // Windows has no executable bit; what makes a prefixed archive runnable
+    // there is the .nzip association, which `bundle install` sets up.
+    if (!WINDOWS) assert.ok(FS.statSync(output).mode & 0o111, 'the output should be executable');
     assert.deepEqual(
         FS.readFileSync(output).subarray(0, FS.statSync(SHELL_BASE).size),
         FS.readFileSync(SHELL_BASE),

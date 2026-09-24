@@ -151,6 +151,7 @@ export interface SeaBaseResult {
 export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseResult> {
     const scratch = options.scratch ?? FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-sea-'));
     const owned = !options.scratch;
+    const output = executablePath(options.output);
     try {
         let verifier = options.verifier;
         let contents: string[];
@@ -169,7 +170,7 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
         const config = PATH.join(scratch, 'sea-config.json');
         FS.writeFileSync(config, `${JSON.stringify({
             main: stub,
-            output: PATH.resolve(options.output),
+            output,
             disableExperimentalSEAWarning: true,
             useSnapshot: false,
             useCodeCache: false,
@@ -197,7 +198,7 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
         if (built.status !== 0) {
             throw new Error(`--build-sea failed (exit ${built.status}): ${(built.stderr || built.stdout || '').trim()}`);
         }
-        FS.chmodSync(options.output, 0o755);
+        FS.chmodSync(output, 0o755);
 
         // `--build-sea` ignores configuration keys it does not know, so a node
         // without `vfsArchive` would produce a binary that builds cleanly and
@@ -205,9 +206,9 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
         // milliseconds and it is the difference between finding that out here
         // and finding it out in front of a user. A cross-build cannot be run,
         // so it is not checked — the platform it is for is not this one.
-        if (!options.node) selftest(options.output);
+        if (!options.node) selftest(output);
 
-        return { output: options.output, size: FS.statSync(options.output).size, verifier: contents };
+        return { output, size: FS.statSync(output).size, verifier: contents };
     } finally {
         if (owned) FS.rmSync(scratch, { recursive: true, force: true });
     }
@@ -226,9 +227,10 @@ export async function buildSea(options: SeaOptions): Promise<BuildResult> {
     try {
         let base = options.base;
         if (!base) {
-            base = PATH.join(scratch, 'sea-base');
             log('* building the SEA base (node runtime + verifier)');
-            const built = await createSeaBase({ ...options, output: base, scratch });
+            const built = await createSeaBase({ ...options, output: PATH.join(scratch, 'sea-base'), scratch });
+            // Where it actually landed, which on Windows has `.exe` on the end.
+            base = built.output;
             log(`  base: ${built.size} bytes, ${built.verifier.length} verifier members`);
         }
 
@@ -293,6 +295,17 @@ function anchorPolicy(options: BootstrapOptions): BootstrapOptions {
  * this package can be required out of it. `--version` is the cheapest thing
  * that touches all of that, and it works whichever shape the binary is.
  */
+/**
+ * Where the built executable will be. Windows runs a file because of its
+ * extension, so a SEA without `.exe` is a file nothing will start — including
+ * the self-test below, which would report a build failure for what is really a
+ * naming one. Everywhere else the name is left exactly as asked for.
+ */
+export function executablePath(output: string): string {
+    const resolved = PATH.resolve(output);
+    return process.platform === 'win32' && !/\.exe$/i.test(resolved) ? `${resolved}.exe` : resolved;
+}
+
 function selftest(output: string): void {
     const res = spawnSync(PATH.resolve(output), ['--version'],
         { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
