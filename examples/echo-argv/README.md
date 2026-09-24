@@ -46,3 +46,53 @@ Two details that are easy to get wrong and this makes visible:
 - **`--help`, `-e` and every other node-looking flag reach the program.** The
   launcher prefix ends its node invocation with `--`; without that, node would
   claim them and the program would never see them.
+
+## Several commands in one archive
+
+A symlink to the archive is enough to give it a second name, and the program can
+see which name was used. The launcher prefix passes `"$0"` to `--vfs-load`, and
+`$0` is the path the archive was *invoked* as — the symlink, not what it points
+at. Node passes that string through to `argv[1]` without resolving it:
+
+```sh
+ln -s echo-argv.run greet
+ln -s echo-argv.run farewell
+
+./greet x        # source:  /path/to/greet
+./farewell x     # source:  /path/to/farewell
+```
+
+So one signed file can carry a suite of commands and dispatch on its own name,
+the way `busybox` does:
+
+```js
+import { basename } from 'node:path';
+
+const command = basename(process.argv[1] ?? '');
+const args = process.argv.slice(2);
+
+switch (command) {
+    case 'greet':    console.log('hello', ...args); break;
+    case 'farewell': console.log('goodbye', ...args); break;
+    default:         console.error(`no command named ${command}`); process.exit(64);
+}
+```
+
+Install it by making one archive and as many symlinks as it has commands. The
+bytes exist once, they are signed once, and they are audited once — a suite that
+cannot drift out of step with itself, because there is only one of it.
+
+What holds through a symlink:
+
+- **The name reaches the program**, through a relative symlink, an absolute one,
+  one in another directory, and one found on `PATH`.
+- **Verification is of the archive**, wherever you point at it: `bundle verify
+  greet` and `bundle run greet` both open the file the link resolves to, so the
+  signature covers the same bytes under every name.
+
+What does not:
+
+- **A copy is not a link.** Copying the archive to a second name works too, but
+  then there are two files to sign, to audit and to keep in step.
+- **Nothing stops a name it does not know**, so handle the `default` case: the
+  archive cannot tell which symlinks someone made.
