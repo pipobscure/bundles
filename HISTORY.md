@@ -332,12 +332,13 @@ the tests import the sources rather than the build for exactly that reason.
 | `src/sigstore.ts` | Sigstore as one of the signers the format can carry: a two-phase signer (get the Fulcio certificate, *then* sign the finished hash), synchronous bundle verification, and the trust root. |
 | `src/oidc.ts` | Getting an OIDC identity token — an ambient CI token, a browser sign-in through sigstore's Dex, or a device code. No dependencies of its own. |
 | `src/files.ts` | Working out a member list the way observation cannot: a dependency closure resolved through `node_modules`, for code that is only required on a path a test run never takes. |
+| `src/install.ts` | Fetching a signed archive onto the PATH and keeping it current: verify before anything is written, remember the URL, the ETag and the signer, and require that same signer on every update. Sets up the `.nzip` association and PATHEXT on Windows. |
 | `src/skill.ts` | The skills this package ships, and installing them into a project — what `bundle skill` runs. |
 | `src/types/*.d.ts` | The `node:zlib` ZIP API and the `node:vfs` provider registry, neither of which `@types/node` carries yet. |
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 163 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 169 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -542,7 +543,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.bundle
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 163 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 169 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -1182,6 +1183,70 @@ the point of it being one review at two points rather than a build-only step.
 
 ---
 
+## Getting one onto a machine
+
+An archive that verifies is no use if the way it arrives is `curl | sh`. `bundle install
+<url>` is that step done properly: fetch, verify, and only then rename into place. Nothing
+is executed to install it, and an archive that fails verification never exists at its
+destination — it is written to a temporary name beside the target and renamed over it, or
+deleted.
+
+With no URL it installs *this* package, from its own published release, requiring the
+identity its publish workflow signs with. `npx @pipobscure/bundle install` is therefore the
+whole bootstrap: npm fetches it once, and what stays behind is a signed archive that
+updates itself.
+
+**The record is the interesting part.** Each install is remembered — name, URL, ETag,
+sha256, and who signed it — in one JSON file under the user's state directory. `bundle
+update` re-asks each URL with `If-None-Match`, so a publisher with nothing new answers 304
+and nothing is downloaded, and **the identity recorded at install is required again**. A
+publisher who changes identity is a refusal rather than a silent success. That is trust on
+first use, said plainly: the first fetch is the one a person has to judge, which is what
+`--identity` is for.
+
+### What a launcher is on Windows
+
+The `#!` prefix is a unix mechanism. Windows runs a file because of its *extension*, so the
+equivalent is a file association: `.nzip` registered to a command that mounts the archive,
+plus `.NZIP` on `PATHEXT` so the extension is optional to type. `bundle install` sets both
+up for the current user — HKCU only, no administrator — and the whole thing is tested on
+Windows in CI rather than reasoned about.
+
+Four things that testing settled, none of them documented by Microsoft:
+
+- **A batch prefix does work.** cmd.exe stops at `exit /b` and never reads on into the ZIP.
+  It is not what this package does, because an association covers the same ground for *one*
+  artifact rather than two: unix uses the `#!` prefix and ignores the extension, Windows
+  uses the extension and ignores the prefix. Same bytes, one signature, one audit.
+- **`%1` arrives without the extension** when the shell resolved the name through PATHEXT —
+  you type `pnpm`, it finds `pnpm.nzip`, and the command is handed `…\pnpm`, which is not a
+  file. The open command therefore mounts `%1` when that exists and `%1.nzip` when it does
+  not.
+- **A quoted path is refused.** cmd hands a file to its association when the command is a
+  bare name or an unquoted path, and looks for a program when it is quoted. Since quoting is
+  what a path with spaces needs, an install directory without spaces is not a nicety.
+- **A link's name reaches the program**, through a copy, a hard link and a symbolic link
+  alike — so one archive answers to several command names there too, the same way it does on
+  unix. Hard links need no privileges, which symbolic links do.
+
+Two smaller things worth writing down, because both were wrong first:
+
+- **PATHEXT belongs in `HKCU\Environment`, not `setx`.** `setx PATHEXT "%PATHEXT%;.NZIP"`
+  writes back the *merged* machine and user value, freezing a copy of the machine's into the
+  user's environment where it masks every later system-wide change. Appending to the user's
+  own value — or writing the literal `%PATHEXT%;.NZIP` as `REG_EXPAND_SZ` when there is none
+  — resolves at session start instead.
+- **What `setx` does give you is the broadcast.** Writing the registry directly changes
+  nothing for a new terminal until `WM_SETTINGCHANGE` goes out, so `install` sends it itself
+  through `node:ffi` and `SendMessageTimeoutW`, with `SMTO_ABORTIFHUNG` and a two-second
+  timeout — a broadcast reaches every top-level window, and one hung program must not hang
+  an install.
+
+A default set in Windows' own app settings (`UserChoice`) wins over any of this and cannot
+be written by hand. It is detected and reported rather than passed over in silence.
+
+---
+
 ## Why these changes to Node make sense
 
 The through-line is: **let a single file be the file tree a program runs from.**
@@ -1254,6 +1319,7 @@ bundles/
     api.ts          the programmatic drive the CLI is a wrapper over
     cli.ts          parseArgs and reporting; main(argv, io) -> exit code
     main.ts         the executable entry, and the package `main` --vfs-load= runs
+    install.ts      fetch a signed archive onto the PATH, and keep it current
     archive.ts      bundle() builds unsigned from a directory; rebundle() re-emits behind a
                     new prefix and signs; keySigner() is the offline-CA signer
     manifest.ts     buildManifest() / parseManifest() / verifySync(): the format and its check
@@ -1277,7 +1343,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/ci.yml       build, typecheck and test on node 26.10.0
   .github/workflows/publish.yml  the release pipeline: publishes any version npm lacks
-  test/           163 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           169 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/

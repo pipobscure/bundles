@@ -624,7 +624,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 163 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 169 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

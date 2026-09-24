@@ -1,6 +1,6 @@
 {
   "name": "@pipobscure/bundle",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Record what an application reads, archive it, sign it with sigstore, verify it, and mount it as a verifying node:vfs provider so only signed archives run.",
   "keywords": [
     "SEA",
