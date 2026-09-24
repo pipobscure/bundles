@@ -11,7 +11,7 @@ Add a startup flag that installs a package manager by name:
 ```console
 $ node --install pnpm
 pnpm 10.4.1 installed
-  from    https://registry.example/pnpm/10.4.1/pnpm.nzip
+  from    https://registry.example/pnpm/latest/pnpm.nzip
   signed  https://github.com/pnpm/pnpm/.github/workflows/release.yml@refs/heads/main
           via https://token.actions.githubusercontent.com
   aliases pnpm, pnpx
@@ -22,18 +22,25 @@ $ pnpm install
 One signed archive is downloaded, verified against the identity the entry names,
 placed next to node, and given one link per command name it declares. Nothing is
 extracted, no install script runs, and what gets executed afterwards is the file
-that was verified.
+that was verified. The version in that output was read out of the archive once it
+verified; node was never told which one to expect.
 
 The set of installable things is a list shipped with node:
 
 ```json
 {
   "id": "pnpm",
-  "source": "https://registry.example/pnpm/10.4.1/pnpm.nzip",
+  "source": "https://registry.example/pnpm/latest/pnpm.nzip",
   "signer": "https://github.com/pnpm/pnpm/.github/workflows/release.yml@refs/heads/main",
   "binaries": ["pnpm", "pnpx"]
 }
 ```
+
+Note what is *not* in the entry: no version and no digest. Pinning either would
+tie node's release cadence to every package manager's, which is the coupling
+this is trying to remove. The entry names **who may sign**, and the publisher
+decides what is behind the URL. A node release only has to change when a
+publisher changes their signing identity.
 
 ## Motivation
 
@@ -100,29 +107,32 @@ A JSON document, shipped in the node tarball and updated with node releases:
   "packageManagers": [
     {
       "id": "npm",
-      "source": "https://registry.npmjs.org/…/npm-11.19.1.nzip",
+      "source": "https://registry.npmjs.org/…/npm/latest.nzip",
       "signer": "https://github.com/npm/cli/.github/workflows/release.yml@refs/heads/main",
       "issuer": "https://token.actions.githubusercontent.com",
-      "binaries": ["npm", "npx"],
-      "version": "11.19.1",
-      "sha256": "40336531528fbbadf2dc34b634718a327d50b2dd…"
+      "binaries": ["npm", "npx"]
     }
   ]
 }
 ```
 
-`id`, `source`, `signer` and `binaries` are the fields this proposal turns on.
-Three more are worth having:
+`id`, `source`, `signer` and `binaries` are the four fields this proposal turns
+on. One more is worth having:
 
 - **`issuer`** — a sigstore identity is only meaningful together with the OIDC
   issuer that vouched for it. `foo@example.com` signed via a provider anyone can
   register an account with is not the same claim as the same string from a
-  pinned issuer.
-- **`version`** — so `--install pnpm` can say what it installed, and so a
-  mismatch between the list and the archive is detectable.
-- **`sha256`** (optional) — pinning the exact bytes the node release was cut
-  against. Belt and braces over the signature: it makes an install reproducible
-  and makes a compromised-but-correctly-signed replacement visible.
+  pinned issuer. It could be folded into `signer` as one string, but keeping it
+  separate makes it harder to forget.
+
+**The entry pins an identity, not an artifact.** `source` is expected to be a
+rolling URL: whatever the publisher currently ships. Node does not know or care
+which version that is, and a new package manager release needs no node release.
+What the entry constrains is *who is allowed to have produced it* — which is the
+question node is in a position to answer and the user is not.
+
+The version is read out of the archive **after** it verifies, and reported. It
+is an outcome of the install, not an input to it.
 
 **Who may be on the list** is a policy question for the TSC, not a technical
 one, and it should be answered before the flag exists rather than after.
@@ -136,18 +146,23 @@ endorsement whatever the docs say.
 ```
 node --install <id>            install the entry named <id>
 node --install                 list what is installable, and what is installed
-node --install <id>@<version>  install a specific version, if the list carries several
 node --uninstall <id>          remove the archive and its links
 ```
+
+Version *selection* is deliberately absent. The entry names a signer and a
+source; which release sits behind that source is the publisher's business, and
+a project that wants to pin one already has a mechanism for saying so in its own
+repository. If a selector is wanted later, it belongs in the URL the publisher
+controls, not in a list node ships.
 
 Install does, in order:
 
 1. **Resolve** `<id>` in the list. An unknown id fails with the available ids.
 2. **Fetch** `source` over HTTPS into a temporary file. No redirect to a
    different origin without saying so.
-3. **Verify**: the whole-file signature, the certificate chain, the signing
-   identity against `signer`/`issuer`, and `sha256` if present. Any failure and
-   the temporary file is deleted and nothing else happens.
+3. **Verify**: the whole-file signature, the certificate chain, and the signing
+   identity against `signer`/`issuer`. Any failure and the temporary file is
+   deleted and nothing else happens.
 4. **Place** the archive next to node's other tooling — the same directory npm
    lives in today — as `<id>.nzip`, atomically (write, fsync, rename).
 5. **Link** one alias per `binaries` entry into node's `bin` directory.
@@ -193,9 +208,9 @@ to make the target runnable, and the installer should pick one:
 The association route is the better fit for this proposal: it makes **one
 artifact work on every platform** — Unix uses the `#!` prefix and ignores the
 extension, Windows uses the extension and ignores the prefix. Same bytes, same
-digest, same signature everywhere, which is also what makes a `sha256` in the
-list meaningful across platforms. Its cost is that it is machine setup, which is
-precisely what a node installer is for.
+signature, one thing for the publisher to build and for anyone to audit, rather
+than a variant per operating system. Its cost is that it is machine setup, which
+is precisely what a node installer is for.
 
 ## Trust
 
@@ -226,12 +241,21 @@ the list entry, and treat sigstore as the way publishers *obtain* those
 certificates rather than as something node speaks. Worth spelling out before
 implementation.
 
-**Revocation and downgrade.** The list is only as fresh as the node release that
-carries it. An entry compromised after a release cannot be pulled without a new
-node, and a user can install an old node to get an old entry. Mitigations worth
-discussing: an optional online freshness check that fails *open* with a warning,
-a minimum-version field per entry, and a documented process for pulling an entry
-in a patch release.
+**Revocation.** The list is only as fresh as the node release that carries it.
+A signing identity that is compromised or retired cannot be dropped without a
+new node release, and an old node keeps trusting the old identity. This is the
+price of not pinning artifacts, and it is the right trade — but it needs an
+answer: a documented process for pulling or changing an entry in a patch
+release, and possibly an optional online freshness check that fails *open* with
+a warning rather than becoming a new hard dependency.
+
+**Rollback.** Because the entry does not pin bytes, `--install` gets whatever is
+behind the URL at that moment, and an attacker who can serve an *older*
+correctly-signed archive can serve a known-vulnerable one. Defending against
+that is the publisher's job — a transparency log the verifier consults, or
+signed metadata with an expiry, the way TUF does it — and the proposal should
+say plainly that node is not doing it. What node guarantees is the identity of
+the signer, not the freshness of what they signed.
 
 **Environments without the network** — CI images, air-gapped builds, corporate
 proxies. `--install` must be overridable: a `NODE_INSTALL_SOURCE`-style variable
