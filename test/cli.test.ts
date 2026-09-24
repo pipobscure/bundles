@@ -6,7 +6,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { main, USAGE, STATES, COMMANDS } from '../src/cli.ts';
 import { createBundle } from '../src/api.ts';
 import {
-    APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE,
+    APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, WINDOWS,
     cli, collector, scratch, testSigner, tree,
 } from './helpers.ts';
 
@@ -134,6 +134,7 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
 
     // A prefixed output is made executable, and the prefix is a working
     // launcher — so the archive runs by being run, with no flags to remember.
+    if (WINDOWS) return;
     assert.ok(FS.statSync(output).mode & 0o111);
     const ran = execute(output, ['x']);
     assert.equal(ran.status, 0, ran.stderr ?? String(ran.error));
@@ -209,6 +210,7 @@ test('sign --launcher uses the packaged prefix, so nobody hunts for it', async (
     // Same result as naming shell-base by path, without knowing where it lives.
     assert.deepEqual(FS.readFileSync(output).subarray(0, FS.statSync(SHELL_BASE).size),
         FS.readFileSync(SHELL_BASE));
+    if (WINDOWS) return;
     assert.ok(FS.statSync(output).mode & 0o111);
     const ran = execute(output, ['x']);
     assert.equal(ran.status, 0, ran.stderr ?? String(ran.error));

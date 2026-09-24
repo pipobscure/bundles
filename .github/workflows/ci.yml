@@ -5,6 +5,11 @@
 # API creeping in unnoticed. A pinned version, so a red run means this
 # repository changed, never that a release moved underneath it.
 #
+# Linux and Windows in parallel, because the two differ in ways this package
+# cares about: a `#!` launcher is a unix mechanism, and what replaces it there
+# is a file association and PATHEXT. The publish workflow hangs off this one
+# completing successfully, so nothing is released until both have passed.
+#
 # The executable tests need a node whose --build-sea understands "vfsArchive"
 # (nodejs/node#65810). On one that does not, they skip themselves and say why
 # rather than fail, and they start running on the first node that has it.
@@ -28,9 +33,15 @@ concurrency:
 
 jobs:
   test:
-    name: node 26.10.0
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: 'linux · node 26.10.0' }
+          - { os: windows-latest, name: 'windows · node 26.10.0' }
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,11 +53,30 @@ jobs:
         with:
           node-version: '26.10.0'
 
+      # The test PKI is minted with openssl, which node has no equivalent of —
+      # it can verify certificates but not issue them. Git for Windows ships
+      # one; the runner just does not have it on PATH.
+      - name: Put openssl on PATH (windows)
+        if: runner.os == 'Windows'
+        run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
+
       # `npm install` rather than `npm ci`: package-lock.json is not committed,
       # and `npm ci` refuses to run without one.
       - name: Install dependencies
         run: npm install
 
       # Builds, typechecks and runs the suite — the same command as locally.
+      # The tests that run an archive by name are a unix mechanism and skip
+      # themselves on Windows; the probe below is what covers that there.
       - name: Test
         run: npm test
+
+      # What a `#!` prefix cannot be asked on Windows: whether cmd.exe stops
+      # reading before the archive, whether a link's name reaches argv[1], and
+      # whether the association and PATHEXT writes take. It reports PASS/FAIL
+      # and always exits 0 — these are findings to read, and a runner is an
+      # administrator, which a user often is not.
+      - name: Windows launcher probe
+        if: runner.os == 'Windows'
+        working-directory: examples/echo-argv/windows
+        run: cmd /c probe.cmd

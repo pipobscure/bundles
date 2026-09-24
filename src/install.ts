@@ -90,6 +90,11 @@ export interface InstallOptions {
     allowUntrusted?: boolean | undefined;
     /** Install under this name instead of the one the server suggests. */
     name?: string | undefined;
+    /**
+     * Register `.nzip` and extend PATHEXT on Windows (default: true). Tests turn
+     * it off: a suite should not rewrite the machine it runs on.
+     */
+    associate?: boolean | undefined;
     log?: ((line: string) => void) | undefined;
 }
 
@@ -275,7 +280,7 @@ async function place(bytes: Buffer, { name, dir, url, response, options, log }: 
         throw err;
     }
 
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && options.associate !== false) {
         for (const line of ensureWindowsAssociation(name)) log(`  ${line}`);
     }
 

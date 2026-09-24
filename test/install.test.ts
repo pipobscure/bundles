@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
 import { install, update, uninstall, records, recordPath, fileName, installDir } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
-import { APP, ROOT_PEM, collector, scratch, testSigner, tree } from './helpers.ts';
+import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 
 // Installing from a URL, and keeping it current.
 //
@@ -17,6 +17,14 @@ import { APP, ROOT_PEM, collector, scratch, testSigner, tree } from './helpers.t
 
 const tmp = scratch('install');
 const roots = [ROOT_PEM];
+
+// Installing never touches the registry here: a test suite has no business
+// rewriting the PATHEXT of the machine it runs on. What that code does instead
+// gets `examples/echo-argv/windows/probe.cmd`, and its parsing is unit-tested
+// below. On Windows an archive is named `.nzip` so the association can find it,
+// which is visible in the name every install ends up with.
+const options = { roots, associate: false };
+const installed = (name: string) => (WINDOWS ? `${name}.nzip` : name);
 
 // The record and the install directory are per-process, so the environment is
 // pointed at this suite's scratch space before anything touches them.
@@ -69,19 +77,19 @@ const second = await archive('second');
 test('install verifies before it writes, and records where it came from', async () => {
     served.bytes = first;
     served.etag = '"one"';
-    const record = await install(URL_, { roots });
+    const record = await install(URL_, options);
 
-    assert.equal(record.name, 'tool.run');
+    assert.equal(record.name, installed('tool.run'));
     assert.equal(record.dir, BIN);
     assert.equal(record.url, URL_);
     assert.equal(record.etag, '"one"');
     assert.equal(record.sha256, CRYPTO.createHash('sha256').update(first).digest('hex'));
     assert.match(record.subject ?? '', /Bundle Test Signer/);
 
-    const installed = PATH.join(BIN, 'tool.run');
-    assert.deepEqual(FS.readFileSync(installed), first);
-    if (process.platform !== 'win32') assert.ok(FS.statSync(installed).mode & 0o111, 'executable');
-    assert.deepEqual(Object.keys(records()), ['tool.run']);
+    const file = PATH.join(BIN, installed('tool.run'));
+    assert.deepEqual(FS.readFileSync(file), first);
+    if (!WINDOWS) assert.ok(FS.statSync(file).mode & 0o111, 'executable');
+    assert.deepEqual(Object.keys(records()), [installed('tool.run')]);
     assert.ok(FS.existsSync(recordPath()));
 });
 
@@ -92,7 +100,7 @@ test('an archive that does not verify is never written', async () => {
     served.bytes = tampered;
     served.etag = '"tampered"';
 
-    await assert.rejects(() => install(URL_, { roots, name: 'bad.run' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
+    await assert.rejects(() => install(URL_, { ...options, name: 'bad.run' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
     assert.equal(FS.existsSync(PATH.join(BIN, 'bad.run')), false);
     assert.equal(FS.readdirSync(BIN).some((name) => name.includes('incoming')), false, 'no leftovers');
 });
@@ -100,8 +108,8 @@ test('an archive that does not verify is never written', async () => {
 test('an unanchored chain is refused unless it is asked for', async () => {
     served.bytes = first;
     served.etag = '"one"';
-    await assert.rejects(() => install(URL_, { roots: [], name: 'untrusted.run' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
-    const record = await install(URL_, { roots: [], allowUntrusted: true, name: 'untrusted.run' });
+    await assert.rejects(() => install(URL_, { ...options, roots: [], name: 'untrusted.run' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
+    const record = await install(URL_, { ...options, roots: [], allowUntrusted: true, name: 'untrusted.run' });
     assert.equal(record.name, 'untrusted.run');
     uninstall('untrusted.run');
 });
@@ -110,26 +118,26 @@ test('update asks conditionally, and does nothing when the server says 304', asy
     served.bytes = first;
     served.etag = '"one"';
     const before = hits;
-    const [result] = await update('tool.run', { roots });
+    const [result] = await update(installed('tool.run'), options);
     assert.equal(result!.state, 'unchanged');
     assert.equal(hits, before + 1, 'one request');
-    assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'tool.run')), first);
+    assert.deepEqual(FS.readFileSync(PATH.join(BIN, installed('tool.run'))), first);
 });
 
 test('update replaces the file when the publisher publishes something new', async () => {
     served.bytes = second;
     served.etag = '"two"';
 
-    const [result] = await update('tool.run', { roots });
+    const [result] = await update(installed('tool.run'), options);
     assert.equal(result!.state, 'updated');
     assert.equal(result!.previous, CRYPTO.createHash('sha256').update(first).digest('hex'));
-    assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'tool.run')), second);
-    assert.equal(records()['tool.run']!.etag, '"two"');
+    assert.deepEqual(FS.readFileSync(PATH.join(BIN, installed('tool.run'))), second);
+    assert.equal(records()[installed('tool.run')]!.etag, '"two"');
 });
 
 test('a server with no ETag does not cause a pointless reinstall', async () => {
     served.etag = '';
-    const [result] = await update('tool.run', { roots });
+    const [result] = await update(installed('tool.run'), options);
     assert.equal(result!.state, 'unchanged', 'identical bytes are not an update');
 });
 
@@ -137,21 +145,21 @@ test('update refuses an archive signed by somebody else', async () => {
     // The record pins whoever signed the first install. Here the archive still
     // verifies — it is just not from the identity that was installed.
     const all = records();
-    all['tool.run'] = { ...all['tool.run']!, identity: 'someone@else.example', issuer: 'https://accounts.example' };
+    all[installed('tool.run')] = { ...all[installed('tool.run')]!, identity: 'someone@else.example', issuer: 'https://accounts.example' };
     FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
 
     served.bytes = first;
     served.etag = '"three"';
-    await assert.rejects(() => update('tool.run', { roots }), { code: 'ERR_BUNDLE_UNTRUSTED' });
-    assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'tool.run')), second, 'the installed copy is untouched');
+    await assert.rejects(() => update(installed('tool.run'), options), { code: 'ERR_BUNDLE_UNTRUSTED' });
+    assert.deepEqual(FS.readFileSync(PATH.join(BIN, installed('tool.run'))), second, 'the installed copy is untouched');
 });
 
 test('update with no name checks everything, and uninstall forgets one', async () => {
     served.bytes = first;
     served.etag = '"one"';
-    await install(URL_, { roots, name: 'other.run' });
+    await install(URL_, { ...options, name: 'other.run' });
 
-    const results = await update(undefined, { roots, allowUntrusted: true });
+    const results = await update(undefined, { ...options, allowUntrusted: true });
     assert.equal(results.length, Object.keys(records()).length);
 
     const record = uninstall('other.run');
@@ -164,14 +172,14 @@ test('the installed name comes from the server, and cannot escape the directory'
     const named = (header: string | undefined, url = 'https://example.com/path/tool.run') =>
         fileName(new Response(null, { headers: header ? { 'content-disposition': header } : {} }), url);
 
-    assert.equal(named(undefined), 'tool.run');
-    assert.equal(named('attachment; filename="pnpm.run"'), 'pnpm.run');
-    assert.equal(named("attachment; filename*=UTF-8''pnpm%20cli.run"), 'pnpm cli.run');
+    assert.equal(named(undefined), installed('tool.run'));
+    assert.equal(named('attachment; filename="pnpm.run"'), installed('pnpm.run'));
+    assert.equal(named("attachment; filename*=UTF-8''pnpm%20cli.run"), installed('pnpm cli.run'));
     // A filename is a suggestion from somebody else's server: it names a file,
     // never a path, and never a switch.
-    assert.equal(named('attachment; filename="../../etc/cron.d/x"'), 'x');
-    assert.equal(named('attachment; filename="/etc/passwd"'), 'passwd');
-    assert.equal(named('attachment; filename="-rf"'), 'tool.run', 'falls back to the URL');
+    assert.equal(named('attachment; filename="../../etc/cron.d/x"'), installed('x'));
+    assert.equal(named('attachment; filename="/etc/passwd"'), installed('passwd'));
+    assert.equal(named('attachment; filename="-rf"'), installed('tool.run'), 'falls back to the URL');
     assert.throws(() => named('attachment; filename=".."', 'https://example.com/'), /cannot tell what to call/);
 });
 
