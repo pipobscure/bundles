@@ -83,6 +83,34 @@ able to carry several commands and switch on `basename(process.argv[1])`. It is
 true on Windows too — a copy, a hard link and a symbolic link each arrive as
 their own name — which the suite now checks on every run.
 
+## One rule cmd does not document: do not quote it
+
+A `.nzip` runs when cmd resolves it as a *command*, and a quoted path is not
+one. From a run on Windows:
+
+| what you type | result |
+|---|---|
+| `app.nzip one two` — the name, found on PATH | works |
+| `app one two` — the extension left to PATHEXT | works |
+| `C:\tools\app.nzip one two` — a full path, unquoted | works |
+| `"C:\tools\app.nzip" one two` — the same path, quoted | **refused** |
+
+The refusal is `'"C:\tools\app.nzip"' is not recognized as an internal or
+external command`: quoted, cmd takes the string as a program to execute rather
+than a document to open, and a ZIP is not a program.
+
+This matters because quoting is what you reach for when a path contains spaces —
+and then neither form works, since unquoted splits at the space. The ways out,
+in the order worth trying:
+
+- **Put it on PATH and type its name.** What `bundle install` sets up, and the
+  case this package promises.
+- **`start "" "C:\Program Files\x\app.nzip"`**, which goes through the shell
+  rather than cmd's command resolution. It returns immediately, so it suits a
+  double-click more than a script.
+- **A directory without spaces**, which is why the default install directory has
+  none.
+
 ## Where the tests are
 
 These are not notes any more: they are

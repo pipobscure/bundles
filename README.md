@@ -270,7 +270,10 @@ would freeze a copy of the machine's value into your environment — and then
 broadcasts `WM_SETTINGCHANGE` so a new terminal sees it without a sign-out.
 Both halves are checked before they are written, so installing twice changes
 nothing, and an `.nzip` default set in Windows' app settings is reported rather
-than silently overridden.
+than silently overridden. One Windows quirk worth knowing: cmd runs an archive
+by name, or by an unquoted path, but refuses a *quoted* path — quoted, it looks
+for a program rather than a document. See
+[examples/echo-argv/windows](examples/echo-argv/windows/).
 
 **With no URL it installs this package itself**, from its own published release,
 requiring the identity its [publish workflow](.github/workflows/publish.yml)
