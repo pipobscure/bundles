@@ -223,7 +223,7 @@ Reports one of four states, and exits with the matching code:
 | `valid` | 0 | Hash, signature and every member digest are sound, and the chain is trusted. |
 | `valid-untrusted` | 1 | All of that is sound; the certificate is not one you can place — or a sigstore trust root is missing, or a required identity did not match. |
 | `unsigned` | 3 | No manifest, or a manifest with no signature. |
-| `invalid` | 2 | The bytes changed since signing, a member's digest does not match its content, or the archive no longer parses as a ZIP at all. |
+| `invalid` | 2 | The bytes changed since signing, a member's digest does not match its content, the archive no longer parses as a ZIP, or something was appended after its end. |
 
 Note which side of the line "I could not check" falls on. Not being *able* to verify is
 `valid-untrusted`, never `invalid` — conflating them is how people are trained to click
@@ -676,7 +676,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 173 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 174 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

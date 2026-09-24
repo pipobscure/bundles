@@ -210,6 +210,26 @@ test('the trusted root path is only consulted for the archive that names one', a
     assert.equal(ROOT_PEM.endsWith('root.pem'), true);
 });
 
+test('bytes appended after the archive are invalid, because nothing signs them', async () => {
+    // The hash covers everything up to the EOCD's comment, where the signature
+    // lives — so the comment has to be the end of the file. It was not enforced:
+    // a signed archive could be given a tail of arbitrary data and still verify,
+    // because the EOCD scan fell back to accepting a record that ended early.
+    // A ZIP reader ignores such a tail. A reader of some other format may not.
+    const archive = await build(source, PATH.join(tmp, 'appended.nzip'));
+    assert.equal(verifySync(archive, { extraRoots: roots }).state, 'valid');
+
+    FS.appendFileSync(archive, Buffer.alloc(4096));
+    const res = verifySync(archive, { extraRoots: roots });
+    assert.equal(res.state, 'invalid');
+    assert.match(res.reason, /bytes follow the end of the archive/);
+
+    // Even one byte, and even one that looks like the start of something.
+    const single = await build(source, PATH.join(tmp, 'appended-one.nzip'));
+    FS.appendFileSync(single, Buffer.from([0x50]));
+    assert.equal(verifySync(single, { extraRoots: roots }).state, 'invalid');
+});
+
 test('an archive whose structure is broken is invalid, not an error', async () => {
     // Damage that breaks the ZIP itself — here, a member's size in the central
     // directory, which now runs past the end of the file — has altered the

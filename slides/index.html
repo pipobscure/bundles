@@ -933,7 +933,7 @@ exec node --experimental-vfs \
 <span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.nzip bs=1 seek=9000 \
       conv=notrunc
 <span class="p">$</span> bundle verify app.nzip
-<span class="r">INVALID</span> — recorded hash does not match content</div>
+<span class="r">INVALID</span> — archive hash does not match the recorded hash</div>
       <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
 <span class="p">$</span> ./app.nzip Grace
 <span class="o">hello, Grace</span>   <span class="c"># ← runs fine</span></div>
@@ -943,21 +943,23 @@ exec node --experimental-vfs \
         <p style="font-size:18px;line-height:1.48;color:var(--ink)">That last one is not a bug. Node was asked to run
           a zip, so it ran a zip. <b style="color:var(--accent)">Caring is something you switch on.</b></p>
       </div>
-      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># now install a provider that has an opinion</span>
-<span class="p">$</span> node --experimental-vfs <span class="y">-r @pipobscure/bundle/register</span> \
-    --vfs-load=app.nzip
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># now mount it through a provider that has an opinion</span>
+<span class="c"># (the same as: node -r @pipobscure/bundle/register \</span>
+<span class="c">#                    --experimental-vfs --vfs-load=app.nzip)</span>
+<span class="p">$</span> bundle <span class="y">run</span> app.nzip Grace
 
-<span class="r">Error [ERR_BUNDLE_UNTRUSTED]</span>: archive failed verification
-<span class="c">    at BundleProvider.open (…/provider.js)</span></div>
-      <p class="sub" style="font-size:16px;max-width:42ch">The throw happens during <b style="color:var(--ink)">provider
-        selection</b> &mdash; before the entry point is resolved. Not because Node objects, but because
-        <i>you</i> loaded something that does.</p>
+<span class="r">error</span>: refusing to run 'app.nzip': <span class="r">invalid</span>
+  — archive hash does not match the recorded hash</div>
+      <p class="sub" style="font-size:16px;max-width:42ch">Refused <b style="color:var(--ink)">before it becomes a
+        filesystem</b> &mdash; the entry point is never resolved, so nothing inside it runs. Not because Node
+        objects, but because <i>you</i> loaded something that does.</p>
     </div>
   </div>
-  <div class="kicker"><span class="mono">policy is a -r flag away</span><span>0F</span></div>
+  <div class="kicker"><span class="mono">policy is a preload away</span><span>0F</span></div>
   <div class="notes" hidden>
     <p><b>The running-the-broken-one beat matters.</b> It looks like a failure; it's the design working. Say clearly: <i>"Node ran the tampered archive, and that is correct. Node's job is loading, not judging."</i></p>
-    <p><b>Then the turn:</b> add one <em>-r</em> flag, and the same file is refused — by a library, which you chose, and could replace tomorrow with one that checks something else entirely.</p>
+    <p><b>Then the turn:</b> mount it through the verifying provider and the same file is refused — by a library, which you chose, and could replace tomorrow with one that checks something else entirely.</p>
+    <p><b>On the command:</b> <em>bundle run</em> is the short way to say <em>node -r @pipobscure/bundle/register --experimental-vfs --vfs-load=app.nzip</em>, which is what the comment above it spells out — worth reading aloud once, because the point of the slide is that the policy arrives as a preload you chose rather than as something the runtime does. Anything after the archive is the program's own argv.</p>
     <p><b>Prep:</b> <em>cp app.nzip /tmp/app.nzip.bak</em> before the dd, restore straight after, or every later demo breaks.</p>
     <p>Order: valid → tampered/invalid → <b>runs anyway</b> → opt in → refused. Don't reorder; the punchline needs the setup.</p>
     <p><b>Sigstore:</b> if the live signing path isn't ready, verify a pre-signed artifact and say the signing ran in CI. Keep the <b>identity</b> on screen — "signed by this repo, by this workflow" is the point, and it beats <em>CN=Test Signer</em> as a demo. <b>Don't get into certificate lifetimes on stage</b> — that's an implementation detail of the tool, not of the argument. Prepared answer at the end if anyone asks.</p>

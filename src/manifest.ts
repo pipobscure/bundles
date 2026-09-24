@@ -209,16 +209,24 @@ export function verifySync(source: ArchiveSource, options: VerifyOptions = {}): 
         // as surely as one whose hash is wrong, so it gets the same answer. A
         // file that is missing or unreadable is still an error: there is
         // nothing there to call invalid.
-        if (isZipError(err)) return result('invalid', `not a readable ZIP archive: ${message(err)}`);
+        if (isStructuralError(err)) {
+            const reason = (err as { code?: string }).code === 'ERR_BUNDLE_TRAILING_BYTES'
+                ? message(err)
+                : `not a readable ZIP archive: ${message(err)}`;
+            return result('invalid', reason);
+        }
         throw err;
     } finally {
         if (!options.archive) reader?.close();
     }
 }
 
-function isZipError(err: unknown): boolean {
+// Damage to the *structure* rather than to the contents: a file that no longer
+// parses as a ZIP, or one with bytes after the end of the archive. Both mean
+// the same thing to a caller — this is not the archive that was signed.
+function isStructuralError(err: unknown): boolean {
     const code = (err as { code?: unknown } | null)?.code;
-    return typeof code === 'string' && code.startsWith('ERR_ZIP_');
+    return typeof code === 'string' && (code.startsWith('ERR_ZIP_') || code === 'ERR_BUNDLE_TRAILING_BYTES');
 }
 
 /**
@@ -509,20 +517,28 @@ function bufferSource(buf: Buffer): Source {
 // The EOCD must be the last structure in the file, so its comment runs to EOF.
 function locateEocd(tail: Buffer, size: number): { start: number; comment: Buffer } {
     const floor = Math.max(0, tail.length - (22 + 0xffff));
-    const scan = (exact: boolean) => {
-        for (let pos = tail.length - 22; pos >= floor; pos--) {
-            if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
-            const end = pos + 22 + tail.readUInt16LE(pos + 20);
-            if (exact ? end !== tail.length : end > tail.length) continue;
-            return pos;
-        }
-        return -1;
-    };
-    let pos = scan(true);
-    if (pos < 0) pos = scan(false);
-    if (pos < 0) throw new Error('no end of central directory record found');
-    const clen = tail.readUInt16LE(pos + 20);
-    return { start: size - tail.length + pos, comment: tail.subarray(pos + 22, pos + 22 + clen) };
+    // The EOCD's comment must end at the end of the file, and that is not a
+    // nicety: the hash covers everything up to the comment, so anything *after*
+    // it would be bytes nobody signed. Accepting an EOCD that ends early — as
+    // this used to, as a fallback — let a signed archive be given a tail of
+    // arbitrary data while still verifying. A ZIP reader ignores that tail; a
+    // reader of some other format may not.
+    for (let pos = tail.length - 22; pos >= floor; pos--) {
+        if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
+        const clen = tail.readUInt16LE(pos + 20);
+        if (pos + 22 + clen !== tail.length) continue;
+        return { start: size - tail.length + pos, comment: tail.subarray(pos + 22, pos + 22 + clen) };
+    }
+    // Say which of the two it is, because they mean different things: a file
+    // that is not a ZIP at all, or one with something appended to it.
+    for (let pos = tail.length - 22; pos >= floor; pos--) {
+        if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
+        const end = pos + 22 + tail.readUInt16LE(pos + 20);
+        throw Object.assign(
+            new Error(`${tail.length - end} bytes follow the end of the archive, and nothing signs them`),
+            { code: 'ERR_BUNDLE_TRAILING_BYTES' });
+    }
+    throw new Error('no end of central directory record found');
 }
 
 function openArchive(path: string): ZLIB.ZipFile {

@@ -338,7 +338,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.run`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 173 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 174 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -543,7 +543,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.run
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 173 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 174 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -610,7 +610,14 @@ One hash covers the *entire file* — the prepended launcher or Node/SEA binary,
 the complete central directory (member digests included) and the fixed part of the EOCD
 record — up to but **excluding the EOCD's 2-byte comment-length field**. The EOCD must be the
 last structure in the file, so the hashed region is simply everything before its trailing
-comment. The leaf certificate then signs **that hash** (not the file), and the EOCD comment —
+comment.
+
+That "must" is now checked rather than assumed, and it was worth checking: verification
+located the EOCD by scanning backwards and, failing to find one whose comment ended exactly
+at the end of the file, accepted one that ended early. Appending arbitrary bytes to a signed
+archive therefore left it `valid` — the tail was outside the hashed region, and a ZIP reader
+ignores it, but a reader of some other format need not. An archive with anything after its
+EOCD comment is now `invalid`, and says how many bytes follow. The leaf certificate then signs **that hash** (not the file), and the EOCD comment —
 which the hash deliberately stops short of — records both:
 
 ```
@@ -1370,7 +1377,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/ci.yml       build, typecheck and test on node 26.10.0
   .github/workflows/publish.yml  the release pipeline: publishes any version npm lacks
-  test/           173 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           174 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/
