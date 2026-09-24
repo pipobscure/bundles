@@ -91,8 +91,10 @@ export interface InstallOptions {
     /** Install under this name instead of the one the server suggests. */
     name?: string | undefined;
     /**
-     * Register `.nzip` and extend PATHEXT on Windows (default: true). Tests turn
-     * it off: a suite should not rewrite the machine it runs on.
+     * Register `.nzip` and extend PATHEXT on Windows (default: true, or false
+     * when `BUNDLE_NO_WINDOWS_SETUP` is set). Turn it off when something else
+     * owns the association — an installer, or a test suite, which has no
+     * business rewriting the machine it runs on.
      */
     associate?: boolean | undefined;
     log?: ((line: string) => void) | undefined;
@@ -280,7 +282,8 @@ async function place(bytes: Buffer, { name, dir, url, response, options, log }: 
         throw err;
     }
 
-    if (process.platform === 'win32' && options.associate !== false) {
+    const associating = options.associate ?? !process.env['BUNDLE_NO_WINDOWS_SETUP'];
+    if (process.platform === 'win32' && associating) {
         for (const line of ensureWindowsAssociation(name)) log(`  ${line}`);
     }
 
