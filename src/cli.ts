@@ -90,11 +90,14 @@ verify options:                     usage: verify [options] <archive>
       --sigstore-root <file>  sigstore trust root (default: the cache 'trust' fills)
       --json            print the result as JSON
 
-run options:                        usage: run [options] <archive> [-- <app args>]
+run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
       --untrusted       run an archive whose signature is good but untrusted
+
+  these options come before the archive; everything after it is the program's,
+  flags included. A '--' is accepted there too, for the habit.
 
 sea options:                        usage: sea [options] [archive]
   -o, --output <file>   write the executable here (required)
@@ -349,24 +352,59 @@ export function report(res: VerificationResult, json: boolean, io: Console): voi
     if (res.subject && !res.identity) io.out(`  certificate: ${res.subject.replace(/\n/g, ', ')}`);
 }
 
-// Check an archive, mount it, and run what is inside — in this process, the
-// way a verifying runtime does. Everything after `--` is the application's own
-// argv.
+const RUN_OPTIONS = {
+    root:      { type: 'string',  short: 'r', multiple: true },
+    identity:  { type: 'string' },
+    issuer:    { type: 'string' },
+    untrusted: { type: 'boolean' },
+} as const;
+
+/**
+ * Split `run`'s own arguments from the application's.
+ *
+ * This command is the one that forwards, so it stops as soon as it reaches
+ * something that is not its own: options up to the archive belong to `run`, and
+ * **everything after the archive belongs to the program**, flags included. That
+ * is what makes
+ *
+ *     bundle run ./app verify ./app
+ *
+ * mean what it looks like, rather than quietly handing `verify` to a positional
+ * that nothing reads. `--` is still accepted, and still ends the discussion —
+ * it is only no longer required.
+ */
+export function splitRunArgs(args: string[]): { mine: string[]; archive?: string | undefined; theirs: string[] } {
+    const takesValue = new Set(['--root', '-r', '--identity', '--issuer']);
+    const mine: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]!;
+        if (arg === '--') return { mine, archive: args[i + 1], theirs: args.slice(i + 2) };
+        // A `--name=value` carries its own value; a bare `--name` eats the next
+        // argument, and must, or the archive would be read out of it.
+        if (arg.startsWith('-') && arg !== '-') {
+            mine.push(arg);
+            if (takesValue.has(arg) && !arg.includes('=')) {
+                const value = args[++i];
+                if (value !== undefined) mine.push(value);
+            }
+            continue;
+        }
+        // The first thing that is not an option is the archive, and the program
+        // owns everything after it — including a leading `--`, which people
+        // write out of habit.
+        const rest = args.slice(i + 1);
+        return { mine, archive: arg, theirs: rest[0] === '--' ? rest.slice(1) : rest };
+    }
+    return { mine, theirs: [] };
+}
+
+// Check an archive, mount it, and run what is inside — in this process, the way
+// a verifying runtime does. Everything after the archive is the application's
+// own argv.
 async function run(args: string[], io: Console): Promise<number> {
-    const split = args.indexOf('--');
-    const mine = split < 0 ? args : args.slice(0, split);
-    const theirs = split < 0 ? [] : args.slice(split + 1);
-    const { values, positionals } = parseArgs({
-        args: mine,
-        allowPositionals: true,
-        options: {
-            root:      { type: 'string', short: 'r', multiple: true },
-            identity:  { type: 'string' },
-            issuer:    { type: 'string' },
-            untrusted: { type: 'boolean' },
-        },
-    });
-    const archive = positionals[0];
+    const { mine, archive, theirs } = splitRunArgs(args);
+    const { values } = parseArgs({ args: mine, allowPositionals: false, options: RUN_OPTIONS });
     if (!archive) throw new Error('run: an archive path is required');
 
     try {

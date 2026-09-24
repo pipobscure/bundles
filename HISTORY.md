@@ -338,7 +338,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 171 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 173 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -543,7 +543,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.bundle
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 171 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 173 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -1356,7 +1356,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/ci.yml       build, typecheck and test on node 26.10.0
   .github/workflows/publish.yml  the release pipeline: publishes any version npm lacks
-  test/           171 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           173 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/

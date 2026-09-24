@@ -75,7 +75,7 @@ answer every question about it without running anything. See
 Running it by name does not verify it — the kernel gives a `#!` launcher no preload to carry
 a provider, and this package says so rather than pretending otherwise. Verification is a
 separate act, done with a copy of `bundle` you already trust: `bundle verify bundle.nzip` to
-check it, or `bundle run bundle.nzip -- <args>` to execute it through the verifying mount.
+check it, or `bundle run bundle.nzip <args>` to execute it through the verifying mount.
 
 ---
 
@@ -238,13 +238,16 @@ different bytes, a verdict reached against a different baseline, or one that fai
 ### `run`
 
 ```sh
-bundle run --root ca.pem app.signed.bundle -- --your --app --args
+bundle run --root ca.pem app.signed.bundle --your --app --args
 ```
 
 Checks the archive, mounts it through the verifying provider, and runs what is inside — in
 this process, the way a verifying runtime does. Every member is re-hashed against its signed
-digest as it is read, for as long as the process lives. Everything after `--` is the
-application's argv.
+digest as it is read, for as long as the process lives.
+
+**`run`'s own options come before the archive, and everything after it belongs to the
+program** — flags included, since `run` has already had its turn. A `--` is accepted there
+too, for the habit, but it is not needed.
 
 There is no child and no preload: the provider is already registered in the process doing
 the mounting. What that costs is isolation — the application shares the process, with this
@@ -658,7 +661,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 171 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 173 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

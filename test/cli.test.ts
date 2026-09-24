@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { main, USAGE, STATES, COMMANDS } from '../src/cli.ts';
+import { main, USAGE, STATES, COMMANDS, splitRunArgs } from '../src/cli.ts';
 import { createBundle } from '../src/api.ts';
 import {
     APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, WINDOWS,
@@ -196,6 +196,52 @@ test('skill refuses a name the package does not carry', async () => {
     const io = collector();
     assert.equal(await main(['skill', '--dir', PATH.join(tmp, 'x'), 'nonesuch'], io), 70);
     assert.match(io.stderr.join('\n'), /unknown skill: nonesuch/);
+});
+
+test('run stops at the archive, and the program gets the rest', () => {
+    // The bug this replaces: `bundle run ./app verify ./app` parsed `verify`
+    // and the second path as positionals of `run`, which reads only the first —
+    // so the program started with no arguments and printed its usage. It worked
+    // only if you knew to write `--`.
+    const withRest = splitRunArgs(['--root', 'ca.pem', './app', 'verify', './app']);
+    assert.deepEqual(withRest.mine, ['--root', 'ca.pem']);
+    assert.equal(withRest.archive, './app');
+    assert.deepEqual(withRest.theirs, ['verify', './app']);
+
+    // Everything after the archive is the program's, flags included: `run` has
+    // already had its turn.
+    assert.deepEqual(splitRunArgs(['./app', '--root', 'x', '--untrusted']).theirs,
+        ['--root', 'x', '--untrusted']);
+
+    // `--` still works, wherever it falls, and is not passed on.
+    assert.deepEqual(splitRunArgs(['./app', '--', '--root', 'x']).theirs, ['--root', 'x']);
+    const dashed = splitRunArgs(['--untrusted', '--', './app', 'a', 'b']);
+    assert.deepEqual([dashed.mine, dashed.archive, dashed.theirs], [['--untrusted'], './app', ['a', 'b']]);
+
+    // An option that takes a value eats it, so the value is never mistaken for
+    // the archive — in either spelling.
+    assert.equal(splitRunArgs(['--identity', 'me@example.com', './app']).archive, './app');
+    assert.equal(splitRunArgs(['--identity=me@example.com', './app']).archive, './app');
+
+    // Nothing at all, and an option with nothing after it.
+    assert.equal(splitRunArgs([]).archive, undefined);
+    assert.equal(splitRunArgs(['--untrusted']).archive, undefined);
+});
+
+test('run passes the program its arguments without needing a separator', async () => {
+    const unsigned = PATH.join(tmp, 'forwarding.bundle');
+    const signed = PATH.join(tmp, 'forwarding.signed.bundle');
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+    await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], collector());
+
+    const plain = cli(['run', '--root', ROOT_PEM, signed, 'verify', signed]);
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /hello from a signed bundle \[sub\] verify,/);
+
+    // ...and the same with the separator, because people write it.
+    const dashed = cli(['run', '--root', ROOT_PEM, signed, '--', 'verify', signed]);
+    assert.equal(dashed.status, 0, dashed.stderr);
+    assert.equal(dashed.stdout, plain.stdout);
 });
 
 test('sign --launcher uses the packaged prefix, so nobody hunts for it', async () => {
