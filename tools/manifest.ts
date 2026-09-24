@@ -74,8 +74,8 @@ function observe(): string[] {
         const entry = PATH.join(ROOT, 'tools', 'observe.ts');
         const list = PATH.join(scratch, 'members.txt');
         FS.writeFileSync(list, 'package.json\n');
-        const archive = PATH.join(scratch, 'observed.bundle');
-        const signed = PATH.join(scratch, 'observed.signed.bundle');
+        const archive = PATH.join(scratch, 'observed.run');
+        const signed = PATH.join(scratch, 'observed.signed.nzip');
         // The observation has to take the signing and verifying paths to be worth
         // anything, and that needs a credential; a throwaway one, generated here.
         const pki = ensureTestPki();

@@ -13,8 +13,8 @@ just the three lines it prints.
 
 ```sh
 printf 'package.json\nindex.ts\n' > echo-argv.manifest
-bundle create --base examples/echo-argv --files echo-argv.manifest --output echo-argv.bundle
-bundle sign --launcher --output echo-argv.run echo-argv.bundle
+bundle create --base examples/echo-argv --files echo-argv.manifest --output echo-argv.run
+bundle sign --launcher --output echo-argv.nzip echo-argv.run
 ```
 
 `--launcher` prepends the `#!/bin/sh` prefix this package ships, so the result
@@ -26,16 +26,16 @@ test PKI (`node tools/testpki.ts`) is for.
 
 ```sh
 node --experimental-vfs --vfs-load=examples/echo-argv -- a b     # from source
-./echo-argv.run a b                                              # the launcher
-bundle run --root root.pem echo-argv.run -- a b                  # verifying mount
-node --experimental-vfs --vfs-load=echo-argv.run -- a b          # mounted by hand
+./echo-argv.nzip a b                                              # the launcher
+bundle run --root root.pem echo-argv.nzip a b                     # verifying mount
+node --experimental-vfs --vfs-load=echo-argv.nzip -- a b          # mounted by hand
 ```
 
 All four print the same three lines:
 
 ```
 runtime: /path/to/node
-source:  /path/to/echo-argv.run
+source:  /path/to/echo-argv.nzip
 args:    ["a","b"]
 ```
 
@@ -55,8 +55,8 @@ see which name was used. The launcher prefix passes `"$0"` to `--vfs-load`, and
 at. Node passes that string through to `argv[1]` without resolving it:
 
 ```sh
-ln -s echo-argv.run greet
-ln -s echo-argv.run farewell
+ln -s echo-argv.nzip greet
+ln -s echo-argv.nzip farewell
 
 ./greet x        # source:  /path/to/greet
 ./farewell x     # source:  /path/to/farewell

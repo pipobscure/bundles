@@ -149,7 +149,7 @@ export function register(options: RecorderOptions = {}): Manifest | null {
     VFS.registerProvider({
         name: options.name ?? 'bundle-manifest',
         // Directory mounts only: an archive mount has its own provider (and,
-        // for a `.bundle`, one that verifies what it serves), and quietly
+        // for a `.nzip`, one that verifies what it serves), and quietly
         // replacing it here would be the wrong trade for a file list.
         canHandle: (_resolvedPath, stats) => stats.isDirectory(),
         create: (resolvedPath) => new Recording(resolvedPath),

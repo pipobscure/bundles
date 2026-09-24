@@ -47,7 +47,7 @@ test('an unknown command is reported rather than ignored', async () => {
 });
 
 test('create builds an archive from a file list and names its members', async () => {
-    const output = PATH.join(tmp, 'created.bundle');
+    const output = PATH.join(tmp, 'created.run');
     const io = collector();
     assert.equal(await main(['create', '--base', source, '--files', list, '--output', output], io), 0);
     assert.ok(FS.existsSync(output));
@@ -62,8 +62,8 @@ test('create refuses a key without a chain', async () => {
 });
 
 test('sign, then verify, agree about an archive', async () => {
-    const unsigned = PATH.join(tmp, 'plain.bundle');
-    const signed = PATH.join(tmp, 'plain.signed.bundle');
+    const unsigned = PATH.join(tmp, 'plain.run');
+    const signed = PATH.join(tmp, 'plain.signed.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
 
     const signing = collector();
@@ -83,8 +83,8 @@ test('sign, then verify, agree about an archive', async () => {
 });
 
 test('verify --json reports the same conclusion in a form a script can read', async () => {
-    const unsigned = PATH.join(tmp, 'json.bundle');
-    const signed = PATH.join(tmp, 'json.signed.bundle');
+    const unsigned = PATH.join(tmp, 'json.run');
+    const signed = PATH.join(tmp, 'json.signed.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], collector());
 
@@ -99,7 +99,7 @@ test('verify --json reports the same conclusion in a form a script can read', as
 });
 
 test('verify reports an unsigned archive as unsigned, with its own exit code', async () => {
-    const archive = PATH.join(tmp, 'bare.bundle');
+    const archive = PATH.join(tmp, 'bare.run');
     await createBundle({ base: source, files: Object.keys(APP), output: archive });
     const io = collector();
     assert.equal(await main(['verify', archive], io), STATES.unsigned.code);
@@ -107,21 +107,21 @@ test('verify reports an unsigned archive as unsigned, with its own exit code', a
 });
 
 test('verify takes the archive as an option as well as a positional', async () => {
-    const archive = PATH.join(tmp, 'bare.bundle');
+    const archive = PATH.join(tmp, 'bare.run');
     const io = collector();
     assert.equal(await main(['verify', '--archive', archive], io), STATES.unsigned.code);
 });
 
 test('the CLI refuses to write over the archive it is signing', () => {
     const res = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
-        '--output', PATH.join(tmp, 'bare.bundle'), PATH.join(tmp, 'bare.bundle')]);
+        '--output', PATH.join(tmp, 'bare.run'), PATH.join(tmp, 'bare.run')]);
     assert.notEqual(res.status, 0);
     assert.match(res.stderr, /must differ from the input/);
 });
 
 test('an archive signed through the CLI verifies and runs from its shebang', async () => {
-    const unsigned = PATH.join(tmp, 'runnable.bundle');
-    const output = PATH.join(tmp, 'runnable.run');
+    const unsigned = PATH.join(tmp, 'runnable.run');
+    const output = PATH.join(tmp, 'runnable.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
 
     const signed = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
@@ -152,8 +152,8 @@ test('an archive signed through the CLI verifies and runs from its shebang', asy
 });
 
 test('run mounts a valid archive, and refuses one it cannot vouch for', async () => {
-    const unsigned = PATH.join(tmp, 'runme.bundle');
-    const signed = PATH.join(tmp, 'runme.signed.bundle');
+    const unsigned = PATH.join(tmp, 'runme.run');
+    const signed = PATH.join(tmp, 'runme.signed.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], collector());
 
@@ -229,8 +229,8 @@ test('run stops at the archive, and the program gets the rest', () => {
 });
 
 test('run passes the program its arguments without needing a separator', async () => {
-    const unsigned = PATH.join(tmp, 'forwarding.bundle');
-    const signed = PATH.join(tmp, 'forwarding.signed.bundle');
+    const unsigned = PATH.join(tmp, 'forwarding.run');
+    const signed = PATH.join(tmp, 'forwarding.signed.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], collector());
 
@@ -245,8 +245,8 @@ test('run passes the program its arguments without needing a separator', async (
 });
 
 test('sign --launcher uses the packaged prefix, so nobody hunts for it', async () => {
-    const unsigned = PATH.join(tmp, 'launcher.bundle');
-    const output = PATH.join(tmp, 'launcher.run');
+    const unsigned = PATH.join(tmp, 'launcher.run');
+    const output = PATH.join(tmp, 'launcher.nzip');
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
 
     const io = collector();
@@ -266,12 +266,12 @@ test('sign --launcher uses the packaged prefix, so nobody hunts for it', async (
 test('--launcher and --prefix are alternatives, not a pair', async () => {
     const io = collector();
     assert.equal(await main(['sign', '--launcher', '--prefix', SHELL_BASE,
-        PATH.join(tmp, 'bare.bundle')], io), 70);
+        PATH.join(tmp, 'bare.run')], io), 70);
     assert.match(io.stderr.join('\n'), /--launcher and --prefix are alternatives/);
 });
 
 test('audit reports what is about to be reviewed, and gates signing on it', async () => {
-    const archive = PATH.join(tmp, 'gated.bundle');
+    const archive = PATH.join(tmp, 'gated.run');
     const verdict = PATH.join(tmp, 'gated.audit.json');
     await createBundle({ base: source, files: Object.keys(APP), output: archive });
 
@@ -295,7 +295,7 @@ test('audit reports what is about to be reviewed, and gates signing on it', asyn
 
 test('sea needs somewhere to put the result, and rejects what it cannot do', async () => {
     const missingOutput = collector();
-    assert.equal(await main(['sea', PATH.join(tmp, 'bare.bundle')], missingOutput), 70);
+    assert.equal(await main(['sea', PATH.join(tmp, 'bare.run')], missingOutput), 70);
     assert.match(missingOutput.stderr.join('\n'), /--output is required/);
 
     // Without an archive the result is a verifying node, which carries no

@@ -87,7 +87,7 @@ moving window over the recent past, not a complete history. The caption says so.
   `bundle.nzip`, and that `package.json`'s `bin` still points straight at it — the slide's
   whole point is that there is no wrapper script, and a regression there makes it false.
 - **Terminal hygiene:** font size up, scrollback cleared, short prompt, already `cd`'d in,
-  and `cp app.run /tmp/app.run.bak` before the tamper demo so the later demos still work.
+  and `cp app.nzip /tmp/app.nzip.bak` before the tamper demo so the later demos still work.
 - **Pre-build the artifacts** so a failed network call on stage costs you nothing. The test
   PKI is generated rather than committed, so this now starts with `npm run testpki`:
 
@@ -95,9 +95,9 @@ moving window over the recent past, not a complete history. The caption says so.
   npm run build && npm run testpki
   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
       -r @pipobscure/bundle/record --vfs-load=./app -- Ada
-  npx bundle create --base ./app -f app.manifest -o app.bundle
+  npx bundle create --base ./app -f app.manifest -o app.run
   npx bundle sign --launcher \
-      --key build/certs/leaf.key --chain build/certs/chain.pem -o app.run app.bundle
+      --key build/certs/leaf.key --chain build/certs/chain.pem -o app.nzip app.run
   ```
 
   The demo is deliberately two commands — `create` then `sign` — because signing is a
@@ -108,11 +108,11 @@ moving window over the recent past, not a complete history. The caption says so.
   that way when you edit — a demo that only works from this checkout is a demo of nothing.
   The example app is a three-file greeter with one deliberately unused module, so the
   manifest has something to leave out.
-- **`head -c 77 app.run` on `0x0F` shows the current prefix**, which is a two-line
+- **`head -c 77 app.nzip` on `0x0F` shows the current prefix**, which is a two-line
   `#!/bin/sh` that `exec`s node with `--vfs-load="$0"` and a `--`. If you are tempted to
   describe it as the `env -S` one-liner, don't: that form is prettier and broken, because the
   user's arguments land after the kernel-appended path with nowhere to put the `--`, so
-  `app.run --help` prints node's help. Slide `0x0A` still describes the trailing-flag trick
+  `app.nzip --help` prints node's help. Slide `0x0A` still describes the trailing-flag trick
   correctly — that is about the flag, not about this prefix. The byte count moved from 89 to
   77 when `--vfs-load` started naming its source; re-check it if the prefix changes again.
 

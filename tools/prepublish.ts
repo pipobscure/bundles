@@ -29,7 +29,7 @@ import { STATES } from '../src/cli.ts';
 
 const ROOT = packageRoot();
 const ARCHIVE = PATH.join(ROOT, 'bundle.nzip');
-const FRESH = PATH.join(ROOT, 'build', 'cli.bundle');
+const FRESH = PATH.join(ROOT, 'build', 'cli.run');
 
 if (!FS.existsSync(ARCHIVE)) {
     fail(`there is no signed CLI at ${rel(ARCHIVE)}.\n` +

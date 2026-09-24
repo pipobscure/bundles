@@ -14,7 +14,7 @@ import { handle } from './lib/serve.ts';
 // the part a bundler cannot do for you.
 //
 //   node --experimental-vfs --vfs-load=. ./site docs.zip
-//   ./static-server.run ./site docs.zip
+//   ./static-server.nzip ./site docs.zip
 //
 // The second form is this same tree signed behind the launcher prefix this
 // package ships. Everything after the archive's own name reaches this program,

@@ -19,7 +19,7 @@ const tmp = scratch('audit');
 const source = tree(tmp);
 test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
 
-const BUNDLE = PATH.join(tmp, 'audited.bundle');
+const BUNDLE = PATH.join(tmp, 'audited.run');
 await createBundle({ base: source, files: Object.keys(APP), output: BUNDLE });
 const SHA = CRYPTO.createHash('sha256').update(FS.readFileSync(BUNDLE)).digest('hex');
 
@@ -52,7 +52,7 @@ test('preparing refuses a signed archive that does not hold together', async () 
     // Only a *signed* archive can be shown to have changed — that is what the
     // signature is for. An unsigned one has nothing to check it against, which
     // is the honest reason step 3 comes before step 4 rather than after.
-    const signed = PATH.join(tmp, 'signed.bundle');
+    const signed = PATH.join(tmp, 'signed.nzip');
     await signBundle({ source: BUNDLE, output: signed, signer: testSigner() });
     const bytes = FS.readFileSync(signed);
     const at = bytes.indexOf(Buffer.from(CRYPTO.createHash('sha256').update(APP['greet.js']!).digest('hex'), 'ascii'));
@@ -66,7 +66,7 @@ test('preparing refuses a signed archive that does not hold together', async () 
 });
 
 test('preparing refuses something that is not an archive at all', () => {
-    const junk = PATH.join(tmp, 'junk.bundle');
+    const junk = PATH.join(tmp, 'junk.run');
     FS.writeFileSync(junk, 'this is not a zip file');
     const res = audit([junk, '--verdict', verdictPath()]);
     assert.notEqual(res.status, 0);
@@ -160,7 +160,7 @@ test('an approval does not survive the archive changing under it', () => {
     const verdict = verdictPath();
     audit(['--approve', BUNDLE, '--verdict', verdict, '--note', 'fine']);
 
-    const rebuilt = PATH.join(tmp, 'rebuilt.bundle');
+    const rebuilt = PATH.join(tmp, 'rebuilt.run');
     FS.copyFileSync(BUNDLE, rebuilt);
     const bytes = FS.readFileSync(rebuilt);
     bytes.writeUInt8(bytes.readUInt8(bytes.length - 1) ^ 0x01, bytes.length - 1);
@@ -172,7 +172,7 @@ test('an approval does not survive the archive changing under it', () => {
 });
 
 test('there is nothing to audit when the archive is not there', () => {
-    const res = audit([PATH.join(tmp, 'nope.bundle'), '--verdict', verdictPath()]);
+    const res = audit([PATH.join(tmp, 'nope.run'), '--verdict', verdictPath()]);
     assert.notEqual(res.status, 0);
     assert.match(res.stderr, /there is no archive at/);
 });
@@ -186,18 +186,18 @@ test('there is nothing to audit when the archive is not there', () => {
 test('a baseline on disk is reported, with what changed', async () => {
     const dir = PATH.join(tmp, 'baseline-case');
     FS.mkdirSync(dir, { recursive: true });
-    const baseline = PATH.join(dir, 'baseline.bundle');
+    const baseline = PATH.join(dir, 'baseline.run');
     await createBundle({ base: source, files: ['package.json', 'index.js'], output: baseline });
 
     const res = audit([BUNDLE, '--baseline', baseline, '--verdict', verdictPath()]);
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /2 added, 0 removed/);
     assert.match(res.stdout, /\+ greet\.js/);
-    assert.match(res.stdout, /against .*baseline\.bundle/);
+    assert.match(res.stdout, /against .*baseline\.run/);
 });
 
 test('with no baseline the review is of everything, and says so', () => {
-    const res = audit([BUNDLE, '--baseline', PATH.join(tmp, 'absent.bundle'), '--verdict', verdictPath()]);
+    const res = audit([BUNDLE, '--baseline', PATH.join(tmp, 'absent.run'), '--verdict', verdictPath()]);
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /no baseline — the review is of everything, not a diff/);
 });
@@ -205,7 +205,7 @@ test('with no baseline the review is of everything, and says so', () => {
 test('the gate refuses a verdict reached against a different baseline', async () => {
     const dir = PATH.join(tmp, 'baseline-stale');
     FS.mkdirSync(dir, { recursive: true });
-    const baseline = PATH.join(dir, 'baseline.bundle');
+    const baseline = PATH.join(dir, 'baseline.run');
     await createBundle({ base: source, files: ['package.json'], output: baseline });
 
     const verdict = write(verdictPath(), {
@@ -219,7 +219,7 @@ test('the gate refuses a verdict reached against a different baseline', async ()
 test('a verdict that records no baseline is accepted as a full review, with a note', async () => {
     const dir = PATH.join(tmp, 'baseline-full');
     FS.mkdirSync(dir, { recursive: true });
-    const baseline = PATH.join(dir, 'baseline.bundle');
+    const baseline = PATH.join(dir, 'baseline.run');
     await createBundle({ base: source, files: ['package.json'], output: baseline });
 
     const verdict = write(verdictPath(), {
@@ -232,7 +232,7 @@ test('a verdict that records no baseline is accepted as a full review, with a no
 test('the gate accepts a diff verdict pinned to the baseline that is there', async () => {
     const dir = PATH.join(tmp, 'baseline-ok');
     FS.mkdirSync(dir, { recursive: true });
-    const baseline = PATH.join(dir, 'baseline.bundle');
+    const baseline = PATH.join(dir, 'baseline.run');
     await createBundle({ base: source, files: ['package.json'], output: baseline });
     const baselineSha = CRYPTO.createHash('sha256').update(FS.readFileSync(baseline)).digest('hex');
 
@@ -249,7 +249,7 @@ test('the gate accepts a diff verdict pinned to the baseline that is there', asy
 test('approving by hand records the baseline it was approved against', async () => {
     const dir = PATH.join(tmp, 'baseline-approve');
     FS.mkdirSync(dir, { recursive: true });
-    const baseline = PATH.join(dir, 'baseline.bundle');
+    const baseline = PATH.join(dir, 'baseline.run');
     await createBundle({ base: source, files: ['package.json'], output: baseline });
 
     const verdict = verdictPath();

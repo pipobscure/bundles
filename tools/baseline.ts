@@ -40,7 +40,7 @@ const { values } = parseArgs({
     args: process.argv.slice(2),
     options: {
         spec:     { type: 'string' },
-        output:   { type: 'string', default: PATH.join('build', 'baseline.bundle') },
+        output:   { type: 'string', default: PATH.join('build', 'baseline.run') },
         member:   { type: 'string', multiple: true },
         identity: { type: 'string', multiple: true },
         issuer:   { type: 'string' },
@@ -64,10 +64,10 @@ function main(): void {
     const packed = fetchTarball();
     if (!packed) return;
 
-    // The signed CLI was called `bundle.run` up to 0.0.5 and `bundle.nzip`
+    // The signed CLI was called `bundle.nzip` up to 0.0.5 and `bundle.nzip`
     // after it — the extension moved because it is what makes an archive
     // runnable on Windows. A baseline may be either.
-    const names = values.member?.length ? values.member : ['bundle.nzip', 'bundle.run'];
+    const names = values.member?.length ? values.member : ['bundle.nzip', 'bundle.nzip'];
     const extracted = names.map((name) => PATH.join(scratch, 'package', name)).find((path) => FS.existsSync(path));
     if (!extracted) {
         missing(`${SPEC} carries none of ${names.join(', ')} — it predates the signed-CLI layout`);

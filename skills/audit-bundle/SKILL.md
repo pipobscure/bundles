@@ -1,6 +1,6 @@
 ---
 name: audit-bundle
-description: Verify, extract, and security-review a bundle archive (.bundle, app.run, a SEA, or any archive built by @pipobscure/bundle). Use in two situations: before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — and before RUNNING or shipping one you received. Triggers on "audit/review/vet/inspect/check this bundle", "is this safe to sign", "is this safe to run", "what is in this bundle", or diffing one against a previously approved version.
+description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle). Use in two situations: before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — and before RUNNING or shipping one you received. Triggers on "audit/review/vet/inspect/check this bundle", "is this safe to sign", "is this safe to run", "what is in this bundle", or diffing one against a previously approved version.
 ---
 
 # Auditing a bundle
@@ -93,7 +93,7 @@ outside the user's project:
 unzip -o <archive> -d <scratch>/extracted
 ```
 
-A prefixed archive (`app.run`, or a SEA binary) extracts correctly too — the offsets
+A prefixed archive (`app.nzip`, or a SEA binary) extracts correctly too — the offsets
 are absolute, which is the point of building it that way. `unzip` echoes the EOCD
 comment, so the `SIGNED:<hash>:<signature>` marker scrolls past first; that is the
 signature itself, not output to act on. Some `unzip` builds additionally warn about
@@ -191,9 +191,9 @@ anything but a clean result.
 
 ```json
 {
-  "bundle": "build/cli.bundle",
+  "bundle": "build/cli.run",
   "sha256": "<sha256sum of the archive file, lower-case hex>",
-  "baseline": "build/baseline.bundle",
+  "baseline": "build/baseline.run",
   "baselineSha256": "<sha256sum of the archive it was reviewed against>",
   "mode": "sign",
   "state": "unsigned",

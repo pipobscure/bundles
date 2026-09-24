@@ -10,7 +10,7 @@ import { statSync, type Stats } from 'node:fs';
 // program — and a program that wants more mounts them through `node:vfs`, where
 // it also holds the instance. The launcher prefix this package writes ends in
 // `--`, so everything after the archive's own name is the program's argument,
-// which is what makes `./site.run docs/ manual.zip` work.
+// which is what makes `./site.nzip docs/ manual.zip` work.
 //
 // Nothing here calls `vfs.mount()`. Mounting puts a tree in the process's path
 // namespace so `require()` and `fs` resolve inside it — which is what the entry
@@ -38,7 +38,7 @@ export interface Entry {
  * Mounts each source, in the order given: a directory through `RealFSProvider`,
  * anything else as a ZIP through `ZipProvider`. The kind comes from what the
  * source *is*, the same way `--vfs-load` decides it, so an archive can be
- * called `site.zip`, `site.run`, or nothing in particular.
+ * called `site.zip`, `site.nzip`, or nothing in particular.
  */
 export function mountAll(sources: string[]): Mount[] {
     const seen = new Set<string>();

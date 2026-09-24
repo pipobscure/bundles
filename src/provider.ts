@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import * as FS from 'node:fs';
 import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
 
-// A `node:vfs` file provider for signed archives — `.bundle` files — layered on
+// A `node:vfs` file provider for signed archives — `.nzip` files — layered on
 // the built-in `ZipProvider`. It is what turns "this archive is signed" into
 // "this archive is what runs":
 //
@@ -25,18 +25,25 @@ import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './m
 //     copy that was verified, not a fresh read of the file.
 //
 // Registering this with `vfs.registerProvider()` puts it ahead of the built-in
-// ZIP provider, so `--vfs-load` hands it the source first. It claims files by
-// extension (`.bundle`) *and* by content — anything carrying our signature
-// marker — so renaming a signed archive cannot quietly downgrade it to the
-// unverified built-in provider.
+// ZIP provider, so `--vfs-load` hands it the source first — and it claims every
+// archive it is offered, not only the ones it can serve. That is the point: with
+// this provider registered, a ZIP either verifies or does not mount. There is no
+// third outcome where it quietly falls through to the built-in provider, which
+// checks nothing.
+//
+// So the extensions mean what they say. A `.nzip` is a signed archive and is
+// verified; a `.run` is an unsigned one and is refused here, because the only
+// way to run an unsigned archive is with this provider *not* in the mix — plain
+// `--vfs-load`, no preload. Renaming changes none of that: claiming is by
+// content as well as by name.
 
-export const EXTENSION = '.bundle';
+export const EXTENSION = '.nzip';
 
 const READ_FLAGS = FS.constants.O_WRONLY | FS.constants.O_RDWR | FS.constants.O_CREAT |
     FS.constants.O_TRUNC | FS.constants.O_APPEND | FS.constants.O_EXCL;
 
 export interface ProviderOptions {
-    /** File suffixes claimed outright (default: ['.bundle']). */
+    /** File suffixes claimed outright (default: ['.nzip']). */
     extensions?: string[] | undefined;
     /**
      * Also claim any file carrying our signature marker, whatever it is named
@@ -44,6 +51,16 @@ export interface ProviderOptions {
      * through to the built-in ZIP provider, which checks nothing.
      */
     claimSigned?: boolean | undefined;
+    /**
+     * Also claim any file that is a ZIP at all — `.run` included — and refuse
+     * it for want of a signature (default: true).
+     *
+     * Without this, an unsigned archive mounts *unverified* through the
+     * built-in provider while this one is registered, which reads as a pass.
+     * With it, registering this provider means exactly one thing: nothing
+     * mounts unless it verifies.
+     */
+    claimArchives?: boolean | undefined;
     /**
      * Extra trusted roots, as PEM text or paths to PEM files (default: the
      * `BUNDLE_ROOTS` environment variable, a path-delimiter-separated list).
@@ -74,6 +91,7 @@ interface Settings {
     name: string;
     extensions: string[];
     claimSigned: boolean;
+    claimArchives: boolean;
     extraRoots: string[];
     allowUntrusted: boolean;
     deep: boolean;
@@ -113,7 +131,7 @@ export function open(path: string, options?: ProviderOptions | Settings): Bundle
  * selects it for signed archives. Meant to be preloaded, before `--vfs-load`
  * picks a provider:
  *
- *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle
+ *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.run
  */
 export function register(options?: ProviderOptions): Settings {
     const opts = settings(options);
@@ -210,7 +228,20 @@ export class BundleProvider extends VFS.ZipProvider {
 function claims(resolvedPath: string, opts: Settings): boolean {
     const lower = resolvedPath.toLowerCase();
     if (opts.extensions.some((ext) => lower.endsWith(ext))) return true;
-    return opts.claimSigned && signatureOf(resolvedPath) !== null;
+    if (opts.claimSigned && signatureOf(resolvedPath) !== null) return true;
+    return opts.claimArchives && isArchive(resolvedPath);
+}
+
+// Whether the file is a ZIP at all, by opening it as one — which reads the
+// central directory and so also covers an archive behind a prefix, where the
+// first bytes are a launcher rather than `PK`.
+function isArchive(resolvedPath: string): boolean {
+    try {
+        ZLIB.ZipFile.openSync(resolvedPath).closeSync();
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function refusal(path: string, res: VerificationResult): Error {
@@ -245,6 +276,7 @@ function settings(options: ProviderOptions | Settings = {}): Settings {
         name: opts.name ?? 'bundle',
         extensions: (opts.extensions ?? [EXTENSION]).map((ext) => ext.toLowerCase()),
         claimSigned: opts.claimSigned ?? true,
+        claimArchives: opts.claimArchives ?? true,
         extraRoots: pems(opts.roots ?? envList('BUNDLE_ROOTS')),
         allowUntrusted: opts.allowUntrusted ?? envFlag('BUNDLE_ALLOW_UNTRUSTED'),
         deep: opts.deep ?? false,

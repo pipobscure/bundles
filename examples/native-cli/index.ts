@@ -15,7 +15,7 @@ import { basename, dirname, join } from 'node:path';
 // runtime agnostic about what is inside.
 //
 //   node --experimental-vfs --vfs-load=. -- echo one two
-//   ./native-cli.run echo one two
+//   ./native-cli.nzip echo one two
 //
 // The library is opened straight out of the mount. That is not obvious: `dlopen`
 // wants an inode and a mounted path has none, which is why loading `.node`

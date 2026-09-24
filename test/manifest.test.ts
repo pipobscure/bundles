@@ -75,7 +75,7 @@ test('the signature marker round-trips, and old two-field markers still parse', 
 });
 
 test('a signed archive verifies as valid and trusted against its root', async () => {
-    const archive = await build(source, PATH.join(tmp, 'good.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'good.run'));
     const res = verifySync(archive, { extraRoots: roots });
     assert.equal(res.state, 'valid');
     assert.equal(res.signed, true);
@@ -86,7 +86,7 @@ test('a signed archive verifies as valid and trusted against its root', async ()
 });
 
 test('an untrusted root leaves a good signature valid but unanchored', async () => {
-    const archive = await build(source, PATH.join(tmp, 'good.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'good.run'));
     const res = verifySync(archive, { extraRoots: [] });
     assert.equal(res.state, 'valid-untrusted');
     assert.equal(res.signed, true);
@@ -94,7 +94,7 @@ test('an untrusted root leaves a good signature valid but unanchored', async () 
 });
 
 test('an unsigned archive reports as unsigned, not as invalid', async () => {
-    const archive = await build(source, PATH.join(tmp, 'unsigned.bundle'), { signed: false });
+    const archive = await build(source, PATH.join(tmp, 'unsigned.nzip'), { signed: false });
     const res = verifySync(archive, { extraRoots: roots });
     assert.equal(res.state, 'unsigned');
     assert.equal(res.signed, false);
@@ -102,7 +102,7 @@ test('an unsigned archive reports as unsigned, not as invalid', async () => {
 });
 
 test('an archive whose bytes changed is invalid', async () => {
-    const archive = await build(source, PATH.join(tmp, 'tampered.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'tampered.run'));
 
     // Flip one character of a member's recorded digest. It lives in the central
     // directory as plain ASCII hex, so the archive stays structurally intact —
@@ -120,7 +120,7 @@ test('an archive whose bytes changed is invalid', async () => {
 });
 
 test('a signature that does not match the leaf certificate is invalid', async () => {
-    const archive = await build(source, PATH.join(tmp, 'forged.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'forged.run'));
     const marker = parseSignature(comment(archive))!;
     // Keep the recorded hash — so the integrity gate still passes — and replace
     // only the signature over it. That is the case the second stage exists for.
@@ -132,7 +132,7 @@ test('a signature that does not match the leaf certificate is invalid', async ()
 });
 
 test('verification accepts the bytes as well as a path, and agrees with itself', async () => {
-    const archive = await build(source, PATH.join(tmp, 'buffered.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'buffered.run'));
     const fromPath = verifySync(archive, { extraRoots: roots });
     const fromBuffer = verifySync(FS.readFileSync(archive), { extraRoots: roots });
     assert.equal(fromBuffer.state, fromPath.state);
@@ -140,10 +140,10 @@ test('verification accepts the bytes as well as a path, and agrees with itself',
 });
 
 test('signatureOf reads only the tail, and answers null for anything else', async () => {
-    const archive = await build(source, PATH.join(tmp, 'tail.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'tail.run'));
     assert.match(signatureOf(archive)!.hash, /^[0-9a-f]{64}$/);
 
-    const unsigned = await build(source, PATH.join(tmp, 'tail-unsigned.bundle'), { signed: false });
+    const unsigned = await build(source, PATH.join(tmp, 'tail-unsigned.nzip'), { signed: false });
     assert.equal(signatureOf(unsigned), null);
 
     const notAZip = PATH.join(tmp, 'not-a-zip');
@@ -157,14 +157,14 @@ test('a member with no recorded digest is invalid even when the file hash is rig
     // removed without breaking it. What this pins down is the check itself:
     // an archive built by something that did not stamp digests must not pass
     // just because its own hash is self-consistent.
-    const archive = await build(source, PATH.join(tmp, 'digestless.bundle'), { signed: false });
+    const archive = await build(source, PATH.join(tmp, 'digestless.run'), { signed: false });
     const res = verifySync(archive, { extraRoots: roots });
     assert.equal(res.state, 'unsigned');
     assert.equal(AUTHORITY, 'AUTHORITY.PEM');
 });
 
 test('an unverifiable sigstore field is never reported as valid', async () => {
-    const archive = await build(source, PATH.join(tmp, 'faked.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'faked.run'));
 
     // Graft a bogus sigstore bundle onto an otherwise perfectly good archive.
     // The signature and every digest still check out; only the claim about
@@ -185,10 +185,10 @@ test('a genuine sigstore bundle for another archive does not transfer', async ()
     // The `SIGSTORE=` field lives outside the hashed region, so it is the one
     // part an attacker can replace freely. Both of its bindings are checked:
     // to this archive's hash, and to the certificate AUTHORITY.PEM names.
-    const archive = await build(source, PATH.join(tmp, 'transplant.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'transplant.run'));
     const marker = parseSignature(comment(archive))!;
     const foreign = {
-        mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json',
+        mediaType: 'application/vnd.dev.sigstore.run.v0.3+json',
         verificationMaterial: { certificate: { rawBytes: 'AAAA' }, tlogEntries: [] },
         messageSignature: { messageDigest: { algorithm: 'SHA2_256', digest: 'AAAA' }, signature: 'AAAA' },
     };
@@ -203,7 +203,7 @@ test('a genuine sigstore bundle for another archive does not transfer', async ()
 test('the trusted root path is only consulted for the archive that names one', async () => {
     // A key-signed archive must verify with no sigstore machinery at all, which
     // is what lets a mount work on a machine that has never run `bundle trust`.
-    const archive = await build(source, PATH.join(tmp, 'nosigstore.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'nosigstore.run'));
     const res = verifySync(archive, { extraRoots: roots, trustedRoot: '/nonexistent/trusted_root.json' });
     assert.equal(res.state, 'valid');
     assert.equal(res.sigstore, undefined);
@@ -214,7 +214,7 @@ test('an archive whose structure is broken is invalid, not an error', async () =
     // Damage that breaks the ZIP itself — here, a member's size in the central
     // directory, which now runs past the end of the file — has altered the
     // archive as surely as a wrong hash has.
-    const archive = await build(source, PATH.join(tmp, 'broken.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'broken.run'));
     const bytes = FS.readFileSync(archive);
     const central = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
     assert.notEqual(central, -1);
@@ -225,7 +225,7 @@ test('an archive whose structure is broken is invalid, not an error', async () =
     assert.equal(res.state, 'invalid');
     assert.match(res.reason, /not a readable ZIP archive/);
     // A file that is not there is still an error: there is nothing to call invalid.
-    assert.throws(() => verifySync(PATH.join(tmp, 'missing.bundle')), /ENOENT/);
+    assert.throws(() => verifySync(PATH.join(tmp, 'missing.run')), /ENOENT/);
 });
 
 // A second PKI, to mint what the test PKI deliberately does not: a leaf with no
@@ -249,7 +249,7 @@ function issue(dir: string, name: string, ext: string, ca?: { cert: string; key:
 }
 
 async function signedBy(name: string, signer: { key: string }, chain: string): Promise<string> {
-    const output = PATH.join(tmp, `${name}.bundle`);
+    const output = PATH.join(tmp, `${name}.nzip`);
     await createBundle({ base: source, files: Object.keys(APP), output, key: FS.readFileSync(signer.key), chain });
     return output;
 }

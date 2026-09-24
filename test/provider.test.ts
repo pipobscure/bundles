@@ -4,6 +4,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
 import * as CRYPTO from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { BundleProvider, open as openBundle, EXTENSION } from '../src/provider.ts';
 import { APP, ROOT_PEM, build, mount, plainZip, scratch, tree } from './helpers.ts';
 
@@ -14,7 +15,7 @@ const tmp = scratch('provider');
 const source = tree(tmp);
 test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
 
-const GOOD = await build(source, PATH.join(tmp, 'good.bundle'));
+const GOOD = await build(source, PATH.join(tmp, 'good.run'));
 
 test('a trusted archive mounts through --vfs and runs', () => {
     const res = mount(GOOD, { args: ['one', 'two'] });
@@ -37,7 +38,7 @@ test('an unanchored chain runs only when untrusted archives are allowed', () => 
 });
 
 test('tampering with a signed archive is caught before it mounts', async () => {
-    const archive = await build(source, PATH.join(tmp, 'tampered.bundle'));
+    const archive = await build(source, PATH.join(tmp, 'tampered.run'));
     const bytes = FS.readFileSync(archive);
     const digest = CRYPTO.createHash('sha256').update(APP['greet.js']!).digest('hex');
     const at = bytes.indexOf(digest, 0, 'ascii');
@@ -49,26 +50,39 @@ test('tampering with a signed archive is caught before it mounts', async () => {
     assert.match(res.stderr, /ERR_BUNDLE_UNTRUSTED/);
 });
 
-test('an unsigned archive named .bundle is refused', async () => {
-    const archive = await build(source, PATH.join(tmp, 'unsigned.bundle'), { signed: false });
+test('an unsigned archive named .nzip is refused', async () => {
+    const archive = await build(source, PATH.join(tmp, 'unsigned.nzip'), { signed: false });
     const res = mount(archive);
     assert.notEqual(res.status, 0);
     assert.match(res.stderr, /unsigned/);
 });
 
-test('a plain ZIP named .bundle is claimed by extension and refused', async () => {
-    const zip = await plainZip(source, PATH.join(tmp, 'plain.bundle'));
+test('a plain ZIP named .nzip is claimed by extension and refused', async () => {
+    const zip = await plainZip(source, PATH.join(tmp, 'plain.run'));
     const res = mount(zip);
     assert.notEqual(res.status, 0);
     assert.match(res.stderr, /ERR_BUNDLE_UNTRUSTED/);
-    assert.equal(EXTENSION, '.bundle');
+    assert.equal(EXTENSION, '.nzip');
 });
 
-test('a plain ZIP under any other name is left to the built-in provider', async () => {
+test('a plain ZIP under any name is refused while this provider is registered', async () => {
+    // Registering the verifying provider means one thing: nothing mounts
+    // unless it verifies. An unsigned archive is not served unverified because
+    // it was called something else — `.zip`, `.run`, anything. The way to run
+    // an unsigned archive is with this provider out of the picture, which is
+    // plain `--vfs-load` and no preload.
     const zip = await plainZip(source, PATH.join(tmp, 'plain.zip'));
     const res = mount(zip);
-    assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stdout, /hello from a signed bundle/);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /refusing to mount/);
+    assert.match(res.stderr, /unsigned/);
+
+    // ...and that is exactly what running it without the preload does.
+    const unguarded = spawnSync(process.execPath,
+        ['--no-warnings', '--experimental-vfs', `--vfs-load=${zip}`, '--', 'x'],
+        { encoding: 'utf-8' });
+    assert.equal(unguarded.status, 0, unguarded.stderr);
+    assert.match(unguarded.stdout, /hello from a signed bundle/);
 });
 
 test('a signed archive under any other name is still claimed by content', async () => {

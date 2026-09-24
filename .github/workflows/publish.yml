@@ -201,11 +201,11 @@ jobs:
           # and this spares the action a token from the Claude GitHub App.
           github_token: ${{ github.token }}
           prompt: >-
-            /audit-bundle build/cli.bundle against build/baseline.bundle
+            /audit-bundle build/cli.run against build/baseline.run
 
-            This is a pre-signing audit. build/cli.bundle is the unsigned bundle this
+            This is a pre-signing audit. build/cli.run is the unsigned bundle this
             workflow just built for ${{ github.repository }} and is about to sign;
-            build/baseline.bundle is the currently published release, already verified
+            build/baseline.run is the currently published release, already verified
             as genuinely signed. If the baseline file is absent, review every member
             instead and say so.
 

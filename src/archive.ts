@@ -16,14 +16,14 @@ import { buildManifest, formatSignature, AUTHORITY } from './manifest.ts';
 // 155 MB node binary is not byte-identical to the same archive behind a 79-byte
 // shebang: the prefix has to be chosen before the offsets are fixed, and
 // therefore before the hash exists. Re-emitting from the members rather than
-// copying bytes is what lets one `app.bundle` become a `#!` launcher, a
+// copying bytes is what lets one `app.run` become a `#!` launcher, a
 // self-contained executable and a plain mountable archive, each correctly
 // offset and each signed over its own finished bytes:
 //
-//   bundle   → app.bundle                        (unsigned, the source of truth)
-//   rebundle → app.run   (prefix: shell-base)    signed
+//   bundle   → app.run                        (unsigned, the source of truth)
+//   rebundle → app.nzip   (prefix: shell-base)    signed
 //   rebundle → app.sea   (prefix: node-base)     signed
-//   rebundle → app.signed.bundle (no prefix)     signed
+//   rebundle → app.signed.nzip (no prefix)     signed
 //
 // A signer is `{ chain, signAlg, sign(digest) }`: the chain goes into
 // `AUTHORITY.PEM` *before* hashing, and `sign()` is called *after*, with the
@@ -177,7 +177,7 @@ export function keySigner({ key, chain, signAlg = 'sha256' }: {
 }
 
 // Writes `prefix` (when given) then the archive to `out`, without closing
-// `out`. With no prefix the result is a plain archive — a `.bundle` meant to be
+// `out`. With no prefix the result is a plain archive — a `.nzip` meant to be
 // run through `--vfs-load`; with one it is a self-running container (a shebang
 // launcher or a SEA binary) that carries the same archive in its tail. When a
 // `signer` is given, the whole file is signed. The hash runs over the prefix

@@ -13,8 +13,8 @@ archive; which it is comes from the file itself, not from its name.
   --no-listing      404 a directory that has no index.html, instead of listing it
   --help
 
-  ./static-server.run ./site docs.zip
-  ./static-server.run --host=0.0.0.0 --port=8080 ./site docs.zip
+  ./static-server.nzip ./site docs.zip
+  ./static-server.nzip --host=0.0.0.0 --port=8080 ./site docs.zip
 `;
 
 export interface Options {

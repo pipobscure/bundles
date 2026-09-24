@@ -26,7 +26,7 @@ async function write(output: string, run: (out: FS.WriteStream) => Promise<unkno
 }
 
 // The unsigned archive every signing test consumes.
-const UNSIGNED = PATH.join(tmp, 'app.bundle');
+const UNSIGNED = PATH.join(tmp, 'app.run');
 await write(UNSIGNED, (out) => bundle({ base: source, files: Object.keys(APP), out }));
 
 function sign(output: string, options: Record<string, unknown> = {}) {
@@ -40,7 +40,7 @@ test('the archive `sign` consumes is itself unsigned', () => {
 });
 
 test('signing an unsigned archive produces a valid one', async () => {
-    const output = PATH.join(tmp, 'plain.bundle');
+    const output = PATH.join(tmp, 'plain.run');
     const res = await sign(output);
     assert.equal(res.signed, true);
     assert.match(res.hash!, /^[0-9a-f]{64}$/);
@@ -53,7 +53,7 @@ test('signing an unsigned archive produces a valid one', async () => {
 
 test('signing leaves the input archive untouched', async () => {
     const before = FS.readFileSync(UNSIGNED);
-    await sign(PATH.join(tmp, 'untouched.bundle'));
+    await sign(PATH.join(tmp, 'untouched.run'));
     assert.deepEqual(FS.readFileSync(UNSIGNED), before);
     assert.equal(verifySync(UNSIGNED).state, 'unsigned');
 });
@@ -67,9 +67,9 @@ test('one unsigned archive yields every prefixed shape, each valid', async () =>
     FS.writeFileSync(short, '#!/bin/false\n');
     FS.writeFileSync(long, `#!/bin/false\n${'/* padding */\n'.repeat(500)}`);
 
-    const bare = PATH.join(tmp, 'bare.bundle');
-    const withShort = PATH.join(tmp, 'short.run');
-    const withLong = PATH.join(tmp, 'long.run');
+    const bare = PATH.join(tmp, 'bare.run');
+    const withShort = PATH.join(tmp, 'short.nzip');
+    const withLong = PATH.join(tmp, 'long.nzip');
     await sign(bare);
     await sign(withShort, { prefix: short });
     await sign(withLong, { prefix: long });
@@ -88,8 +88,8 @@ test('one unsigned archive yields every prefixed shape, each valid', async () =>
 });
 
 test('a signed archive can be re-signed behind a new prefix', async () => {
-    const first = PATH.join(tmp, 'first.bundle');
-    const second = PATH.join(tmp, 'second.run');
+    const first = PATH.join(tmp, 'first.run');
+    const second = PATH.join(tmp, 'second.nzip');
     const prefix = PATH.join(tmp, 'reprefix');
     FS.writeFileSync(prefix, '#!/bin/false\n');
     await sign(first);
@@ -109,7 +109,7 @@ test('a signed archive can be re-signed behind a new prefix', async () => {
 });
 
 test('member digests are recorded in the entry comments, one per member', async () => {
-    const output = PATH.join(tmp, 'digests.bundle');
+    const output = PATH.join(tmp, 'digests.run');
     await sign(output);
     const zip = ZLIB.ZipFile.openSync(output);
     try {
@@ -126,7 +126,7 @@ test('member digests are recorded in the entry comments, one per member', async 
 });
 
 test('a different hash algorithm is honoured end to end', async () => {
-    const output = PATH.join(tmp, 'sha512.bundle');
+    const output = PATH.join(tmp, 'sha512.run');
     await sign(output, { hashAlg: 'sha512', signAlg: 'sha512', signer: keySigner({ key, chain, signAlg: 'sha512' }) });
     const res = verifySync(output, { extraRoots: roots });
     assert.equal(res.state, 'valid');
@@ -135,9 +135,9 @@ test('a different hash algorithm is honoured end to end', async () => {
 });
 
 test('an archive with no members is refused rather than signed', async () => {
-    const empty = PATH.join(tmp, 'empty.bundle');
+    const empty = PATH.join(tmp, 'empty.run');
     await write(empty, (out) => bundle({ base: source, files: [], out }));
-    await assert.rejects(() => sign(PATH.join(tmp, 'nope.bundle'), { source: empty }), /no members to sign/);
+    await assert.rejects(() => sign(PATH.join(tmp, 'nope.run'), { source: empty }), /no members to sign/);
 });
 
 test('createArchive can be driven from members that never touched a disk', async () => {

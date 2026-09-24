@@ -142,7 +142,7 @@ svg{display:block;max-width:100%}
   border:1px solid var(--rule);border-radius:7px;padding:7px 11px;backdrop-filter:blur(6px)}
 #hud b{color:var(--ink-dim);font-weight:500}
 #clock{font-variant-numeric:tabular-nums}
-#clock.run{color:var(--ok)} #clock.late{color:var(--bad)} #clock.early{color:var(--ok)}
+#clock.nzip{color:var(--ok)} #clock.late{color:var(--bad)} #clock.early{color:var(--ok)}
 #hud .sep{width:1px;height:13px;background:var(--rule)}
 #hud button{font:inherit;background:none;border:1px solid var(--rule);color:var(--muted);
   border-radius:4px;padding:2px 7px;cursor:pointer}
@@ -608,7 +608,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <rect x="256" y="150" width="244" height="72" rx="5" fill="#151D2B" stroke="#2C6B51"/>
         <text x="264" y="172" fill="#4FBF8B" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600">with it</text>
         <text x="264" y="191" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">offsets seeded past the prefix.</text>
-        <text x="264" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">still a valid zip. <tspan fill="#4FBF8B">unzip app.run</tspan> works.</text>
+        <text x="264" y="205" fill="#8595B0" font-family="JetBrains Mono, monospace" font-size="10">still a valid zip. <tspan fill="#4FBF8B">unzip app.nzip</tspan> works.</text>
       </svg>
       <figcaption class="cap">One small primitive. It is the entire reason "append and go" works.</figcaption>
     </figure>
@@ -626,7 +626,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <div class="kicker"><span class="mono">ZipEntry · ZipFile · ZipBuffer · createZipArchive()</span><span>08</span></div>
   <div class="notes" hidden>
     <p class="say">"This is the least glamorous slide in the deck, and it's the one that makes everything else possible."</p>
-    <p><b>Hammer "still a valid zip."</b> It is not a bespoke container that happens to resemble one. That's what makes <em>unzip app.run</em> work in the demo — and inspectability is a genuine property, not a party trick. It's also the thing jar got right and everybody since keeps re-deriving.</p>
+    <p><b>Hammer "still a valid zip."</b> It is not a bespoke container that happens to resemble one. That's what makes <em>unzip app.nzip</em> work in the demo — and inspectability is a genuine property, not a party trick. It's also the thing jar got right and everybody since keeps re-deriving.</p>
     <p>If asked why this had to be in core rather than userland: because the <i>loader</i> needs to read it during bootstrap, before userland exists.</p>
   </div>
 </section>
@@ -671,8 +671,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   <div class="notes" hidden>
     <p><b>Get the credit right here, out loud.</b> <em>node:vfs</em> — the subsystem itself, MemoryProvider, RealFSProvider — is Matteo Collina's, and so is the VFS module loading that makes a mount resolvable. Yours is the zip support in node:zlib, the Zip VFS provider, and these two flags. The status slide breaks it down; don't blur it here.</p>
     <p class="say">"The shebang thing is my favourite accident. The kernel appends the script's path to the interpreter line. If the last flag is a <i>--vfs-load</i> still waiting for a value… it gets the script itself."</p>
-    <p><b>One honest footnote, if anyone is taking notes:</b> this exact form is not what the tool actually ships as a prefix. The kernel appends the path <i>and then the user's arguments</i>, which leaves nowhere to write the <em>--</em> that stops node claiming them — so <em>app.run --help</em> prints node's help. The shipped prefix is two lines of <em>sh</em> that <em>exec</em> node with <em>"$0"</em> and a <em>--</em>, and slide <span class="mono">0x0F</span> shows it. The trick on this slide is real and is a property of the flag; it is just not sufficient on its own.</p>
-    <p><b>Two details worth having ready.</b> The mount point is node's to choose, not yours — mounts live in a reserved namespace, so one can never shadow a real path. And because the provider is picked from the source's bytes rather than its name, a signed archive can be called <em>app.run</em>, <em>bundle.zip</em> or nothing in particular and still mount the same way — which matters in Act III, where renaming a file must not change what checks it.</p>
+    <p><b>One honest footnote, if anyone is taking notes:</b> this exact form is not what the tool actually ships as a prefix. The kernel appends the path <i>and then the user's arguments</i>, which leaves nowhere to write the <em>--</em> that stops node claiming them — so <em>app.nzip --help</em> prints node's help. The shipped prefix is two lines of <em>sh</em> that <em>exec</em> node with <em>"$0"</em> and a <em>--</em>, and slide <span class="mono">0x0F</span> shows it. The trick on this slide is real and is a property of the flag; it is just not sufficient on its own.</p>
+    <p><b>Two details worth having ready.</b> The mount point is node's to choose, not yours — mounts live in a reserved namespace, so one can never shadow a real path. And because the provider is picked from the source's bytes rather than its name, a signed archive can be called <em>app.nzip</em>, <em>bundle.zip</em> or nothing in particular and still mount the same way — which matters in Act III, where renaming a file must not change what checks it.</p>
     <p><b>The environment cannot redirect what runs.</b> <em>--vfs-load</em> is refused in <em>NODE_OPTIONS</em> outright — which entry point runs is the command line's decision.</p>
     <p><b>"What about more than one mount?"</b> Expect it. The command line mounts exactly one source, the program; a program that wants more makes them through <em>node:vfs</em>, where it also holds the instance. v26.10 did ship a second flag, <em>--vfs-mount</em>, that mounted without running — the next patch removes it (66162) and reserves layer 0 for the <em>--vfs-load</em> source, so it sits at the same mount point in every thread, with a program's own mounts numbered from 1. Mounts are not nameable either: that proposal (66119) was closed.</p>
     <p><b>If you gave this talk in August, this flag looked different.</b> It selected a mount by 0-based index — <em>--vfs-load=1</em> — which meant counting your <em>--vfs-mount</em>s and an optional-valued flag that the options parser could only express as an alias onto a hidden index flag. Naming the source deleted the counting, the hidden flag and the range check; dropping <em>--vfs-mount</em> deletes the list it counted into. Worth a sentence if anyone has read the older PR.</p>
@@ -837,7 +837,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
     <h1 style="font-size:78px">Demo.</h1>
     <div class="grid3" style="margin-top:40px">
       <div class="card"><div class="tag acc" style="margin-bottom:11px">01</div><h3 style="font-size:18px">Bundle &amp; run</h3>
-        <p style="margin-top:5px">Discover the file list by observation, then <code>./app.run</code>.</p></div>
+        <p style="margin-top:5px">Discover the file list by observation, then <code>./app.nzip</code>.</p></div>
       <div class="card"><div class="tag acc" style="margin-bottom:11px">02</div><h3 style="font-size:18px">Sign &amp; verify</h3>
         <p style="margin-top:5px">Sigstore, and all four states including a flipped byte.</p></div>
       <div class="card"><div class="tag acc" style="margin-bottom:11px">03</div><h3 style="font-size:18px">Opt in to refusing</h3>
@@ -881,39 +881,39 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         which writes down every file it opens.</p>
       <div class="cmd sm"><span class="c"># 2. archive exactly that, then sign it</span>
 <span class="p">$</span> npx bundle create --base ./app \
-   -f app.manifest -o app.bundle
+   -f app.manifest -o app.run
 <span class="o">+ index.js  + lib/hello.js</span>  <span class="c">…</span>
 <span class="o">* unsigned archive (3 members)</span>
 
 <span class="p">$</span> npx bundle sign <span class="y">--launcher</span> \
-   -o app.run app.bundle
+   -o app.nzip app.run
 <span class="g">* signed: da9e7604113a…</span></div>
     </div>
     <div class="stack">
       <div class="cmd sm"><span class="c"># 3. what did we just make?</span>
-<span class="p">$</span> head -c 77 app.run
+<span class="p">$</span> head -c 77 app.nzip
 <span class="y">#!/bin/sh
 exec node --experimental-vfs \
   --vfs-load="$0" -- "$@"</span>
 
-<span class="p">$</span> ls -l app.run
-<span class="o">-rwxr-xr-x  1894  app.run</span></div>
+<span class="p">$</span> ls -l app.nzip
+<span class="o">-rwxr-xr-x  1894  app.nzip</span></div>
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program.</span>
-<span class="p">$</span> ./app.run Grace
+<span class="p">$</span> ./app.nzip Grace
 <span class="g">hello, Grace</span></div>
       <p class="sub" style="font-size:15px;max-width:44ch">Two kilobytes for this one. No install, no
         <code>node_modules</code>, no wrapper &mdash; the file mounts itself and runs its own main.</p>
     </div>
   </div>
-  <div class="kicker"><span class="mono">observe → bundle → ./app.run</span><span>0E</span></div>
+  <div class="kicker"><span class="mono">observe → bundle → ./app.nzip</span><span>0E</span></div>
   <div class="notes" hidden>
     <p><b>Beat 1 — the manifest (25s).</b> "Static dependency analysis is perennially wrong — dynamic require, data files, conditional imports. So don't analyse. Run it and write down what it touched." Note it records <em>open()</em> too, so streamed files get caught. Also: this is a <i>second</i> provider, which quietly proves the extension point isn't signing-shaped.</p>
     <p><b>The line to point at is the comment:</b> <em>lib/never-used.js</em> is in the source tree and is not in the manifest, because the run never opened it. That is the whole argument for observation over analysis in one line of output.</p>
     <p><b>Beat 2 — build (20s).</b> Fast. <em>--launcher</em> is worth half a sentence: it prepends the shell prefix the package ships, so nobody has to know it lives in node_modules. <em>--prefix &lt;file&gt;</em> is still there for your own launcher, or for a node binary.</p>
     <p><b>Beat 3 — head -c (25s). This is the beat people react to.</b> The front of the file is a shebang and nothing else. Let it sit.</p>
     <p><b>Beat 4 — run it (25s).</b> "Twenty-one kilobytes, and it is a program."</p>
-    <p><b>Fallback:</b> artifacts are committed — just <em>./app.run help</em> and move on. Do not debug on stage.</p>
-    <p><b>Say the honest thing here:</b> running <em>./app.run</em> directly does <i>not</i> verify anything. It's a zip with a shebang; Node mounts it and runs it. Verification is the next demo, and it's opt-in. Getting ahead of that keeps you consistent with slide 0x0B.</p>
+    <p><b>Fallback:</b> artifacts are committed — just <em>./app.nzip help</em> and move on. Do not debug on stage.</p>
+    <p><b>Say the honest thing here:</b> running <em>./app.nzip</em> directly does <i>not</i> verify anything. It's a zip with a shebang; Node mounts it and runs it. Verification is the next demo, and it's opt-in. Getting ahead of that keeps you consistent with slide 0x0B.</p>
   </div>
 </section>
 
@@ -925,16 +925,16 @@ exec node --experimental-vfs \
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># signed via sigstore — identity, not a key file</span>
-<span class="p">$</span> npx bundle verify app.run
+<span class="p">$</span> npx bundle verify app.nzip
 <span class="g">VALID</span> — signature good, certificate trusted
   identity: <span class="o">github.com/pipobscure/…  (GitHub Actions)</span></div>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># flip exactly one byte, anywhere</span>
-<span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.run bs=1 seek=9000 \
+<span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.nzip bs=1 seek=9000 \
       conv=notrunc
-<span class="p">$</span> npx bundle verify app.run
+<span class="p">$</span> npx bundle verify app.nzip
 <span class="r">INVALID</span> — recorded hash does not match content</div>
       <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
-<span class="p">$</span> ./app.run Grace
+<span class="p">$</span> ./app.nzip Grace
 <span class="o">hello, Grace</span>   <span class="c"># ← runs fine</span></div>
     </div>
     <div class="stack">
@@ -944,7 +944,7 @@ exec node --experimental-vfs \
       </div>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># now install a provider that has an opinion</span>
 <span class="p">$</span> node --experimental-vfs <span class="y">-r @pipobscure/bundle/register</span> \
-    --vfs-load=app.run
+    --vfs-load=app.nzip
 
 <span class="r">Error [ERR_BUNDLE_UNTRUSTED]</span>: archive failed verification
 <span class="c">    at BundleProvider.open (…/provider.js)</span></div>
@@ -957,7 +957,7 @@ exec node --experimental-vfs \
   <div class="notes" hidden>
     <p><b>The running-the-broken-one beat matters.</b> It looks like a failure; it's the design working. Say clearly: <i>"Node ran the tampered archive, and that is correct. Node's job is loading, not judging."</i></p>
     <p><b>Then the turn:</b> add one <em>-r</em> flag, and the same file is refused — by a library, which you chose, and could replace tomorrow with one that checks something else entirely.</p>
-    <p><b>Prep:</b> <em>cp app.run /tmp/app.run.bak</em> before the dd, restore straight after, or every later demo breaks.</p>
+    <p><b>Prep:</b> <em>cp app.nzip /tmp/app.nzip.bak</em> before the dd, restore straight after, or every later demo breaks.</p>
     <p>Order: valid → tampered/invalid → <b>runs anyway</b> → opt in → refused. Don't reorder; the punchline needs the setup.</p>
     <p><b>Sigstore:</b> if the live signing path isn't ready, verify a pre-signed artifact and say the signing ran in CI. Keep the <b>identity</b> on screen — "signed by this repo, by this workflow" is the point, and it beats <em>CN=Test Signer</em> as a demo. <b>Don't get into certificate lifetimes on stage</b> — that's an implementation detail of the tool, not of the argument. Prepared answer at the end if anyone asks.</p>
   </div>
@@ -970,7 +970,7 @@ exec node --experimental-vfs \
   <h2>You can just&hellip; open it.</h2>
   <div class="cols w" style="margin-top:28px">
     <div class="stack">
-      <div class="cmd sm"><span class="p">$</span> unzip -o app.run -d ./inspect
+      <div class="cmd sm"><span class="p">$</span> unzip -o app.nzip -d ./inspect
 <span class="o">  inflating: inspect/index.js</span>
 <span class="o">  inflating: inspect/lib/hello.js</span>
 <span class="o">  inflating: inspect/package.json</span>
@@ -1039,9 +1039,9 @@ exec node --experimental-vfs \
       <p class="sub" style="font-size:16px;max-width:42ch">So the review is a step, not an afterthought &mdash; and it
         sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
         <i>you</i> stand behind.</p>
-      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npx bundle <span class="y">audit --check</span> app.bundle \
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npx bundle <span class="y">audit --check</span> app.run \
     &amp;&amp; npx bundle sign --launcher …
-<span class="r">error</span>: app.bundle has not been audited</div>
+<span class="r">error</span>: app.run has not been audited</div>
       <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:12px 16px">
         <p style="font-size:14.5px;line-height:1.45">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
           so rebuilding invalidates it. Otherwise the gate approves any later build on the strength of one earlier
@@ -1068,11 +1068,11 @@ exec node --experimental-vfs \
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm"><span class="c"># package.json — the whole bin entry</span>
-<span class="o">"bin": { "bundle":</span> <span class="y">"./bundle.run"</span> <span class="o">}</span>
+<span class="o">"bin": { "bundle":</span> <span class="y">"./bundle.nzip"</span> <span class="o">}</span>
 
 <span class="c"># so npm links the artifact itself</span>
 <span class="p">$</span> ls -l node_modules/.bin/bundle
-<span class="o">bundle -&gt; ../@pipobscure/bundle/</span><span class="y">bundle.run</span>
+<span class="o">bundle -&gt; ../@pipobscure/bundle/</span><span class="y">bundle.nzip</span>
 
 <span class="p">$</span> head -c 77 node_modules/.bin/bundle
 <span class="y">#!/bin/sh
@@ -1090,7 +1090,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
 <span class="p">$</span> bundle verify \
     <span class="y">--identity</span> <span class="o">'…/publish.yml@refs/heads/main'</span> \
     <span class="y">--issuer</span>   <span class="o">'token.actions.githubusercontent.com'</span> \
-    bundle.run</div>
+    bundle.nzip</div>
       <p class="sub" style="font-size:16px;max-width:44ch">Pinned to the release <b style="color:var(--ink)">workflow</b>,
         not to me. Running it doesn't check it &mdash; a <span class="mono">#!</span> carries no preload. Checking is
         a separate act, with a copy you already trust.</p>
@@ -1102,7 +1102,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
     <p class="say">"Everything I've asked you to do to somebody else's artifact, this tool does to itself. It arrives as one signed file. The command you run is a launcher that verifies that file, mounts it, and re-hashes every member as it reads it. There is no install step to compromise, because there is no install step."</p>
     <p><b>If someone asks about the lock file</b> — and they will — the answer is on the kicker. A lock file pins the bytes of a tree that is still fetched and executed at install time. A signed bundle removes the step rather than pinning it. "The same bytes" stops being a claim about versions and becomes literally the same bytes. The lock file stays useful for contributors reproducing a build; that's a different question.</p>
     <p><b>There is no launcher, and that is the interesting bit.</b> An earlier version put a small JS shim in front that verified the archive before mounting it. It got deleted: the shim was unsigned code installed <i>beside</i> the thing it vouched for, so anyone who could swap the archive could swap the shim — it detected corruption, not an adversary — and it put an opaque step in front of the one file you want people reading. <em>bin</em> now points straight at the artifact.</p>
-    <p><b>Say the honest half out loud:</b> running it does not verify it. Checking is a separate act with a copy you already trust — <em>bundle verify bundle.run</em>, or <em>bundle run bundle.run</em> to execute it through the verifying mount. Same opt-in story as slide <span class="mono">0x10</span>, applied to the tool itself.</p>
+    <p><b>Say the honest half out loud:</b> running it does not verify it. Checking is a separate act with a copy you already trust — <em>bundle verify bundle.nzip</em>, or <em>bundle run bundle.nzip</em> to execute it through the verifying mount. Same opt-in story as slide <span class="mono">0x10</span>, applied to the tool itself.</p>
     <p><b>Cut this slide first</b> if you are running long. It is the most satisfying beat in Act III and the least load-bearing — the argument survives without it.</p>
   </div>
 </section>

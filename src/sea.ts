@@ -13,11 +13,11 @@ import type { Signer } from './archive.ts';
 //
 // One base binary, two things to do with it:
 //
-//   [ node runtime | SEA blob: stub + verifier.bundle ]
+//   [ node runtime | SEA blob: stub + verifier.run ]
 //     a *verifying node* — `node-verifying ./my-app.zip` checks that archive
 //     and runs it. Any archive, checked every time, none of them baked in.
 //
-//   [ node runtime | SEA blob: stub + verifier.bundle ] [ app.bundle ]
+//   [ node runtime | SEA blob: stub + verifier.run ] [ app.run ]
 //     \______________ the prefix, and part of the app archive's ______/
 //      \____________ signed region ____________________/
 //     a *self-validating executable* — the same base with an application
@@ -158,7 +158,7 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
         if (verifier) {
             contents = [];
         } else {
-            verifier = PATH.join(scratch, 'verifier.bundle');
+            verifier = PATH.join(scratch, 'verifier.run');
             const files = verifierFiles(options);
             await createBundle({ base: packageRoot(), files, output: verifier });
             contents = files;

@@ -154,7 +154,7 @@ const BIN = PATH.join(INSTALLED, manifest.bin['bundle']!.replace(/^\.\//, ''));
 let building: Promise<void> | null = null;
 function bin(): Promise<void> {
     building ??= (async () => {
-        const unsigned = PATH.join(tmp, 'cli.bundle');
+        const unsigned = PATH.join(tmp, 'cli.run');
         await createBundle({
             base: ROOT,
             files: moduleFiles({

@@ -5,7 +5,7 @@ documentation site. No build step, no configuration, no generator — the files
 are rendered as they are served.
 
 ```sh
-./static-server.run docs.zip
+./static-server.nzip docs.zip
 ```
 
 `README.md` stands in for `index.html`, so this page is what `/` returns.

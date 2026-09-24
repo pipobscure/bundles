@@ -5,8 +5,8 @@ merged into one tree. It exists to be **bundled**: five TypeScript modules and a
 stylesheet that become one signed file you can run by name.
 
 ```sh
-./static-server.run ./site docs.zip            # a directory and an archive, one tree
-./static-server.run --port=8080 --host=0.0.0.0 ./site
+./static-server.nzip ./site docs.zip            # a directory and an archive, one tree
+./static-server.nzip --port=8080 --host=0.0.0.0 ./site
 ```
 
 It is not published with `@pipobscure/bundle` — `package.json`'s `files` list
@@ -50,7 +50,7 @@ reasons worth knowing:
   mount it did not make, but it cannot discover one.
 - **The launcher's `--` is load-bearing.** The prefix this package writes ends
   its node invocation with `--`, so everything after the archive's own name is
-  the program's argument. That is what makes `./static-server.run --port=9000`
+  the program's argument. That is what makes `./static-server.nzip --port=9000`
   reach the program instead of node — and it means a node flag written there
   would never be seen by node anyway.
 
@@ -86,18 +86,18 @@ curl -s -o /dev/null localhost:8080/favicon.ico  # and the icon a browser would 
 kill %1
 
 # 2. create — archive exactly that
-npx bundle create --base . --files server.manifest --output static-server.bundle
+npx bundle create --base . --files server.manifest --output static-server.run
 
 # 3. audit — read it before standing behind it
-npx bundle audit --check static-server.bundle
+npx bundle audit --check static-server.run
 
 # 4. sign — behind the launcher prefix, so the result is a program
-npx bundle sign --launcher --output static-server.run static-server.bundle
-chmod +x static-server.run
+npx bundle sign --launcher --output static-server.nzip static-server.run
+chmod +x static-server.nzip
 ```
 
-The result is about 17 kB. `unzip -l static-server.run` lists every file in it,
-and `bundle verify static-server.run` says who signed it.
+The result is about 17 kB. `unzip -l static-server.nzip` lists every file in it,
+and `bundle verify static-server.nzip` says who signed it.
 
 **Note what step 1 serves: nothing.** With no sources the root still answers —
 with an empty enumeration — and that is deliberate: startup reads every module
@@ -163,7 +163,7 @@ always allowed to do.
 ```
 
 ```sh
-./static-server.run --redirects=redirects.json ./site
+./static-server.nzip --redirects=redirects.json ./site
 ```
 
 The key is a regular expression matched against the request path and the
@@ -209,7 +209,7 @@ stands in for `index.html` as a directory's default — the rule the place these
 files usually live already uses.
 
 ```sh
-./static-server.run docs.zip        # and / is docs/README.md, rendered
+./static-server.nzip docs.zip        # and / is docs/README.md, rendered
 ```
 
 The renderer is [`lib/markdown.ts`](lib/markdown.ts): headings with GitHub-style

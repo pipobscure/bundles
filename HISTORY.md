@@ -24,7 +24,7 @@ as ESM, with four things in it:
   observation rather than guesswork. It is the userland replacement for the
   `--vfs-manifest` flag.
 - **`@pipobscure/bundle/register`** — a **verifying `node:vfs` provider** you preload with
-  `-r` (or `--import`), so `node --vfs-load=app.bundle` mounts and runs an
+  `-r` (or `--import`), so `node --vfs-load=app.nzip` mounts and runs an
   application *only* if it is properly signed, and checks each member against its recorded
   digest as that member is read.
 - **`@pipobscure/bundle`** — the same operations as an API: `createBundle`, `signBundle`,
@@ -39,7 +39,7 @@ running anything, with the checker inside what is checked.
 
 Signing is a step of its own rather than part of building, and that is what makes one build
 serve every target. `create` produces an unsigned archive; `sign` re-emits it behind
-whatever prefix you name and signs the finished bytes. So a single `app.bundle` becomes a
+whatever prefix you name and signs the finished bytes. So a single `app.run` becomes a
 `#!` launcher, a self-contained executable and a plain mountable archive — each correctly
 offset, each signed over itself.
 
@@ -63,7 +63,7 @@ no lifecycle script pulls in more code — a review over one can actually be com
 is what makes step 3 worth doing at all.
 
 The result is an application in one file that the runtime itself refuses to run when it
-has been tampered with — either as a plain `.bundle` archive, as a small self-executing ZIP
+has been tampered with — either as a plain `.nzip` archive, as a small self-executing ZIP
 that runs on any installed Node, or as a fully self-contained native executable that needs
 no Node at all.
 
@@ -269,7 +269,7 @@ registered provider is offered **directories as well as files**, so it can back,
 any source rather than only adding a format.
 
 ```sh
-node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle
+node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.nzip
 ```
 
 `canHandle` receives the `statSync()` of the source, so a provider can claim archives, or
@@ -278,7 +278,7 @@ than only adding new formats.
 
 Because a registered provider outranks the built-in one even for a file the built-in would
 happily handle, it can also **vet** a file rather than merely add a format. That is exactly
-what this repo does with `.bundle`: the provider claims the file, verifies it, and either
+what this repo does with `.nzip`: the provider claims the file, verifies it, and either
 returns a filesystem or throws — and a throw during provider selection means the process
 never reaches the entry point.
 
@@ -291,7 +291,7 @@ Two consequences worth stating plainly:
   either flag is in place before any provider is chosen.
 - **Claim by content, not just by name.** The built-in provider recognizes a ZIP by
   sniffing its leading bytes, so an archive can be called anything. A verifying provider
-  that only claimed `*.bundle` could be bypassed by renaming the file, which is why the one
+  that only claimed `*.nzip` could be bypassed by renaming the file, which is why the one
   here also claims anything carrying a `SIGNED:` marker.
 
 ### SEA support carried along
@@ -336,7 +336,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `src/skill.ts` | The skills this package ships, and installing them into a project — what `bundle skill` runs. |
 | `src/types/*.d.ts` | The `node:zlib` ZIP API and the `node:vfs` provider registry, neither of which `@types/node` carries yet. |
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
-| `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
+| `tools/pack.ts` | Builds `build/cli.run`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
 | `test/*.test.ts` | 173 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
@@ -385,14 +385,14 @@ can see rather than something the README asserts.
 // closure missed stops the build.
 
 // --- 2. create --------------------------------------------------------------
-"pack:cli":       "node dist/main.js create --base . --files build/cli.manifest --output build/cli.bundle",
+"pack:cli":       "node dist/main.js create --base . --files build/cli.manifest --output build/cli.run",
 // Plainly the CLI, over the list step 1 produced. Unsigned.
 
 // --- 3. audit ---------------------------------------------------------------
 "baseline:cli":   "node --experimental-vfs tools/baseline.ts --allow-missing",
 // Fetches the currently published bundle and verifies it, to review the new one
 // *against*. The first release has none, and then the audit reviews everything.
-"audit:cli":      "node dist/main.js audit --baseline build/baseline.bundle …",
+"audit:cli":      "node dist/main.js audit --baseline build/baseline.run …",
 // Reports the archive's sha256, its member count and what changed against the baseline,
 // then prints the exact skill invocation. The review needs judgement, so no script
 // performs it.
@@ -400,7 +400,7 @@ can see rather than something the README asserts.
 // Record a clean verdict reached by a person instead of by the skill.
 
 // --- 4. sign ----------------------------------------------------------------
-"sign:cli":       "node dist/main.js audit --check … && node dist/main.js sign --launcher --output bundle.nzip build/cli.bundle",
+"sign:cli":       "node dist/main.js audit --check … && node dist/main.js sign --launcher --output bundle.nzip build/cli.run",
 // The gate runs first and exits non-zero without a clean verdict pinned to these bytes.
 // Then sigstore — CI identity if there is one, otherwise a GitHub sign-in.
 "sign:cli:local": "… --check && node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem …",
@@ -430,7 +430,7 @@ the same way; one naming none is accepted as a full review, with a note saying s
 
 ```
 $ npm run sign:cli
-error: build/cli.bundle has not been audited — there is no verdict at build/cli.audit.json.
+error: build/cli.run has not been audited — there is no verdict at build/cli.audit.json.
   run 'npm run audit:cli' to see how
 ```
 
@@ -459,7 +459,7 @@ No prefix at all: just the ZIP, with its per-member digests, its `AUTHORITY.PEM`
 and the whole-file signature in the EOCD comment. It is run by mounting it:
 
 ```sh
-node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle -- <args>
+node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.nzip -- <args>
 ```
 
 The preload registers the provider; `--vfs-load` hands it the archive; the provider verifies
@@ -469,7 +469,7 @@ the signature rather than the application checking itself — the application ne
 code of its own at all. (The `--` matters: without it node claims any argument that looks
 like one of its own flags, and the application never sees it.)
 
-**`app.run` — the shebang archive (the same ZIP plus a one-line header; needs Node installed).**
+**`app.nzip` — the shebang archive (the same ZIP plus a one-line header; needs Node installed).**
 It is the `shell-base` prefix — `#!/bin/sh` and one `exec node … --vfs-load="$0" -- "$@"`
 line — followed by the ZIP. `exec` replaces the shell before it reads past that line, so the
 archive bytes are never parsed as script; `"$0"` is the file's own path, so it mounts
@@ -480,7 +480,7 @@ A whole application in a file you can email — provided the recipient has a com
 > The obvious prefix is `#!/usr/bin/env -S node … --vfs-load`, letting the kernel's appended
 > path become the trailing flag's value. That is prettier and it works, but the user's
 > arguments land after that path with nowhere to put a `--`, so every dash-leading argument
-> goes to node rather than to the program — `app.run --help` prints node's help. The shell
+> goes to node rather than to the program — `app.nzip --help` prints node's help. The shell
 > line exists to place that `--`.
 
 > **Note:** this needs a Node whose provider selection recognizes a ZIP by locating its
@@ -488,7 +488,7 @@ A whole application in a file you can email — provided the recipient has a com
 > prefixed container by construction has no `PK` at byte 0, and the leading-bytes test
 > rejected it with `ERR_VFS_INVALID_TARGET` before anything else happened. The bundle
 > provider never had that blind spot (it always scanned from the tail), so
-> `node -r @pipobscure/bundle/register --vfs-load=app.run` mounts and verifies
+> `node -r @pipobscure/bundle/register --vfs-load=app.nzip` mounts and verifies
 > the same file either way.
 >
 > The shebang launcher runs the archive *without* the verifying provider — the kernel gives
@@ -503,7 +503,7 @@ only then mounts the archive and runs what is inside. No Node on the target, no
 `node_modules`, no extraction to disk. See [Self-verifying the SEA](#self-verifying-the-sea).
 
 Same application, same archive format, three shapes — one where the **runtime** enforces
-the signature (`.bundle`), one optimizing for **size** (reuse the user's Node), one for
+the signature (`.nzip`), one optimizing for **size** (reuse the user's Node), one for
 **self-containment** (bring your own Node). And, because the prefix is chosen at *signing*
 time rather than at build time, all three come from one `create` and differ by one flag.
 
@@ -518,29 +518,29 @@ BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
     -r ./dist/record.js --vfs-load=./some/app > /dev/null
 
 # 2. archive exactly that, unsigned.
-node dist/main.js create --base ./some/app --files app.manifest --output app.bundle
-node dist/main.js verify app.bundle                          # -> UNSIGNED
+node dist/main.js create --base ./some/app --files app.manifest --output app.run
+node dist/main.js verify app.run                          # -> UNSIGNED
 
 # 3. audit it, before putting your name on it.
 node dist/main.js skill                 # install the skill, once per project
-claude "/audit-bundle app.bundle"       # or however you drive Claude Code
+claude "/audit-bundle app.run"       # or however you drive Claude Code
 
 # 4. sign it — offline here, against the repository's test PKI.
 node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem \
-    --output app.signed.bundle app.bundle
-node dist/main.js verify --root build/certs/root.pem app.signed.bundle    # -> VALID
-node dist/main.js verify app.signed.bundle                          # -> VALID (UNTRUSTED)
+    --output app.signed.nzip app.run
+node dist/main.js verify --root build/certs/root.pem app.signed.nzip    # -> VALID
+node dist/main.js verify app.signed.nzip                          # -> VALID (UNTRUSTED)
 
 # Run it through the verifying mount.
-node dist/main.js run --root build/certs/root.pem app.signed.bundle -- <args>
-node --experimental-vfs -r ./dist/register.js --vfs-load=app.signed.bundle
+node dist/main.js run --root build/certs/root.pem app.signed.nzip <args>
+node --experimental-vfs -r ./dist/register.js --vfs-load=app.signed.nzip
     # refuses: the test root is trusted by nothing
 
 # The same archive behind a shebang, and inside a self-validating executable.
 node dist/main.js sign --key build/certs/leaf.key --chain build/certs/chain.pem \
-    --prefix shell-base --output app.run app.bundle
+    --prefix shell-base --output app.nzip app.run
 node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
-    --root build/certs/root.pem --output app.sea app.bundle
+    --root build/certs/root.pem --output app.sea app.run
 ./app.sea <args>            # verifies itself, then runs
 
 npm test                    # 173 tests: sign, verify, mount, run, SEA, the gate, and every refusal
@@ -550,10 +550,10 @@ Building the tool the way the tool says to build things — the same four steps:
 
 ```sh
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
-                            #   -> build/cli.manifest, build/cli.bundle (904 members)
+                            #   -> build/cli.manifest, build/cli.run (904 members)
 
 npm run sign:cli:local      # 4: refuses, because nothing has been audited yet
-BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
+BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.run"
 npm run sign:cli:local      # 4: now allowed -> bundle.nzip
 
 ./bundle.nzip --help         # the artifact runs itself; this is what npm links as `bundle`
@@ -570,7 +570,7 @@ npm run verify:cli          # -> VALID, with the identity that signed it
 
 A launcher archive can verify **itself**: `--vfs-load` leaves the container's own path
 readable, so from inside, `process.argv[1]` is the real file and reading it yields the raw
-bytes rather than the mounted tree. `./app.run verify app.run` works.
+bytes rather than the mounted tree. `./app.nzip verify app.nzip` works.
 
 ---
 
@@ -730,18 +730,18 @@ import {
 } from '@pipobscure/bundle';
 
 // Build unsigned. The archive this writes is the single input to every shape you ship.
-await createBundle({ base: 'app/', files, output: 'app.bundle' });
+await createBundle({ base: 'app/', files, output: 'app.run' });
 
 // Sign it — once per shape, each correctly offset and each signed over its own bytes.
-await signBundle({ source: 'app.bundle', output: 'app.signed.bundle', signer });
-await signBundle({ source: 'app.bundle', output: 'app.run', prefix: 'shell-base', signer });
+await signBundle({ source: 'app.run', output: 'app.signed.nzip', signer });
+await signBundle({ source: 'app.run', output: 'app.nzip', prefix: 'shell-base', signer });
 
 // Ask what it claims, and then whether any of it is true.
-const { members, signed, hash } = inspectBundle('app.run');
-const { state, reason, identity } = await verifyBundle('app.run', { roots: ['root.pem'] });
+const { members, signed, hash } = inspectBundle('app.nzip');
+const { state, reason, identity } = await verifyBundle('app.nzip', { roots: ['root.pem'] });
 
 // Mount it through the verifying provider and run it, in this process.
-const status = await runBundle('app.signed.bundle', { roots: ['root.pem'], args: ['--help'] });
+const status = await runBundle('app.signed.nzip', { roots: ['root.pem'], args: ['--help'] });
 ```
 
 The layer underneath is exported too, for callers assembling members themselves rather than
@@ -790,11 +790,22 @@ an archive signed against an ordinary CA verifies with nothing but `node:crypto`
 sigstore libraries' absence degrades a sigstore verification to `valid-untrusted` rather
 than breaking it.
 
-### Running only what is signed — the `.bundle` provider
+### Running only what is signed — the `.nzip` provider
 
 `src/provider.ts` is where verification stops being something an application does to itself
 and becomes a property of the mount. It is a `ZipProvider` subclass, registered ahead of the
-built-in one, and it gates in two places:
+built-in one.
+
+**What it claims is the whole point.** It takes `.nzip` by name, anything carrying the
+signature marker by content, and — because those two are not enough — *any archive at all*.
+Claiming only what it can serve would leave the rest to the built-in provider, which checks
+nothing: an unsigned archive would mount unverified while a verifying provider was
+registered, which reads as a pass. So registering this provider means one thing, with no
+third outcome: a ZIP either verifies or does not mount. A `.run` is by convention the
+unsigned archive, and it is refused here; running one is done deliberately, with this
+provider out of the picture — plain `--vfs-load` and no preload.
+
+It gates in two places:
 
 **At mount.** `open()` recomputes the whole-file hash, checks the signature over it against
 the leaf certificate in `AUTHORITY.PEM`, and anchors the chain in the trust store. Anything
@@ -832,11 +843,11 @@ would be a no-op in exactly the deployment that relies on it.
 For anything more, call `register()` yourself from a preload of your own:
 
 ```js
-// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.bundle
+// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.nzip
 import { register } from '@pipobscure/bundle/provider';
 
 register({
-  extensions: ['.bundle', '.app'],   // claimed by name
+  extensions: ['.nzip', '.app'],   // claimed by name
   claimSigned: true,                 // and anything carrying a SIGNED: marker, whatever it is called
   roots: ['/etc/ssl/my-root.pem'],   // PEM text or paths to PEM files
   allowUntrusted: false,
@@ -872,12 +883,12 @@ application or a tool depends on nothing but what is behind it.
 runs anything:
 
 ```
-[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.bundle ]
+[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.run ]
   \_______________________ the prefix, and part of the _______________/
    \______________________ archive's signed region ______/
 ```
 
-The application is an ordinary signed `.bundle` appended to a node binary — the same
+The application is an ordinary signed `.nzip` appended to a node binary — the same
 `sign --prefix` that produces a shebang launcher. What makes the result self-validating is
 that the whole-file hash covers the prefix too, so the runtime and the verifier inside it
 are signed by the same signature that covers the application. There is nothing to check the
@@ -953,7 +964,7 @@ bundle sea --output app.sea \
     --root /etc/ssl/my-root.pem \
     --identity 'https://github.com/me/app/.github/workflows/release.yml@refs/heads/main' \
     --issuer 'https://token.actions.githubusercontent.com' \
-    app.bundle
+    app.run
 ```
 
 Those become the executable's own policy, baked into the stub — which is the point, since a
@@ -966,7 +977,7 @@ import { buildSea, createSeaBase } from '@pipobscure/bundle/sea';
 
 // The base is the expensive half (a ~155 MB copy of node); build it once and reuse it.
 await createSeaBase({ output: 'sea-base', bootstrap: { roots: ['root.pem'] } });
-await buildSea({ app: 'app.bundle', output: 'app.sea', base: 'sea-base', signer });
+await buildSea({ app: 'app.run', output: 'app.sea', base: 'sea-base', signer });
 ```
 
 An application can also ask about its own provenance without mounting anything:
@@ -984,11 +995,11 @@ for a process that already exists. They differ in which container they are given
 `process.argv` should look like afterwards; everything else — the refusal, the mount, the
 choice between `require` and `import` — is the same code.
 
-By contrast, the shebang launcher has no pre-mount stage of its own, so `app.run` executed
+By contrast, the shebang launcher has no pre-mount stage of its own, so `app.nzip` executed
 directly does not self-verify — the kernel gives it no preload flag to carry a provider, and
 it hands straight off to the app. Mounting it with the provider preloaded
-(`node -r @pipobscure/bundle/register --vfs-load=app.run`) is what closes that
-gap, and is the one route by which `app.run` runs verified at all.
+(`node -r @pipobscure/bundle/register --vfs-load=app.nzip`) is what closes that
+gap, and is the one route by which `app.nzip` runs verified at all.
 
 ---
 
@@ -1074,7 +1085,7 @@ does it in three phases:
    endpoints, `child_process`/`eval`/dynamic `require`, and members nothing references.
 
 ```
-/audit-bundle app.run
+/audit-bundle app.nzip
 ```
 
 Claude Code discovers skills under `.claude/skills/`, and the skill belongs next to whoever
@@ -1141,13 +1152,13 @@ repository's own skill:
   with:
     anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
     anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-    prompt: "/audit-bundle build/cli.bundle against build/baseline.bundle …"
+    prompt: "/audit-bundle build/cli.run against build/baseline.run …"
     claude_args: |
       --max-turns 120
       --allowedTools "Bash,Read,Glob,Grep,Write"
 
 - name: Gate on the audit verdict
-  run: node dist/main.js audit --check --baseline build/baseline.bundle build/cli.bundle
+  run: node dist/main.js audit --check --baseline build/baseline.run build/cli.run
 ```
 
 **Why a diff.** Re-reading 904 unchanged members every release is the kind of review that
@@ -1291,7 +1302,7 @@ The through-line is: **let a single file be the file tree a program runs from.**
   mechanism — and once selection is an extension point, discovery doesn't need to be a
   flag in the runtime at all.
 - **SEA is another delivery mode, not a different world.** By carrying `--build-sea`,
-  ESM SEA entry points, and their code cache, the *same* archive that powers `app.run` also
+  ESM SEA entry points, and their code cache, the *same* archive that powers `app.nzip` also
   powers `app.sea`. You choose "small, needs Node" vs. "large, needs nothing" per target
   without changing how you package.
 - **A pluggable provider registry turns "can mount an archive" into "can refuse to."**
@@ -1369,7 +1380,7 @@ bundles/
   package.json    the build / pack:cli / sign:cli / verify:cli / trust / test scripts
 ```
 
-Build outputs — `dist/`, `build/cli.bundle` and the signed `bundle.nzip` — are generated
+Build outputs — `dist/`, `build/cli.run` and the signed `bundle.nzip` — are generated
 by those scripts and are not in the repository.
 
 **Environment variables**
@@ -1657,7 +1668,7 @@ Version *N* is verified by version *N−1*. That is an ordinary trust chain over
 it is how package managers already handle their own updates:
 
 ```
-bundle@0.1 (you have it)  --verify-->  bundle@0.2.bundle  --verify-->  bundle@0.3.bundle
+bundle@0.1 (you have it)  --verify-->  bundle@0.2.run  --verify-->  bundle@0.3.run
 ```
 
 Each release is signed through sigstore by the publish workflow, so the identity to pin is
@@ -1702,7 +1713,7 @@ review in full. But it means:
   are needed to *produce* a signature, not to check one, so a verify-only distribution is
   meaningfully smaller. Worth doing only if the size difference turns out to matter.
 
-Until then the shipped `app.run` carries no sigstore libraries, which is why it degrades a
+Until then the shipped `app.nzip` carries no sigstore libraries, which is why it degrades a
 sigstore-signed archive to `valid-untrusted` — correct behaviour, and a limitation this
 section is what fixes.
 
@@ -1713,8 +1724,8 @@ section is what fixes.
   Whether the tool should carry a version floor, or leave that to whoever is deploying it,
   is undecided. Probably the latter — it is a policy, and policy is the thing this project
   keeps insisting does not belong in the mechanism.
-- **What the release artifact actually is.** A plain `.bundle` needs Node plus the preload
-  flags; an `app.run` shebang runs anywhere with a compatible Node; a SEA needs nothing and
+- **What the release artifact actually is.** A plain `.nzip` needs Node plus the preload
+  flags; an `app.nzip` shebang runs anywhere with a compatible Node; a SEA needs nothing and
   costs 150 MB. Probably all three, but only the shebang one is a pleasant default.
 - **Whether `npm` publication continues in parallel.** Useful for people embedding the
   library, and it should be explicit that the npm package is the *library* and the signed
@@ -1774,7 +1785,7 @@ the thing this project keeps insisting does not belong in the mechanism.
 
 #### The claim
 
-Every shape this tool produces gates on something outside itself. A `.bundle` needs the
+Every shape this tool produces gates on something outside itself. A `.nzip` needs the
 verifying provider preloaded; a shebang launcher has no preload at all and hands straight
 off to the application. The SEA is the shape that can carry its own gate, because the
 container *is* the runtime — and the interesting property is that the gate can be inside
@@ -1783,7 +1794,7 @@ what it gates.
 #### The shape
 
 ```
-[ node runtime | SEA blob: stub + verifier.bundle ] [ app.bundle ]
+[ node runtime | SEA blob: stub + verifier.run ] [ app.run ]
   \____________________ the prefix, and part of ___/
    \___________ the archive's signed region ______/
 ```
@@ -1802,7 +1813,7 @@ of duplicated verification logic, which promptly drifted: its marker regex was s
 two-field form, so it read every sigstore-signed container as *unsigned*.
 
 The fix was to make the verifier reachable before the application is: this package's own
-files rode in the SEA blob as one `.bundle` asset, and a fifteen-line CommonJS stub mounted
+files rode in the SEA blob as one `.nzip` asset, and a fifteen-line CommonJS stub mounted
 *that* with `node:vfs` and required the real library out of it. Two mounts, in order: the
 verifier's from the blob, then the application's from the archive at the end of the file.
 Nothing was duplicated, and the verifier the container ran was the one the test suite tests.

@@ -5,7 +5,7 @@ import type * as Provider from './provider.ts';
 // does, so `--vfs-load` finds it already in place when it picks a provider for
 // its source.
 //
-//   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.bundle
+//   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.run
 //
 // `--import @pipobscure/bundle/register` works just as well: mounting is
 // deferred until both `-r` and `--import` preloads have run, and this module

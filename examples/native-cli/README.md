@@ -36,10 +36,10 @@ Then bundle it the way anything else is bundled:
 
 ```sh
 printf 'package.json\nindex.ts\nlibnative_cli.so\n' > native-cli.manifest
-bundle create --base examples/native-cli --files native-cli.manifest --output native-cli.bundle
-bundle sign --launcher --output native-cli.run native-cli.bundle
+bundle create --base examples/native-cli --files native-cli.manifest --output native-cli.run
+bundle sign --launcher --output native-cli.nzip native-cli.run
 
-./native-cli.run echo alpha beta
+./native-cli.nzip echo alpha beta
 ```
 
 The signed archive is 165 KB, three members, and runs by name.
@@ -64,11 +64,11 @@ re-hashed against its signed digest as it is read.
 **`argv[0]` is the invoked name**, so the busybox trick works here too:
 
 ```sh
-ln -s native-cli.run pkg
+ln -s native-cli.nzip pkg
 ./pkg status        # program: pkg
 ```
 
-**The exit code is the library's.** `./native-cli.run fail` exits 3, decided by
+**The exit code is the library's.** `./native-cli.nzip fail` exits 3, decided by
 the Rust.
 
 ## The argv marshalling, since it is the only fiddly part

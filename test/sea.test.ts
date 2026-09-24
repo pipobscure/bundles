@@ -16,7 +16,7 @@ const tmp = scratch('sea');
 const source = tree(tmp);
 test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
 
-const APP_BUNDLE = PATH.join(tmp, 'app.bundle');
+const APP_BUNDLE = PATH.join(tmp, 'app.run');
 await createBundle({ base: source, files: Object.keys(APP), output: APP_BUNDLE });
 
 // The base is what takes the time; every executable below reuses it.
@@ -43,7 +43,7 @@ const needsSea = { skip: SKIP };
 // quickly — skipped, say — the runner reaches the end, its after-hook deletes
 // the scratch directory, and the await is still writing into it.
 
-const SIGNED_APP = PATH.join(tmp, 'app.signed.bundle');
+const SIGNED_APP = PATH.join(tmp, 'app.signed.nzip');
 await signBundle({ source: APP_BUNDLE, output: SIGNED_APP, signer: testSigner() });
 
 // BASE has a root baked in, which is what most of these want. One more with no
@@ -132,7 +132,7 @@ test('the application inside runs from the mount, not from any real directory', 
         'package.json': '{ "name": "where", "type": "module", "main": "index.js" }',
         'index.js': 'console.log(JSON.stringify({ file: import.meta.filename, dir: import.meta.dirname }));',
     }, 'where');
-    const archive = PATH.join(tmp, 'where.bundle');
+    const archive = PATH.join(tmp, 'where.run');
     await createBundle({ base: reporting, files: ['package.json', 'index.js'], output: archive });
 
     const output = PATH.join(tmp, 'where.sea');
@@ -154,7 +154,7 @@ test('a CommonJS application is run as CommonJS', needsSea, async () => {
         'package.json': '{ "name": "cjs", "main": "index.js" }',
         'index.js': 'console.log("commonjs ran", typeof require, __filename.endsWith("index.js"));',
     }, 'cjs');
-    const archive = PATH.join(tmp, 'cjs.bundle');
+    const archive = PATH.join(tmp, 'cjs.run');
     await createBundle({ base: commonjs, files: ['package.json', 'index.js'], output: archive });
 
     const output = PATH.join(tmp, 'cjs.sea');
@@ -280,7 +280,7 @@ test('the verifying node refuses what it cannot vouch for, and runs nothing', ne
     assert.match(untrusted.stderr, /valid-untrusted/);
 
     // Tampered with after signing: the bytes are not the signed bytes.
-    const tampered = PATH.join(tmp, 'tampered.bundle');
+    const tampered = PATH.join(tmp, 'tampered.run');
     const bytes = FS.readFileSync(SIGNED_APP);
     const middle = Math.floor(bytes.length / 2);
     bytes[middle] = (bytes[middle]! ^ 0xff) & 0xff;

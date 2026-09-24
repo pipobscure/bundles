@@ -4,9 +4,9 @@ Ship a Node.js application as **one signed file** that the runtime refuses to ru
 been tampered with.
 
 ```sh
-bundle create --base ./app --files app.manifest --output app.bundle   # archive it
-bundle sign --launcher --output app.run app.bundle                    # sign, via sigstore
-./app.run                                                             # and it is a program
+bundle create --base ./app --files app.manifest --output app.run   # archive it
+bundle sign --launcher --output app.nzip app.run                   # sign, via sigstore
+./app.nzip                                                         # and it is a program
 ```
 
 The archive is a real ZIP with a signature over the whole file. Mounting it through
@@ -85,10 +85,17 @@ Building a bundle is four steps, in this order:
 
 ```
 1. observe   run the application, and write down every file it actually reads
-2. create    archive exactly that list, unsigned
+2. create    archive exactly that list, unsigned          -> app.run
 3. audit     review it — against the last release, if there is one
-4. sign      only if step 3 came back clean
+4. sign      only if step 3 came back clean               -> app.nzip
 ```
+
+**The two extensions say which is which.** A `.run` is an archive that has not
+been signed — the thing step 3 reviews. A `.nzip` has been, and is what anything
+else should be handed. The verifying provider knows the difference: registered,
+it claims every archive it is offered and mounts only the ones that verify, so a
+`.run` does not run through it at all. Running an unsigned archive is something
+you do deliberately, with that provider out of the picture.
 
 ### 1. Observe
 
@@ -110,7 +117,7 @@ dependency tree, pair it with a computed closure — see [`moduleFiles`](#using-
 ### 2. Create
 
 ```sh
-bundle create --base ./app --files app.manifest --output app.bundle
+bundle create --base ./app --files app.manifest --output app.run
 ```
 
 Unsigned, and deliberately so. This is the single input to every shape you ship.
@@ -120,10 +127,10 @@ Unsigned, and deliberately so. This is the single input to every shape you ship.
 A signature is a claim about bytes you stand behind, so the review belongs *before* it:
 
 ```sh
-bundle audit app.bundle             # what is about to be reviewed, and how
+bundle audit app.run             # what is about to be reviewed, and how
 bundle skill                        # install the audit skill into .claude/skills/
-claude "/audit-bundle app.bundle"   # verify, extract, read every member
-bundle audit --check app.bundle     # exits non-zero without a clean verdict
+claude "/audit-bundle app.run"   # verify, extract, read every member
+bundle audit --check app.run     # exits non-zero without a clean verdict
 ```
 
 `bundle audit` does the two mechanical halves around the review. On its own it reports the
@@ -150,7 +157,7 @@ repeat-use case.
 ### 4. Sign
 
 ```sh
-bundle audit --check app.bundle && bundle sign --launcher --output app.run app.bundle
+bundle audit --check app.run && bundle sign --launcher --output app.nzip app.run
 ```
 
 Through **sigstore** by default: an ambient CI identity when there is one, otherwise a
@@ -160,15 +167,15 @@ minutes, and a transparency-log entry and timestamp are what let it verify after
 Or against a certificate authority of your own:
 
 ```sh
-bundle sign --key leaf.key --chain chain.pem --output app.signed.bundle app.bundle
+bundle sign --key leaf.key --chain chain.pem --output app.signed.nzip app.run
 ```
 
 Signing is separate from building, and that is what makes one build serve every target:
 
 ```sh
-bundle sign --launcher --output app.run           app.bundle   # a file you can run by name
-bundle sea             --output app.sea           app.bundle   # standalone executable
-bundle sign            --output app.signed.bundle app.bundle   # plain, for a mount
+bundle sign --launcher --output app.nzip          app.run   # a file you can run by name
+bundle sea             --output app.sea           app.run   # standalone executable
+bundle sign            --output app.signed.nzip   app.run   # plain, for a mount
 ```
 
 Each is correctly offset and signed over its own finished bytes. `--launcher` prepends the
@@ -198,7 +205,7 @@ knowing:
 ### `verify`
 
 ```sh
-bundle verify --root ca.pem --json app.bundle
+bundle verify --root ca.pem --json app.run
 ```
 
 Reports one of four states, and exits with the matching code:
@@ -238,7 +245,7 @@ different bytes, a verdict reached against a different baseline, or one that fai
 ### `run`
 
 ```sh
-bundle run --root ca.pem app.signed.bundle --your --app --args
+bundle run --root ca.pem app.signed.nzip --your --app --args
 ```
 
 Checks the archive, mounts it through the verifying provider, and runs what is inside — in
@@ -257,7 +264,7 @@ package's modules loaded in it. For a process of its own, spawn one with the arg
 ### `install`
 
 ```sh
-bundle install https://example.com/tool.run     # fetch, verify, put on PATH
+bundle install https://example.com/tool.nzip     # fetch, verify, put on PATH
 bundle install                                  # this package, from its own release
 ```
 
@@ -364,18 +371,18 @@ import {
 } from '@pipobscure/bundle';
 
 // Build unsigned — the single input to every shape you ship.
-await createBundle({ base: 'app/', files, output: 'app.bundle' });
+await createBundle({ base: 'app/', files, output: 'app.run' });
 
 // Sign, once per shape.
 const signer = fileSigner({ key: 'leaf.key', chain: 'chain.pem' });
-await signBundle({ source: 'app.bundle', output: 'app.run', prefix: 'shell-base', signer });
+await signBundle({ source: 'app.run', output: 'app.nzip', prefix: 'shell-base', signer });
 
 // Ask what it claims, and then whether any of it is true.
-const { members, signed, hash } = inspectBundle('app.run');
-const { state, reason, identity } = await verifyBundle('app.run', { roots: ['ca.pem'] });
+const { members, signed, hash } = inspectBundle('app.nzip');
+const { state, reason, identity } = await verifyBundle('app.nzip', { roots: ['ca.pem'] });
 
 // Mount it through the verifying provider and run it, in this process.
-const status = await runBundle('app.signed.bundle', { roots: ['ca.pem'], args: ['--help'] });
+const status = await runBundle('app.signed.nzip', { roots: ['ca.pem'], args: ['--help'] });
 ```
 
 **Signers.** A signer is `{ chain, signAlg, sign(digest) }`. The chain goes into the archive
@@ -405,11 +412,11 @@ const files = moduleFiles({
 enough:
 
 ```js
-// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.bundle
+// my-preload.js — node --experimental-vfs -r ./my-preload.js --vfs-load=app.nzip
 import { register } from '@pipobscure/bundle/provider';
 
 register({
-  extensions: ['.bundle', '.app'],   // claimed by name
+  extensions: ['.nzip', '.app'],   // claimed by name
   claimSigned: true,                 // and anything carrying a signature marker, whatever it is called
   roots: ['/etc/ssl/my-root.pem'],   // PEM text or paths to PEM files
   allowUntrusted: false,
@@ -477,7 +484,7 @@ is the difference between the two shapes it can take.
 before running anything:
 
 ```
-[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.bundle ]
+[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.run ]
   \_______________________ the prefix, and part of the _______________/
    \______________________ archive's signed region ______/
 ```
@@ -487,7 +494,7 @@ bundle sea --output app.sea \
     --root /etc/ssl/my-root.pem \
     --identity 'https://github.com/me/app/.github/workflows/release.yml@refs/heads/main' \
     --issuer 'https://token.actions.githubusercontent.com' \
-    app.bundle
+    app.run
 ```
 
 The whole-file hash covers the prefix too, so the runtime and the verifier inside it are
@@ -509,7 +516,7 @@ path goes, its own arguments from index 2 on, and none of the runtime's flags �
 everything after the archive belongs to the program, `--help` included.
 
 The two are the same binary. A verifying node with an archive appended to it — `bundle sign
---prefix node-verifying app.bundle` — *is* the self-validating executable, and at startup the
+--prefix node-verifying app.run` — *is* the self-validating executable, and at startup the
 runtime decides which it is by looking at its own tail: a signed archive behind it runs that,
 nothing behind it takes one from the command line, and an *unsigned* archive behind it is
 refused rather than quietly treated as neither.
@@ -561,7 +568,7 @@ transparency-log entry and timestamp that establish *when* a ten-minute certific
 valid. RFC 3161 puts timestamp tokens in CMS `unsignedAttrs` for exactly this reason.
 
 **The mount** is where it stops being advisory. `--vfs-load` asks registered providers who
-wants its source; this package's provider claims `.bundle` files by name and any file carrying
+wants its source; this package's provider claims `.nzip` files by name and any file carrying
 a signature marker by content — so renaming a signed archive cannot quietly downgrade it to
 the unchecked built-in ZIP provider. It verifies before returning a filesystem, and re-hashes
 each member as it is first read, because a `ZipFile` reads lazily from an open descriptor and
@@ -681,7 +688,7 @@ Building the tool the way the tool says to build things — the same four steps:
 ```sh
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
 npm run sign:cli:local      # 4: refuses — nothing has been audited yet
-BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.bundle"
+BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.run"
 npm run sign:cli:local      # 4: now allowed -> bundle.nzip
 ```
 
