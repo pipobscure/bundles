@@ -880,12 +880,12 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
         which writes down every file it opens.</p>
       <div class="cmd sm"><span class="c"># 2. archive exactly that, then sign it</span>
-<span class="p">$</span> npx bundle create --base ./app \
+<span class="p">$</span> bundle create --base ./app \
    -f app.manifest -o app.run
 <span class="o">+ index.js  + lib/hello.js</span>  <span class="c">…</span>
 <span class="o">* unsigned archive (3 members)</span>
 
-<span class="p">$</span> npx bundle sign <span class="y">--launcher</span> \
+<span class="p">$</span> bundle sign <span class="y">--launcher</span> \
    -o app.nzip app.run
 <span class="g">* signed: da9e7604113a…</span></div>
     </div>
@@ -907,6 +907,7 @@ exec node --experimental-vfs \
   </div>
   <div class="kicker"><span class="mono">observe → bundle → ./app.nzip</span><span>0E</span></div>
   <div class="notes" hidden>
+    <p><b>Where `bundle` came from, if anyone wonders:</b> <em>npx @pipobscure/bundle install</em> — one command, which verifies a signature and leaves the CLI on your PATH. That is demo 6 and the last slide of this act; here it is just the tool being used.</p>
     <p><b>Beat 1 — the manifest (25s).</b> "Static dependency analysis is perennially wrong — dynamic require, data files, conditional imports. So don't analyse. Run it and write down what it touched." Note it records <em>open()</em> too, so streamed files get caught. Also: this is a <i>second</i> provider, which quietly proves the extension point isn't signing-shaped.</p>
     <p><b>The line to point at is the comment:</b> <em>lib/never-used.js</em> is in the source tree and is not in the manifest, because the run never opened it. That is the whole argument for observation over analysis in one line of output.</p>
     <p><b>Beat 2 — build (20s).</b> Fast. <em>--launcher</em> is worth half a sentence: it prepends the shell prefix the package ships, so nobody has to know it lives in node_modules. <em>--prefix &lt;file&gt;</em> is still there for your own launcher, or for a node binary.</p>
@@ -925,13 +926,13 @@ exec node --experimental-vfs \
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># signed via sigstore — identity, not a key file</span>
-<span class="p">$</span> npx bundle verify app.nzip
+<span class="p">$</span> bundle verify app.nzip
 <span class="g">VALID</span> — signature good, certificate trusted
   identity: <span class="o">github.com/pipobscure/…  (GitHub Actions)</span></div>
       <div class="cmd sm" style="border-left-color:var(--bad)"><span class="c"># flip exactly one byte, anywhere</span>
 <span class="p">$</span> printf <span class="o">'\x00'</span> | dd of=app.nzip bs=1 seek=9000 \
       conv=notrunc
-<span class="p">$</span> npx bundle verify app.nzip
+<span class="p">$</span> bundle verify app.nzip
 <span class="r">INVALID</span> — recorded hash does not match content</div>
       <div class="cmd sm" style="border-left-color:var(--warn)"><span class="c"># and Node does not care in the slightest</span>
 <span class="p">$</span> ./app.nzip Grace
@@ -1039,8 +1040,8 @@ exec node --experimental-vfs \
       <p class="sub" style="font-size:16px;max-width:42ch">So the review is a step, not an afterthought &mdash; and it
         sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
         <i>you</i> stand behind.</p>
-      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> npx bundle <span class="y">audit --check</span> app.run \
-    &amp;&amp; npx bundle sign --launcher …
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> bundle <span class="y">audit --check</span> app.run \
+    &amp;&amp; bundle sign --launcher …
 <span class="r">error</span>: app.run has not been audited</div>
       <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:12px 16px">
         <p style="font-size:14.5px;line-height:1.45">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
@@ -1068,7 +1069,7 @@ exec node --experimental-vfs \
   <div class="cols" style="margin-top:22px">
     <div class="stack">
       <div class="cmd sm"><span class="c"># package.json — the whole bin entry</span>
-<span class="o">"bin": { "bundle":</span> <span class="y">"./bundle.nzip"</span> <span class="o">}</span>
+<span class="o">"bin": { "bundle":</span> <span class="y">"bundle.nzip"</span> <span class="o">}</span>
 
 <span class="c"># so npm links the artifact itself</span>
 <span class="p">$</span> ls -l node_modules/.bin/bundle
