@@ -99,8 +99,9 @@ What does not:
 
 ## Windows
 
-None of the above is `#!`, so none of it is Windows. [`windows/`](windows/) has
-the three candidate mechanisms — a `.cmd` prefix, a `.nzip` file association,
-and why PowerShell cannot work — and [`windows/probe.cmd`](windows/probe.cmd),
-which settles the parts no documentation answers: whether cmd.exe stops reading
-before the archive, and whether a link's name reaches the program there too.
+None of the above is `#!`, so none of it is Windows. What replaces it there is
+a `.nzip` file association, which `bundle install` registers; the alternatives
+and why they lost are in [`windows/`](windows/), and the mechanism itself is
+tested by [`test/windows.test.ts`](../../test/windows.test.ts) on every run —
+including the one thing no documentation answers, whether a link's name reaches
+the program there too. It does.

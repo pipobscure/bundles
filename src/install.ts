@@ -404,12 +404,32 @@ export function ensureWindowsAssociation(name = 'a bundle'): string[] {
     return notes;
 }
 
+/**
+ * The command a `.nzip` opens with.
+ *
+ * The obvious form — node with `--vfs-load="%1"` — is wrong in the case that
+ * matters most. When cmd resolves a name through PATHEXT (you type `pnpm`, it
+ * finds `pnpm.nzip`) the shell substitutes the name *as typed*, without the
+ * extension, and node is handed a path that does not exist. When Explorer or
+ * `start` opens the file instead, `%1` is the full name *with* it. Neither can
+ * be assumed, so the command asks: if the path exists, mount it; if not, mount
+ * it with `.nzip` on the end.
+ *
+ * It goes through `cmd /d /s /c` for that `if`: `/d` skips AutoRun commands
+ * someone may have configured, and `/s` makes the quoting predictable — the
+ * outer quotes are stripped and the rest is taken literally.
+ */
+function openCommand(): string {
+    const node = `"${process.execPath}" --experimental-vfs`;
+    return `cmd /d /s /c "if exist "%1" (${node} --vfs-load="%1" -- %~2) else (${node} --vfs-load="%1.nzip" -- %~2)"`;
+}
+
 // The association is two keys, and both have to be right: the extension has to
 // name the ProgID, and the ProgID has to carry the command. Checking only the
 // second would skip the write for a `.nzip` that some other tool has since
 // claimed — a silent no-op where the user asked for an association.
 function associate(): string[] {
-    const command = `"${process.execPath}" --experimental-vfs --vfs-load="%1" -- %~2`;
+    const command = openCommand();
     const notes: string[] = [];
 
     if (query('HKCU\\Software\\Classes\\.nzip', '') !== PROG_ID) {

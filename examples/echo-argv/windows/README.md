@@ -7,7 +7,7 @@ its own name back. Windows has no `#!`, so the question is what replaces it.
 
 There are three candidates, and they are not equally good.
 
-## 1. A `.cmd` prefix — the direct translation
+## 1. A `.cmd` prefix — the direct translation, and the one that lost
 
 ```bat
 @echo off
@@ -23,16 +23,19 @@ Built and checked here: the archive stays a valid ZIP, the signature still
 verifies, and `--vfs-load` still mounts it, because the provider picks by
 content and never looks at the name.
 
-**What is unverified is the part only Windows can answer:** whether cmd.exe
-stops reading at `exit /b`, or at the Ctrl-Z, rather than carrying on into the
-ZIP and trying to execute it. Microsoft publishes no specification of batch
-parsing; 0x1A is documented as an end-of-file marker for `copy` in ASCII mode
-and nowhere else. The technique is old and widely used, which is evidence but
-not proof. One rule follows from what *is* documented: a prefix may use only
-`exit /b` or `goto :EOF`, never `goto :label`, because a label search reads the
-whole file looking for it.
+**It works** — a run on Windows confirmed that cmd.exe stops at `exit /b` and
+never reads on into the ZIP, which no documentation states. (One rule does
+follow from what is documented: such a prefix may use only `exit /b` or
+`goto :EOF`, never `goto :label`, because a label search reads the whole file
+looking for it.)
 
-## 2. A file association — the one that scales
+**It is not what this package does**, because the association below covers the
+same ground for one artifact instead of two, and the prefix has a sharp edge of
+its own: when cmd finds the file through PATHEXT, `%~f0` gives the name *as
+typed*, without the extension, so the file cannot find itself without guessing
+at what it is called.
+
+## 2. A file association — the one this package uses
 
 ```bat
 assoc .nzip=NodeBundle
@@ -62,7 +65,7 @@ afterwards would just work.
 
 PowerShell compiles a script to an AST before running any of it, and has no
 documented end-of-file marker. `exit` is a runtime statement; it cannot outrun
-the parser. An archive appended to a `.ps1` is expected to fail, and the probe
+the parser. An archive appended to a `.ps1` is expected to fail, and the suite
 checks that expectation rather than assuming it.
 
 ## Several names for one archive
@@ -76,53 +79,33 @@ checks that expectation rather than assuming it.
 
 Whether the *link's* name reaches the program is undocumented on Windows. On
 Linux both symlinks and hard links do reach it, which is what makes one archive
-able to carry several commands and switch on `basename(process.argv[1])`. The
-probe settles it for Windows.
+able to carry several commands and switch on `basename(process.argv[1])`. It is
+true on Windows too — a copy, a hard link and a symbolic link each arrive as
+their own name — which the suite now checks on every run.
 
-## The probe
+## Where the tests are
 
-[`probe.cmd`](probe.cmd) builds two archives out of
-[`../index.ts`](../index.ts) — one behind a batch prefix, one bare — and runs
-nine checks against them:
+These are not notes any more: they are
+[`test/windows.test.ts`](../../../test/windows.test.ts), which runs as part of
+`npm test` and skips itself everywhere but Windows — the mirror image of the
+launcher tests, which skip *on* Windows. [CI](../../../.github/workflows/ci.yml)
+runs the suite on Linux and Windows in parallel, and nothing publishes unless
+both pass.
 
-1. the batch prefix runs, and cmd.exe stops before the archive
-2. a copy reports its own name
-3. a hard link reports the link name
-4. a symbolic link reports the link name
-5. `PATH` + PATHEXT finds it without typing `.cmd`
-6. a `.nzip` association runs the archive
-7. PATHEXT finds `app.nzip` when you type `app`
-8. a second (hard-linked) name for one `.nzip` reports itself
-9. a `.ps1` with an archive appended does not run — a PASS here would be a surprise
+They cover what the documentation could not answer:
 
-and three more over what `bundle install` sets up, since that is the code a user
-actually meets:
+- the setup registers `.nzip` and puts `.NZIP` on the user's PATHEXT
+- running the setup twice changes nothing
+- the association starts an archive, with its arguments
+- **typed without the extension**, found through PATHEXT — the case that was
+  broken until the probe caught it
+- a copy, a hard link and a symbolic link each report their own name, so one
+  archive can carry several commands there too
+- a `.ps1` with an archive appended does not run
 
-- **9a–9c** — it associates `.nzip` with `NodeBundle`, and adds `.NZIP` to the
-  *user's* `PATHEXT` as `REG_EXPAND_SZ`. Not `setx`: that would write back the
-  merged machine+user value and mask later system-wide changes, and it truncates
-  past 1024 characters. What `setx` does do is broadcast `WM_SETTINGCHANGE`, so
-  `install` sends that itself — through `node:ffi` and `SendMessageTimeoutW`,
-  with `SMTO_ABORTIFHUNG` and a two-second timeout so one hung window cannot
-  hang an install.
-- **9d** — running it again changes nothing, because both halves are checked
-  before they are written.
-
-The probe restores the user's `PATHEXT` and removes the keys it added.
-
-```bat
-cd examples\echo-argv\windows
-probe.cmd
-```
-
-It needs node 26.10 or later on `PATH` and a built checkout (`npm run build`).
-It runs unelevated: the association goes into HKCU, which needs no rights and
-is removed afterwards, and the one check that would need elevation (the
-symbolic link) skips itself instead. Everything else is written to `%TEMP%`.
-
-The archives it builds are deliberately **unsigned**: what is under test is how
-Windows *starts* a file, and a signature adds nothing to that. Signing works
-the same on Windows as anywhere else — the bytes are the bytes.
+The test writes to the registry, because a file association cannot be tested
+without one. It writes under HKCU only, snapshots what was there first, and puts
+it back afterwards — including deleting the keys when there was nothing there.
 
 ## One more thing the research turned up
 

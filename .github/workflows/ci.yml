@@ -66,17 +66,9 @@ jobs:
         run: npm install
 
       # Builds, typechecks and runs the suite — the same command as locally.
-      # The tests that run an archive by name are a unix mechanism and skip
-      # themselves on Windows; the probe below is what covers that there.
+      # Each platform's launcher tests skip on the other: a `#!` prefix is a
+      # unix mechanism, a `.nzip` association is a Windows one, and the suite
+      # says which it skipped and why.
       - name: Test
         run: npm test
 
-      # What a `#!` prefix cannot be asked on Windows: whether cmd.exe stops
-      # reading before the archive, whether a link's name reaches argv[1], and
-      # whether the association and PATHEXT writes take. It reports PASS/FAIL
-      # and always exits 0 — these are findings to read, and a runner is an
-      # administrator, which a user often is not.
-      - name: Windows launcher probe
-        if: runner.os == 'Windows'
-        working-directory: examples/echo-argv/windows
-        run: cmd /c probe.cmd
