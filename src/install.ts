@@ -5,7 +5,7 @@ import * as CRYPTO from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyBundleSync } from './api.ts';
-import { STATES, message, type VerificationResult } from './manifest.ts';
+import { STATES, message, type VerificationResult, type VerificationState } from './manifest.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -230,6 +230,64 @@ export async function update(name: string | undefined, options: InstallOptions =
         results.push({ record, state: 'updated', previous: previous.sha256 });
     }
     return results;
+}
+
+/** What is on disk, measured against what the record says should be. */
+export interface InstalledCheck {
+    record: InstallRecord;
+    /** Where the file is, or would be. */
+    path: string;
+    /**
+     * `ok` — present, the recorded bytes, and still verifying as the identity
+     * it was installed as. `missing` — the file is gone. `changed` — something
+     * other than `update` replaced it. Otherwise the verification state that
+     * was reached: `invalid`, `valid-untrusted`, `unsigned`.
+     */
+    state: 'ok' | 'missing' | 'changed' | VerificationState;
+    /** The whole-file hash as it is now, when there is a file to hash. */
+    sha256?: string | undefined;
+    reason: string;
+}
+
+/**
+ * Check every install against its record: the file is there, its bytes are the
+ * ones that were installed, and it still verifies as whoever signed it.
+ *
+ * The hash is the cheap half and the interesting one. `update` is the only
+ * thing that should ever replace an installed archive, so a file whose hash has
+ * moved without the record moving with it was changed by something else — which
+ * a signature check alone would not notice, since the replacement may be
+ * perfectly well signed.
+ */
+export function installed({ roots = [] }: { roots?: string[] | undefined } = {}): InstalledCheck[] {
+    return Object.values(records())
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((record) => check(record, roots));
+}
+
+function check(record: InstallRecord, roots: string[]): InstalledCheck {
+    const path = PATH.join(record.dir, record.name);
+
+    let bytes: Buffer;
+    try {
+        bytes = FS.readFileSync(path);
+    } catch (err) {
+        return { record, path, state: 'missing', reason: `not there any more (${message(err)})` };
+    }
+
+    const sha256 = digest(bytes);
+    if (sha256 !== record.sha256) {
+        return {
+            record, path, sha256, state: 'changed',
+            reason: `the file is not the bytes that were installed — expected ${record.sha256.slice(0, 12)}…, found ${sha256.slice(0, 12)}…`,
+        };
+    }
+
+    // The same policy the install was made under: whoever signed it then has to
+    // have signed what is there now.
+    const result = verifyBundleSync(bytes, { roots, identity: record.identity, issuer: record.issuer });
+    if (result.state !== 'valid') return { record, path, sha256, state: result.state, reason: result.reason };
+    return { record, path, sha256, state: 'ok', reason: result.reason };
 }
 
 /**

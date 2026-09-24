@@ -28,6 +28,7 @@ commands:
   run       mount a signed archive and run it
   install   fetch a signed archive from a URL and put it on your PATH
   update    refetch what was installed, and replace it if it changed
+  installed list what is installed, and re-check each against its record
   uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root used to check sigstore signatures
@@ -145,10 +146,18 @@ install options:                    usage: install [options] [url]
 update options:                     usage: update [options] [name]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --untrusted       accept a good signature from an unanchored chain
-  -l, --list            list what is installed, and stop
 
   with no name, every install is checked. Each is a conditional request with
   the recorded ETag, so nothing is downloaded twice.
+
+installed options:                  usage: installed [options]
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --json            print the results as JSON
+
+  says what is installed, where it came from and who signed it — and checks
+  each one: the file is there, its bytes are still the bytes that were
+  installed, and it still verifies as the identity it was installed as. Exits
+  non-zero if any of that is no longer true.
 
 uninstall options:                  usage: uninstall [name | url]
 
@@ -182,7 +191,7 @@ const CONSOLE: Console = {
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, run, install, update, uninstall, sea, trust, skill,
+    create, sign, audit, verify: check, run, install, update, installed, uninstall, sea, trust, skill,
 };
 
 /**
@@ -426,25 +435,10 @@ async function update(args: string[], io: Console): Promise<number> {
         options: {
             root:      { type: 'string', short: 'r', multiple: true },
             untrusted: { type: 'boolean' },
-            list:      { type: 'boolean', short: 'l' },
         },
     });
 
     const INSTALL = await import('./install.ts');
-
-    if (values.list) {
-        const all = Object.values(INSTALL.records());
-        if (!all.length) io.out('nothing installed');
-        for (const record of all.sort((a, b) => a.name.localeCompare(b.name))) {
-            io.out(`${record.name}`);
-            io.out(`  from:   ${record.url}`);
-            if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
-            else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
-            io.out(`  sha256: ${record.sha256}`);
-            io.out(`  since:  ${record.at}`);
-        }
-        return 0;
-    }
 
     try {
         const results = await INSTALL.update(positionals[0], {
@@ -462,6 +456,46 @@ async function update(args: string[], io: Console): Promise<number> {
         io.err(`error: ${message(err)}`);
         return state ? STATES[state].code : 2;
     }
+}
+
+// What is installed, and whether it is still what was installed. The record
+// says what the bytes were; this is where that claim gets checked rather than
+// merely printed.
+async function installed(args: string[], io: Console): Promise<number> {
+    const { values } = parseArgs({
+        args,
+        options: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
+    });
+
+    const INSTALL = await import('./install.ts');
+    const checks = INSTALL.installed({ roots: values.root ?? [] });
+
+    if (values.json) {
+        io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason }) => ({
+            name: record.name, path, state, sha256, reason,
+            url: record.url, identity: record.identity, issuer: record.issuer, at: record.at,
+        })), null, 2));
+    } else if (!checks.length) {
+        io.out('nothing installed');
+    } else {
+        for (const { record, path, state, reason } of checks) {
+            io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
+            io.out(`  at:     ${path}`);
+            io.out(`  from:   ${record.url}`);
+            if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
+            else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
+            io.out(`  sha256: ${record.sha256}`);
+            io.out(`  since:  ${record.at}`);
+            if (state !== 'ok') io.out(`  ${reason}`);
+        }
+    }
+
+    // The worst thing found decides the exit code, so a script can gate on it:
+    // anything but `ok` is something a person should look at.
+    const worst = checks.reduce((code, { state }) => Math.max(code, state === 'ok' ? 0
+        : state === 'missing' || state === 'changed' ? 2
+        : STATES[state].code), 0);
+    return worst;
 }
 
 // Remove an install: the file, and the record of where it came from. With no

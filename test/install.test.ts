@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
-import { install, update, uninstall, records, recordPath, fileName, installDir } from '../src/install.ts';
+import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 
@@ -157,6 +157,46 @@ test('update refuses an archive signed by somebody else', async () => {
     served.etag = '"three"';
     await assert.rejects(() => update(installed('tool.run'), options), { code: 'ERR_BUNDLE_UNTRUSTED' });
     assert.deepEqual(FS.readFileSync(PATH.join(BIN, installed('tool.run'))), second, 'the installed copy is untouched');
+});
+
+test('installed re-checks each record: the bytes, and who signed them', async () => {
+    served.bytes = first;
+    served.etag = '"checks"';
+    await install(URL_, { ...options, name: 'checked.run' });
+    const file = PATH.join(BIN, 'checked.run');
+
+    const ok = installedChecks({ roots }).find((check) => check.record.name === 'checked.run');
+    assert.equal(ok?.state, 'ok');
+    assert.equal(ok?.path, file);
+    assert.equal(ok?.sha256, CRYPTO.createHash('sha256').update(first).digest('hex'));
+
+    // Something other than `update` replaced the file. The replacement here is
+    // a perfectly good archive — signed, verifying — which is the point: only
+    // the hash notices, because the record says which bytes were installed.
+    FS.writeFileSync(file, second);
+    const changed = installedChecks({ roots }).find((check) => check.record.name === 'checked.run');
+    assert.equal(changed?.state, 'changed');
+    assert.match(changed?.reason ?? '', /not the bytes that were installed/);
+
+    // Tampered rather than replaced: the hash moves too, so this is `changed`
+    // as well — the check that runs first is the cheaper one.
+    const tampered = Buffer.from(first);
+    const at = Math.floor(tampered.length / 2);
+    tampered[at] = (tampered[at] ?? 0) ^ 0xff;
+    FS.writeFileSync(file, tampered);
+    assert.equal(installedChecks({ roots }).find((c) => c.record.name === 'checked.run')?.state, 'changed');
+
+    // Gone.
+    FS.rmSync(file);
+    const missing = installedChecks({ roots }).find((check) => check.record.name === 'checked.run');
+    assert.equal(missing?.state, 'missing');
+    assert.match(missing?.reason ?? '', /not there any more/);
+
+    // A record whose file is fine but whose signer is no longer accepted.
+    FS.writeFileSync(file, first);
+    assert.equal(installedChecks({ roots: [] }).find((c) => c.record.name === 'checked.run')?.state, 'valid-untrusted');
+
+    uninstall('checked.run');
 });
 
 test('uninstall takes a name, a url, or nothing at all', async () => {

@@ -338,7 +338,7 @@ the tests import the sources rather than the build for exactly that reason.
 | `tools/observe.ts` | Drives the CLI through a recording mount of the package root, for the build's cross-check. |
 | `tools/pack.ts` | Builds `build/cli.bundle`: computes the member list, checks it against an observation run, and writes the archive. |
 | `tools/prepublish.ts` | The gate on `npm publish` — the signed CLI must exist, verify, and match a build of the current tree. |
-| `test/*.test.ts` | 170 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
+| `test/*.test.ts` | 171 tests: the format, the archive, the two providers, the API, the CLI, the SEA, the skills, and the published package's own shape. |
 | `shell-base` | The launcher prefix: two lines of `sh` that `exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`. |
 | `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives offline. |
 | `skills/audit-bundle/` | The audit skill: verify → extract → security-review every file. |
@@ -543,7 +543,7 @@ node dist/main.js sea --key build/certs/leaf.key --chain build/certs/chain.pem \
     --root build/certs/root.pem --output app.sea app.bundle
 ./app.sea <args>            # verifies itself, then runs
 
-npm test                    # 170 tests: sign, verify, mount, run, SEA, the gate, and every refusal
+npm test                    # 171 tests: sign, verify, mount, run, SEA, the gate, and every refusal
 ```
 
 Building the tool the way the tool says to build things — the same four steps:
@@ -1196,6 +1196,14 @@ identity its publish workflow signs with. `npx @pipobscure/bundle install` is th
 whole bootstrap: npm fetches it once, and what stays behind is a signed archive that
 updates itself.
 
+`bundle installed` is what makes the record worth keeping rather than merely
+kept: it lists what is there and re-checks each one — the file exists, its bytes
+are still the bytes that were installed, and it still verifies as the identity
+it was installed as. The hash is the cheap check and the one that catches what a
+signature cannot: `update` is the only thing that should ever replace an
+installed archive, so a file whose hash moved without the record moving with it
+was changed by something else, and the replacement may be perfectly well signed.
+
 `bundle uninstall` is the other end: it deletes the file and forgets the record,
 by name, by the URL it came from, or — given neither — this package's own
 install. What it does not undo is the Windows association, which other archives
@@ -1348,7 +1356,7 @@ bundles/
                     prepublish.ts refuse to publish a stale or unsigned CLI
   .github/workflows/ci.yml       build, typecheck and test on node 26.10.0
   .github/workflows/publish.yml  the release pipeline: publishes any version npm lacks
-  test/           170 tests over the format, both providers, the API, the CLI, the SEA and the package
+  test/           171 tests over the format, both providers, the API, the CLI, the SEA and the package
   skills/audit-bundle/
                   the audit skill: verify -> extract -> security-review every file.
                   `bundle skill` writes it into a project's .claude/skills/

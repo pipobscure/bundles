@@ -299,13 +299,31 @@ is the one you have to judge, which is what `--identity` is for.
 ```sh
 bundle update            # check everything installed
 bundle update tool       # check one
-bundle update --list     # what is installed, from where, signed by whom
 ```
 
 Each check is a conditional request carrying the ETag recorded at install time,
 so a server with nothing new answers `304` and nothing is downloaded. When there
 is something new it is verified — against the pinned identity — before it
 replaces anything.
+
+### `installed`
+
+```sh
+bundle installed          # what is here, and whether it still is what it was
+bundle installed --json
+```
+
+Lists what is installed — where from, who signed it, when — and re-checks each
+one against its record: the file is there, its bytes are still the bytes that
+were installed, and it still verifies as the identity it was installed as.
+
+The hash is the cheap check and the interesting one. `update` is the only thing
+that should ever replace an installed archive, so a file whose hash has moved
+without the record moving with it was changed by something else — which a
+signature check alone would not notice, because the replacement may be perfectly
+well signed. That case reports `CHANGED`.
+
+It exits non-zero when anything is not `OK`, so a script can gate on it.
 
 ### `uninstall`
 
@@ -640,7 +658,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 170 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 171 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 
