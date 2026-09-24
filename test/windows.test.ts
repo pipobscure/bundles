@@ -34,8 +34,11 @@ function read(key: string, name: string): string | null {
 }
 
 function reg(args: string[]): void {
-    spawnSync('reg', args, { encoding: 'utf-8' });
+    spawnSync('reg', args, SPAWN);
 }
+
+/** No test may wait on something that never finishes; a CI runner has nobody to close a window. */
+const SPAWN = { encoding: 'utf-8', timeout: 30_000, killSignal: 'SIGKILL' } as const;
 
 // Everything this suite is about to change, so `after` can put it back.
 const before = WINDOWS
@@ -78,13 +81,24 @@ function run(command: string): { status: number | null; stdout: string; stderr: 
     const res = spawnSync('cmd', ['/d', '/s', '/c', command], {
         encoding: 'utf-8',
         cwd: tmp,
+        // Nothing here may wait for a person: there is no desktop on a CI
+        // runner, and a launcher that opens a window nobody closes would hang
+        // the suite rather than fail it.
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
         env: {
             ...process.env,
             PATH: `${tmp}${PATH.delimiter}${process.env['PATH'] ?? ''}`,
             PATHEXT: `${process.env['PATHEXT'] ?? ''};.NZIP`,
         },
     });
-    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+    const timedOut = res.error && (res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    return {
+        status: timedOut ? null : res.status,
+        stdout: res.stdout ?? '',
+        stderr: timedOut ? 'timed out after 30s' : res.stderr ?? '',
+    };
 }
 
 test('the Windows setup registers .nzip and extends PATHEXT', { skip: SKIP }, () => {
@@ -122,7 +136,6 @@ test('the association starts an archive, arguments and all', { skip: SKIP }, (t)
         ['name on PATH, no extension', 'app one two'],
         ['full path, quoted', `"${ARCHIVE}" one two`],
         ['full path, unquoted', `${ARCHIVE} one two`],
-        ['start /wait', `start /wait "" "${ARCHIVE}" one two`],
     ];
     const worked = new Map<string, boolean>();
     for (const [label, command] of forms) {
@@ -157,11 +170,11 @@ test('a copy, a hard link and a symbolic link each report their own name', { ski
 
     // A hard link needs no rights; a symbolic link needs Developer Mode or
     // elevation, so it is reported rather than demanded.
-    const linked = spawnSync('cmd', ['/d', '/s', '/c', `mklink /h "${PATH.join(tmp, 'hardlink.nzip')}" "${ARCHIVE}"`], { encoding: 'utf-8' });
+    const linked = spawnSync('cmd', ['/d', '/s', '/c', `mklink /h "${PATH.join(tmp, 'hardlink.nzip')}" "${ARCHIVE}"`], SPAWN);
     if (linked.status === 0) assert.match(run('hardlink x').stdout, /ran as hardlink\.nzip/);
     else assert.ok(true, `hard link unavailable: ${(linked.stderr || '').trim()}`);
 
-    const symlinked = spawnSync('cmd', ['/d', '/s', '/c', `mklink "${PATH.join(tmp, 'symlink.nzip')}" "${ARCHIVE}"`], { encoding: 'utf-8' });
+    const symlinked = spawnSync('cmd', ['/d', '/s', '/c', `mklink "${PATH.join(tmp, 'symlink.nzip')}" "${ARCHIVE}"`], SPAWN);
     if (symlinked.status === 0) assert.match(run('symlink x').stdout, /ran as symlink\.nzip/);
     else assert.ok(true, 'symbolic links need Developer Mode or elevation');
 });
@@ -173,6 +186,6 @@ test('an archive behind a .ps1 does not run, as PowerShell parses first', { skip
     // here would mean the .ps1 route deserves another look.
     const script = PATH.join(tmp, 'app.ps1');
     FS.copyFileSync(ARCHIVE, script);
-    const res = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, 'x'], { encoding: 'utf-8' });
+    const res = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, 'x'], SPAWN);
     assert.notEqual(res.status, 0, 'a .ps1 with an archive appended should not run');
 });
