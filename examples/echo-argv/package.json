@@ -1,0 +1,9 @@
+{
+  "name": "@example/echo-argv",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Prints its own process.argv — the smallest thing worth bundling, for checking that arguments survive every launcher shape.",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "EUPL-1.2"
+}
