@@ -95,6 +95,21 @@ nine checks against them:
 8. a second (hard-linked) name for one `.nzip` reports itself
 9. a `.ps1` with an archive appended does not run — a PASS here would be a surprise
 
+and three more over what `bundle install` sets up, since that is the code a user
+actually meets:
+
+- **9a–9c** — it associates `.nzip` with `NodeBundle`, and adds `.NZIP` to the
+  *user's* `PATHEXT` as `REG_EXPAND_SZ`. Not `setx`: that would write back the
+  merged machine+user value and mask later system-wide changes, and it truncates
+  past 1024 characters. What `setx` does do is broadcast `WM_SETTINGCHANGE`, so
+  `install` sends that itself — through `node:ffi` and `SendMessageTimeoutW`,
+  with `SMTO_ABORTIFHUNG` and a two-second timeout so one hung window cannot
+  hang an install.
+- **9d** — running it again changes nothing, because both halves are checked
+  before they are written.
+
+The probe restores the user's `PATHEXT` and removes the keys it added.
+
 ```bat
 cd examples\echo-argv\windows
 probe.cmd

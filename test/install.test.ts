@@ -207,6 +207,36 @@ test('install with no url means this package, from its own release', async () =>
     }
 });
 
+test('reg query output is read by name, values with spaces included', async () => {
+    const { parseRegQuery, ensureWindowsAssociation } = await import('../src/install.ts');
+
+    // What `reg query HKCU\\Software\\Classes\\NodeBundle\\shell\\open\\command /ve` prints.
+    const command = [
+        '',
+        'HKEY_CURRENT_USER\\Software\\Classes\\NodeBundle\\shell\\open\\command',
+        '    (Default)    REG_SZ    "C:\\Program Files\\nodejs\\node.exe" --experimental-vfs --vfs-load="%1" -- %~2',
+        '',
+    ].join('\r\n');
+    assert.equal(parseRegQuery(command, ''),
+        '"C:\\Program Files\\nodejs\\node.exe" --experimental-vfs --vfs-load="%1" -- %~2');
+    assert.equal(parseRegQuery(command, 'PATHEXT'), null, 'a value that is not there is not there');
+
+    // A named REG_EXPAND_SZ, as HKCU\Environment holds PATHEXT.
+    const environment = [
+        '',
+        'HKEY_CURRENT_USER\\Environment',
+        '    PATH    REG_EXPAND_SZ    %USERPROFILE%\\bin',
+        '    PATHEXT    REG_EXPAND_SZ    %PATHEXT%;.NZIP',
+        '',
+    ].join('\r\n');
+    assert.equal(parseRegQuery(environment, 'PATHEXT'), '%PATHEXT%;.NZIP');
+    assert.equal(parseRegQuery(environment, 'PATH'), '%USERPROFILE%\\bin', 'the prefix of another name does not match');
+    assert.equal(parseRegQuery('ERROR: The system was unable to find the specified registry key', 'PATHEXT'), null);
+
+    // Everywhere else this is not a thing, and asking is not an error.
+    if (process.platform !== 'win32') assert.deepEqual(ensureWindowsAssociation(), []);
+});
+
 test('the install directory is this tool\'s own, and says so when it is not on PATH', () => {
     assert.equal(installDir(), BIN);
     delete process.env['BUNDLE_INSTALL_DIR'];

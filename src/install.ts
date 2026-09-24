@@ -3,8 +3,11 @@ import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { verifyBundleSync } from './api.ts';
 import { STATES, message, type VerificationResult } from './manifest.ts';
+
+const require = createRequire(import.meta.url);
 
 // Getting a signed archive onto your PATH, and keeping it current.
 //
@@ -375,38 +378,130 @@ function onPath(dir: string): boolean {
     });
 }
 
+/** The ProgID this tool registers `.nzip` against. */
+const PROG_ID = 'NodeBundle';
+
 /**
  * Make `.nzip` runnable for the current user on Windows: associate it with a
  * file type that runs node with the archive mounted, and put the extension on
  * PATHEXT so the name alone is enough.
  *
- * Everything here is per-user (HKCU, `setx` without `/M`), so it needs no
- * administrator; a machine-wide association is an installer's job. It is
- * idempotent: an association that is already right is left alone.
+ * Everything here is per-user — HKCU and `HKCU\Environment`, never `/M` — so it
+ * needs no administrator. A machine-wide association is an installer's job, and
+ * the node installer is the right place for it. Both halves are idempotent:
+ * what is already right is left alone, and what is missing is written.
  */
 export function ensureWindowsAssociation(name = 'a bundle'): string[] {
     if (process.platform !== 'win32') return [];
-    const notes: string[] = [];
-    const progId = 'NodeBundle';
-    const command = `"${process.execPath}" --experimental-vfs --vfs-load="%1" -- %~2`;
-
-    if (query(`HKCU\\Software\\Classes\\${progId}\\shell\\open\\command`) !== command) {
-        reg(['add', `HKCU\\Software\\Classes\\.nzip`, '/ve', '/d', progId, '/f']);
-        reg(['add', `HKCU\\Software\\Classes\\${progId}\\shell\\open\\command`, '/ve', '/d', command, '/f']);
-        notes.push(`associated .nzip with node, for this user (${progId})`);
-    }
-
-    const pathext = process.env['PATHEXT'] ?? '';
-    if (!pathext.split(';').some((ext) => ext.toUpperCase() === '.NZIP')) {
-        const updated = `${pathext.replace(/;+$/, '')};.NZIP`;
-        const res = spawnSync('setx', ['PATHEXT', updated], { encoding: 'utf-8' });
-        notes.push(res.status === 0
-            ? 'added .NZIP to PATHEXT — open a new terminal for it to take effect'
-            : `could not add .NZIP to PATHEXT: ${(res.stderr || '').trim() || 'setx failed'}`);
-    }
-
+    const notes = [...associate(), ...extendPathExt()];
     if (notes.length) notes.push(`${name} runs by name once a new terminal picks that up`);
+    notes.push(...shadowed());
     return notes;
+}
+
+// The association is two keys, and both have to be right: the extension has to
+// name the ProgID, and the ProgID has to carry the command. Checking only the
+// second would skip the write for a `.nzip` that some other tool has since
+// claimed — a silent no-op where the user asked for an association.
+function associate(): string[] {
+    const command = `"${process.execPath}" --experimental-vfs --vfs-load="%1" -- %~2`;
+    const notes: string[] = [];
+
+    if (query('HKCU\\Software\\Classes\\.nzip', '') !== PROG_ID) {
+        reg(['add', 'HKCU\\Software\\Classes\\.nzip', '/ve', '/d', PROG_ID, '/f']);
+        notes.push(`associated .nzip with ${PROG_ID}, for this user`);
+    }
+    if (query(`HKCU\\Software\\Classes\\${PROG_ID}\\shell\\open\\command`, '') !== command) {
+        reg(['add', `HKCU\\Software\\Classes\\${PROG_ID}\\shell\\open\\command`, '/ve', '/d', command, '/f']);
+        notes.push(`${PROG_ID} now opens with this node (${process.execPath})`);
+    }
+    return notes;
+}
+
+/**
+ * Add `.NZIP` to the user's PATHEXT.
+ *
+ * Deliberately *not* `setx PATHEXT "%PATHEXT%;.NZIP"` with the value from
+ * `process.env`: that value is the machine's and the user's merged together, so
+ * writing it back would freeze a copy of the machine's PATHEXT into this user's
+ * environment and mask every later system-wide change to it. What goes in is
+ * the user's own value with `.NZIP` appended — or, when the user has none, the
+ * literal `%PATHEXT%;.NZIP` as `REG_EXPAND_SZ`, which resolves against whatever
+ * the machine value is at the time a session starts.
+ */
+function extendPathExt(): string[] {
+    if ((process.env['PATHEXT'] ?? '').split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP')) return [];
+
+    const mine = query('HKCU\\Environment', 'PATHEXT');
+    if (mine !== null && mine.split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP')) {
+        return ['.NZIP is already on your PATHEXT — open a new terminal for it to take effect'];
+    }
+
+    const value = mine === null ? '%PATHEXT%;.NZIP' : `${mine.replace(/;+$/, '')};.NZIP`;
+    // REG_EXPAND_SZ so a `%PATHEXT%` in the value means what it says. `setx`
+    // would write REG_SZ and truncate past 1024 characters; `reg add` does
+    // neither, at the cost of no WM_SETTINGCHANGE broadcast — which `setx` only
+    // does for already-running programs that listen for it anyway.
+    try {
+        reg(['add', 'HKCU\\Environment', '/v', 'PATHEXT', '/t', 'REG_EXPAND_SZ', '/d', value, '/f']);
+    } catch (err) {
+        return [`could not add .NZIP to PATHEXT: ${message(err)}`];
+    }
+    return ['added .NZIP to your PATHEXT', ...announce()];
+}
+
+/**
+ * Tell the desktop the environment changed, which is what makes a new terminal
+ * — or anything Explorer launches from now on — see the new PATHEXT without a
+ * sign-out. `setx` does this; writing the registry directly does not, so this
+ * does it by hand.
+ *
+ * It is a `WM_SETTINGCHANGE` broadcast with `lParam` pointing at the string
+ * "Environment", through `SendMessageTimeoutW` — and `node:ffi` is how a
+ * JavaScript program gets to call that at all. The timeout matters: a broadcast
+ * is delivered to every top-level window, and one hung program would otherwise
+ * hang the install, so it aborts on those and gives up after two seconds.
+ *
+ * A broadcast that fails is not an install that failed: it only means somebody
+ * opens a new terminal instead.
+ */
+function announce(): string[] {
+    const HWND_BROADCAST = 0xffffn;
+    const WM_SETTINGCHANGE = 0x001a;
+    const SMTO_ABORTIFHUNG = 0x0002;
+
+    try {
+        const { DynamicLibrary } = require('node:ffi') as typeof import('node:ffi');
+        const user32 = new DynamicLibrary('user32.dll');
+        try {
+            const send = user32.getFunction('SendMessageTimeoutW', {
+                arguments: ['pointer', 'uint32', 'pointer', 'pointer', 'uint32', 'uint32', 'pointer'],
+                return: 'pointer',
+            });
+            // Wide, NUL-terminated: this is the W entry point.
+            const subject = Buffer.from('Environment\0', 'utf16le');
+            const answer = Buffer.alloc(8);
+            send(HWND_BROADCAST, WM_SETTINGCHANGE, 0n, subject, SMTO_ABORTIFHUNG, 2000, answer);
+            return ['told the desktop the environment changed — new terminals have it'];
+        } finally {
+            user32.close();
+        }
+    } catch (err) {
+        return [`open a new terminal for it to take effect (could not broadcast: ${message(err)})`];
+    }
+}
+
+// An association set through Explorer's "Open with" lives in UserChoice and
+// takes precedence over everything written above. Nothing here can change that
+// — Windows protects the key with a hash — so say so rather than reporting
+// success for a write that will not take effect.
+function shadowed(): string[] {
+    const choice = query('HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.nzip\\UserChoice', 'ProgId');
+    if (choice === null || choice === PROG_ID) return [];
+    return [
+        `! .nzip is set to open with '${choice}' in your app defaults, which wins over this association`,
+        `  change it in Settings > Apps > Default apps, or run archives as 'bundle run <file>'`,
+    ];
 }
 
 function reg(args: string[]): void {
@@ -414,11 +509,34 @@ function reg(args: string[]): void {
     if (res.status !== 0) throw new Error(`reg ${args[0]} failed: ${(res.stderr || res.stdout || '').trim()}`);
 }
 
-function query(key: string): string | null {
-    const res = spawnSync('reg', ['query', key, '/ve'], { encoding: 'utf-8' });
+/**
+ * One registry value, or null when the key or the value is not there. `name` is
+ * the value's name; the empty string asks for the key's default value.
+ */
+function query(key: string, name: string): string | null {
+    const res = spawnSync('reg', ['query', key, ...(name ? ['/v', name] : ['/ve'])], { encoding: 'utf-8' });
     if (res.status !== 0) return null;
-    const match = /REG_SZ\s+(.*)$/m.exec(res.stdout ?? '');
-    return match?.[1]?.trim() ?? null;
+    return parseRegQuery(res.stdout ?? '', name);
+}
+
+/**
+ * The one value `reg query` was asked for, out of what it printed.
+ *
+ * Its output is `    <name>    <TYPE>    <value>`, with the default value named
+ * `(Default)`. A value can itself contain runs of spaces — a command line with
+ * quoted paths usually does — so only the name and the type are matched, and
+ * everything after the type is the value.
+ *
+ * Exported because this is the part of the Windows path that can be tested
+ * anywhere; the `reg` call around it cannot.
+ */
+export function parseRegQuery(stdout: string, name: string): string | null {
+    const wanted = name || '(Default)';
+    for (const line of stdout.split(/\r?\n/)) {
+        const match = /^\s{4,}(\S(?:.*?\S)?)\s{4,}REG_(?:EXPAND_)?SZ\s{4,}(.*)$/.exec(line);
+        if (match && match[1] === wanted) return (match[2] ?? '').trimEnd();
+    }
+    return null;
 }
 
 export { message };

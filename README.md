@@ -265,7 +265,12 @@ names a file, never a path. `--name` overrides it. The file goes to
 `~/.local/bin` (`%LOCALAPPDATA%\bundle\bin` on Windows, `BUNDLE_INSTALL_DIR`
 anywhere), is made executable, and you are told if that directory is not on your
 `PATH`. On Windows it also registers `.nzip` for the current user and adds it to
-`PATHEXT`, which is what makes an archive runnable by name there.
+`PATHEXT` — written to `HKCU\Environment` rather than through `setx`, which
+would freeze a copy of the machine's value into your environment — and then
+broadcasts `WM_SETTINGCHANGE` so a new terminal sees it without a sign-out.
+Both halves are checked before they are written, so installing twice changes
+nothing, and an `.nzip` default set in Windows' app settings is reported rather
+than silently overridden.
 
 **With no URL it installs this package itself**, from its own published release,
 requiring the identity its [publish workflow](.github/workflows/publish.yml)
@@ -616,7 +621,7 @@ at `require`.
 ```sh
 npm install
 npm run build          # TypeScript -> dist/, with declarations
-npm test               # 162 tests; generates a throwaway PKI into build/certs/ on first run
+npm test               # 163 tests; generates a throwaway PKI into build/certs/ on first run
 npm run typecheck
 ```
 

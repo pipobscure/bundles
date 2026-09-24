@@ -14,7 +14,8 @@ rem      cd examples\echo-argv\windows
 rem      probe.cmd
 rem
 rem  It needs node 26.10+ on PATH and a built checkout (`npm run build`).
-rem  It writes only to %TEMP% and to HKCU, and removes both afterwards.
+rem  It writes only to %TEMP%, to HKCU, and to the user's PATHEXT — all of
+rem  which it puts back afterwards.
 rem  Nothing here needs administrator rights; the one test that would
 rem  (a symbolic link) says so and skips itself.
 rem
@@ -129,6 +130,39 @@ if errorlevel 1 (
   reg delete "HKCU\Software\Classes\.nzip" /f >nul 2>&1
   reg delete "HKCU\Software\Classes\%PROGID%" /f >nul 2>&1
 )
+
+rem =====================================================================
+rem  9a..9c. What `bundle install` sets up: the .nzip association, PATHEXT,
+rem          and doing it twice changing nothing. This writes to HKCU and to
+rem          the user's PATHEXT, and puts both back at the end.
+rem =====================================================================
+set "SAVED_PATHEXT_VALUE="
+set "SAVED_PATHEXT_TYPE="
+for /f "tokens=2,*" %%a in ('reg query "HKCU\Environment" /v PATHEXT 2^>nul ^| findstr /r "REG_"') do (
+  set "SAVED_PATHEXT_TYPE=%%a"
+  set "SAVED_PATHEXT_VALUE=%%b"
+)
+
+node --no-warnings -e "require(process.argv[1]).ensureWindowsAssociation('probe').forEach(l=>console.log(l))" "%REPO%\dist\install.js" > "%WORK%\out.txt" 2>&1
+call :expect "9a. install's Windows setup runs and reports what it did" "PATHEXT"
+
+reg query "HKCU\Software\Classes\.nzip" /ve > "%WORK%\out.txt" 2>&1
+call :expect "9b. .nzip is associated with NodeBundle" "NodeBundle"
+
+reg query "HKCU\Environment" /v PATHEXT > "%WORK%\out.txt" 2>&1
+call :expect "9c. .NZIP is on the user's PATHEXT, as REG_EXPAND_SZ" "REG_EXPAND_SZ"
+
+node --no-warnings -e "const n=require(process.argv[1]).ensureWindowsAssociation('probe');console.log(n.length?'CHANGED: '+n.join(' | '):'no changes needed')" "%REPO%\dist\install.js" > "%WORK%\out.txt" 2>&1
+call :absent "9d. running it a second time changes nothing" "CHANGED"
+
+rem Put the user's PATHEXT back the way it was.
+if defined SAVED_PATHEXT_VALUE (
+  reg add "HKCU\Environment" /v PATHEXT /t %SAVED_PATHEXT_TYPE% /d "%SAVED_PATHEXT_VALUE%" /f >nul 2>&1
+) else (
+  reg delete "HKCU\Environment" /v PATHEXT /f >nul 2>&1
+)
+reg delete "HKCU\Software\Classes\.nzip" /f >nul 2>&1
+reg delete "HKCU\Software\Classes\NodeBundle" /f >nul 2>&1
 
 rem =====================================================================
 rem  9. PowerShell, for completeness: the parser reads the whole file, so
