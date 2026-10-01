@@ -124,7 +124,7 @@ sea options:                        usage: sea [options] [archive]
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
 
-install options:                    usage: install [options] <url | domain>
+install options:                    usage: install [options] [url | domain]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -142,8 +142,12 @@ install options:                    usage: install [options] <url | domain>
   and install it as 'npm'. The record only says where; the archive is
   verified exactly as a url's would be.
 
-  an archive named '.nzip' installs without that everywhere but Windows,
-  where the extension is what makes it runnable.
+  with neither, this package installs itself from its own published release,
+  requiring the identity its publish workflow signs with — so
+  'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
+  'bundle update' keeps current. The archive is named '.nzip', and the name it
+  installs under drops that everywhere but Windows, where the extension is what
+  makes it runnable.
 
   nothing is written until the signature verifies. Whoever signed the first
   install is recorded, and every later 'update' of that name must match — so
@@ -166,10 +170,11 @@ installed options:                  usage: installed [options]
   installed, and it still verifies as the identity it was installed as. Exits
   non-zero if any of that is no longer true.
 
-uninstall options:                  usage: uninstall <name | url | domain>
+uninstall options:                  usage: uninstall [name | url | domain]
 
-  deletes the file and forgets the record. The .nzip association on Windows
-  is left alone: other archives may need it.
+  deletes the file and forgets the record. With no argument it removes this
+  package's own install — what 'bundle install' left behind. The .nzip
+  association on Windows is left alone: other archives may need it.
 
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
@@ -441,14 +446,19 @@ async function install(args: string[], io: Console): Promise<number> {
     });
     const INSTALL = await import('./install.ts');
 
-    const target = positionals[0];
-    if (!target) throw new Error('install: a url or a domain is required');
+    // With no URL, this package installs itself: the published release, signed
+    // by the workflow that publishes it. `npx @pipobscure/bundle install` is
+    // then the whole bootstrap — npm fetches it once, and what stays behind is
+    // a signed archive that updates itself from its own releases.
+    const itself = !positionals[0] ? INSTALL.self() : undefined;
+    const target = positionals[0] ?? itself!.url;
+    if (itself) io.err(`* installing this package itself from ${target}`);
 
     try {
         const record = await INSTALL.install(target, {
             roots: values.root ?? [], name: values.name, dir: values.dir,
-            identity: values.identity,
-            issuer: values.issuer,
+            identity: values.identity ?? itself?.identity,
+            issuer: values.issuer ?? itself?.issuer,
             allowUntrusted: values.untrusted,
             log: (line) => io.err(line),
         });
@@ -534,13 +544,13 @@ async function installed(args: string[], io: Console): Promise<number> {
     return worst;
 }
 
-// Remove an install: the file, and the record of where it came from.
+// Remove an install: the file, and the record of where it came from. With no
+// argument it is this package's own, which is what somebody who typed
+// `bundle uninstall` means.
 async function uninstall(args: string[], io: Console): Promise<number> {
     const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
-    const which = positionals[0];
-    if (!which) throw new Error('uninstall: a name, a url or a domain is required');
     const INSTALL = await import('./install.ts');
-    const record = INSTALL.uninstall(which);
+    const record = INSTALL.uninstall(positionals[0]);
     io.out(`removed ${record.name} from ${record.dir}`);
     io.err(`  it came from ${record.url}`);
     return 0;

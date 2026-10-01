@@ -34,6 +34,27 @@ const require = createRequire(import.meta.url);
 // an update sends it back as `If-None-Match`, and a 304 means there is nothing
 // to do — so `bundle update` over a dozen installs is a dozen cheap requests.
 
+/**
+ * Where this package's own release lives, and who is allowed to have signed it
+ * — what `bundle install` with no URL fetches.
+ *
+ * It is a constant rather than something read out of `package.json`, because it
+ * is a *trust* statement: the identity below is what makes a self-install
+ * meaningful, and a value that could be edited by whatever is being installed
+ * would not be worth checking. `BUNDLE_SELF_SOURCE` overrides the URL for a
+ * mirror; the identity still has to match, unless `--identity` says otherwise.
+ */
+export const SELF = {
+    url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
+    identity: 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main',
+    issuer: 'https://token.actions.githubusercontent.com',
+} as const;
+
+/** The self-install target, with the environment's override applied. */
+export function self(): { url: string; identity: string; issuer: string } {
+    return { ...SELF, url: process.env['BUNDLE_SELF_SOURCE'] || SELF.url };
+}
+
 /** What an installed archive is, and where it came from. */
 export interface InstallRecord {
     /** The file name it was installed as, which is the key in the record. */
@@ -360,11 +381,12 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
 /**
  * Forget an install, and remove the file it put on the PATH.
  *
- * `which` is a name, a URL, or the domain it was installed by. The file
- * association on Windows is left alone: other archives may rely on it, and it
- * is not this one's to take away.
+ * `which` is a name, a URL, the domain it was installed by, or nothing — and
+ * nothing means this package's own install, which is what somebody typing
+ * `bundle uninstall` means. The file association on Windows is left alone:
+ * other archives may rely on it, and it is not this one's to take away.
  */
-export function uninstall(which: string): InstallRecord {
+export function uninstall(which?: string): InstallRecord {
     const all = records();
     const name = resolve(all, which);
     const record = all[name]!;
@@ -374,12 +396,22 @@ export function uninstall(which: string): InstallRecord {
     return record;
 }
 
-// Which install is meant: the one named, the one fetched from that URL, or the
-// one installed by that domain's alias.
-function resolve(all: Record<string, InstallRecord>, which: string): string {
+/** The name this package installs itself under, which the extension decides. */
+export function selfName(): string {
+    return commandName('bundle.nzip');
+}
+
+// Which install is meant: the one named, the one fetched from that URL, the one
+// installed by that domain's alias, or — when nothing is said — this package's own.
+function resolve(all: Record<string, InstallRecord>, which: string | undefined): string {
     const installed = Object.keys(all);
     const known = installed.length ? `installed: ${installed.sort().join(', ')}` : 'nothing is installed';
 
+    if (which === undefined) {
+        const mine = installed.find((name) => all[name]!.url === self().url) ?? selfName();
+        if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
+        return mine;
+    }
     if (hasScheme(which)) {
         const found = installed.find((name) => all[name]!.url === which);
         if (!found) throw new Error(`nothing installed from ${which} — ${known}`);

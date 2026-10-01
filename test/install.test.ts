@@ -6,6 +6,7 @@ import * as CRYPTO from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
 import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias } from '../src/install.ts';
+import { STATES } from '../src/manifest.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 
 // Installing from a URL, and keeping it current.
@@ -201,7 +202,9 @@ test('installed re-checks each record: the bytes, and who signed them', async ()
     uninstall('checked.nzip');
 });
 
-test('uninstall takes a name or a url', async () => {
+test('uninstall takes a name, a url, or nothing at all', async () => {
+    const { selfName, self } = await import('../src/install.ts');
+
     // By name.
     await install(URL_, { ...options, name: 'by-name.nzip' });
     assert.equal(uninstall('by-name.nzip').name, 'by-name.nzip');
@@ -213,9 +216,18 @@ test('uninstall takes a name or a url', async () => {
     assert.equal(uninstall(URL_).name, 'by-url.nzip');
     assert.equal(Object.hasOwn(records(), 'by-url.nzip'), false);
 
+    // With nothing: this package's own install, found by the URL it came from
+    // whatever it ended up called.
+    await install(URL_, { ...options, name: 'renamed-self.nzip' });
+    const all = records();
+    all['renamed-self.nzip'] = { ...all['renamed-self.nzip']!, url: self().url };
+    FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
+    assert.equal(uninstall().name, 'renamed-self.nzip');
+
     // ...and the errors say what there is rather than only what there is not.
     assert.throws(() => uninstall('nothing-like-this'), /nothing installed as/);
     assert.throws(() => uninstall('https://example.invalid/x.nzip'), /nothing installed from/);
+    assert.throws(() => uninstall(), new RegExp(`this package is not installed as '${selfName()}'`));
 });
 
 test('update with no name checks everything, and uninstall forgets one', async () => {
@@ -315,14 +327,36 @@ test('install takes a domain, and uninstall finds it again by that domain', asyn
     await assert.rejects(() => install('not a domain', options), /neither a URL nor a domain/);
 });
 
-test('install and uninstall need to be told what', async () => {
+test('install with no url means this package, from its own release', async () => {
+    // The CLI path, because the defaulting lives there: no positional url, so
+    // the self target and the identity that comes with it are used. The URL is
+    // pointed at this suite's server; the identity requirement is real, and the
+    // test PKI does not meet it — which is exactly what should be refused.
     const { main } = await import('../src/cli.ts');
-    const bare = collector();
-    assert.equal(await main(['install'], bare), 70);
-    assert.match(bare.stderr.join('\n'), /install: a url or a domain is required/);
-    const nothing = collector();
-    assert.equal(await main(['uninstall'], nothing), 70);
-    assert.match(nothing.stderr.join('\n'), /uninstall: a name, a url or a domain is required/);
+    const { self, SELF } = await import('../src/install.ts');
+
+    assert.equal(SELF.url, 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip');
+    assert.match(SELF.identity, /publish\.yml@refs\/heads\/main$/);
+
+    process.env['BUNDLE_SELF_SOURCE'] = URL_;
+    try {
+        assert.equal(self().url, URL_, 'a mirror can be pointed at, the identity still applies');
+        served.bytes = first;
+        served.etag = '"self"';
+
+        const io = collector();
+        assert.equal(await main(['install'], io), STATES['valid-untrusted'].code);
+        assert.match(io.stderr.join('\n'), /installing this package itself/);
+        assert.match(io.stderr.join('\n'), /a sigstore identity was required/);
+
+        // ...and with the identity requirement lifted, the same fetch installs.
+        const forced = collector();
+        assert.equal(await main(['install', '--root', ROOT_PEM, '--identity', '', '--issuer', '', '--name', 'self.nzip'], forced), 0);
+        assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'self.nzip')), first);
+        uninstall('self.nzip');
+    } finally {
+        delete process.env['BUNDLE_SELF_SOURCE'];
+    }
 });
 
 test('reg query output is read by name, values with spaces included', async () => {

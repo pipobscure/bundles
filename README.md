@@ -35,22 +35,19 @@ of the process.
 ## Install
 
 ```sh
-npm install -g @pipobscure/bundle   # -> a signed `bundle` on your PATH
+npx @pipobscure/bundle install      # -> a signed `bundle` on your PATH
 bundle --help
+bundle update                       # later, when there is a new release
 ```
 
-What npm puts on your PATH is the signed archive itself (see below). Or take it from the
-release page and skip npm altogether — Node 26.10 or later is all it needs — and let it
-install itself like any other archive, so `bundle update` keeps it current:
+That is the whole install: npm fetches the package once, and what stays behind is the signed
+archive itself, on your PATH and keeping itself current. Or take it from the release page and
+skip npm altogether — Node 26.10 or later is all it needs:
 
 ```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
 chmod +x bundle.nzip
-./bundle.nzip install \
-  --identity https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main \
-  --issuer https://token.actions.githubusercontent.com \
-  https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
-bundle update                       # later, when there is a new release
+./bundle.nzip install                # the same thing: fetch, verify, put on PATH
 ```
 
 As a library instead:
@@ -281,6 +278,7 @@ package's modules loaded in it. For a process of its own, spawn one with the arg
 ```sh
 bundle install https://example.com/tool.nzip     # fetch, verify, put on PATH
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
+bundle install                                  # this package, from its own release
 ```
 
 `curl | sh` with the two dangerous parts removed: nothing is executed to install
@@ -325,6 +323,17 @@ one differing `nzip:` record on a domain is refused rather than guessed between.
 `--name` still overrides the name, and `bundle uninstall tool.example.com`
 removes what it installed.
 
+**With neither, it installs this package itself**, from its own published release,
+requiring the identity its [publish workflow](.github/workflows/publish.yml)
+signs with. So
+
+```sh
+npx @pipobscure/bundle install
+```
+
+is the whole bootstrap: npm fetches it once, and what stays behind is a signed archive on
+your PATH — called `bundle`, or `bundle.nzip` on Windows — that keeps itself current.
+
 **Whoever signed the first install is recorded**, and every later `update` of
 that name must match. That is trust on first use, said plainly — the first fetch
 is the one you have to judge, which is what `--identity` is for.
@@ -366,9 +375,12 @@ It exits non-zero when anything is not `OK`, so a script can gate on it.
 bundle uninstall tool                        # by name
 bundle uninstall https://example.com/tool.nzip   # by where it came from
 bundle uninstall tool.example.com                # by the domain it was installed by
+bundle uninstall                             # this package's own install
 ```
 
-Deletes the file and forgets the record. The `.nzip` association on Windows is left alone:
+Deletes the file and forgets the record. With no argument it removes what
+`bundle install` left behind — found by the URL it came from, whatever it ended
+up called. The `.nzip` association on Windows is left alone:
 other archives may need it, and it is not this one's to take away.
 
 ### `skill`
