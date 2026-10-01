@@ -3,7 +3,7 @@ import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members } from './archive.ts';
-import { launcherPath } from './files.ts';
+import { launcherPath, packageRoot } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
 
@@ -19,6 +19,7 @@ import * as SKILLS from './skill.ts';
 // they are the same functions.
 
 export const USAGE = `usage: bundle <command> [options]
+       bundle -v, --version
 
 commands:
   create    build an archive from a list of files
@@ -222,6 +223,10 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
             io.out(USAGE);
             return 0;
         }
+        if (cmd === '-v' || cmd === '--version') {
+            io.out(version());
+            return 0;
+        }
         const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
         if (!command) throw new Error(`unknown command: ${cmd}`);
         return await command(rest, io);
@@ -229,6 +234,14 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
         io.err(`error: ${message(err)}`);
         return 70;
     }
+}
+
+// The version of whatever is running — read from the package.json beside it,
+// which inside the bundled CLI is the archive's own member, so it answers for
+// the archive and not for some other copy of this package on the machine.
+function version(): string {
+    const pkg = JSON.parse(FS.readFileSync(PATH.join(packageRoot(), 'package.json'), 'utf-8')) as { version: string };
+    return pkg.version;
 }
 
 async function create(args: string[], io: Console): Promise<number> {

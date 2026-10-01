@@ -196,6 +196,7 @@ shell prefix this package ships, so nobody has to know it lives inside `node_mod
 
 ```
 bundle <command> [options]
+bundle -v, --version
 
   create    build an archive from a list of files
   sign      sign an archive into a new file, optionally behind a prefix

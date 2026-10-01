@@ -6,7 +6,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { main, USAGE, STATES, COMMANDS, splitRunArgs } from '../src/cli.ts';
 import { createBundle } from '../src/api.ts';
 import {
-    APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, WINDOWS,
+    APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, WINDOWS,
     cli, collector, scratch, testSigner, tree,
 } from './helpers.ts';
 
@@ -30,6 +30,15 @@ test('help is printed for --help, and for no command at all', async () => {
     // Nothing to do is a usage error, so it prints the usage and says so.
     assert.equal(await main([], bare), 64);
     assert.equal(bare.stdout.join('\n'), USAGE);
+});
+
+test('--version and -v print the version of the package that is running', async () => {
+    const { version } = JSON.parse(FS.readFileSync(PATH.join(ROOT, 'package.json'), 'utf-8')) as { version: string };
+    for (const flag of ['--version', '-v']) {
+        const io = collector();
+        assert.equal(await main([flag], io), 0);
+        assert.deepEqual(io.stdout, [version]);
+    }
 });
 
 test('the usage text lists exactly the commands the CLI dispatches', () => {

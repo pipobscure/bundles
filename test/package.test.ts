@@ -19,7 +19,7 @@ const SHEBANG = WINDOWS ? 'the #! launcher is a unix mechanism; see examples/ech
 
 const ROOT = packageRoot();
 const manifest = JSON.parse(FS.readFileSync(PATH.join(ROOT, 'package.json'), 'utf-8')) as {
-    main: string; types: string; bin: Record<string, string>;
+    version: string; main: string; types: string; bin: Record<string, string>;
     exports: Record<string, string>; files: string[];
 };
 
@@ -180,6 +180,11 @@ test('the bin is the signed archive, and it runs itself', { skip: SHEBANG }, asy
     const res = spawnSync(BIN, ['--help'], { encoding: 'utf-8' });
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /usage: bundle <command>/);
+
+    // ...and says which version it is, out of its own package.json.
+    const version = spawnSync(BIN, ['--version'], { encoding: 'utf-8' });
+    assert.equal(version.status, 0, version.stderr);
+    assert.equal(version.stdout.trim(), manifest.version);
 });
 
 test('the bin is inspectable without running it', async () => {
