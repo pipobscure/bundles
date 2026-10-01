@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import * as CRYPTO from 'node:crypto';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { moduleFiles, packageRoot } from '../src/files.ts';
-import { ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner } from './helpers.ts';
+import { CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner } from './helpers.ts';
 
 // Running the bin *by name* is the `#!` mechanism, which Windows does not have.
 // What it has instead is tested by examples/echo-argv/windows/probe.cmd.
@@ -159,7 +159,7 @@ function bin(): Promise<void> {
             base: ROOT,
             files: moduleFiles({
                 base: ROOT,
-                files: ['package.json'],
+                files: ['package.json', 'shell-base'],
                 dirs: ['dist', 'skills'],
                 dependencies: ['@sigstore/bundle', '@sigstore/sign', '@sigstore/verify', '@sigstore/protobuf-specs', '@sigstore/tuf'],
                 filter: (name) => !name.endsWith('.map') && !name.endsWith('.d.ts') && !name.endsWith('.d.cts'),
@@ -212,6 +212,25 @@ test('the CLI it runs comes out of the archive, not from the files beside it', {
     } finally {
         for (const [to, from] of moved) FS.renameSync(to, from);
     }
+});
+
+test('the bin signs behind the launcher out of its own archive', { skip: SHEBANG }, async () => {
+    await bin();
+    // `--launcher` reads `shell-base` beside the package root, and when the CLI
+    // runs from the archive that root is the mount: the prefix has to be a
+    // member, or the bundled CLI cannot do the one thing it is most used for.
+    assert.ok(inspectBundle(BIN).members.includes('shell-base'), 'shell-base must be in the archive');
+
+    const unsigned = PATH.join(tmp, 'launched.run');
+    const signed = PATH.join(tmp, 'launched.nzip');
+    FS.writeFileSync(PATH.join(tmp, 'launched.files'), 'package.json\n');
+    const made = spawnSync(BIN, ['create', '--base', ROOT, '--files', PATH.join(tmp, 'launched.files'), '--output', unsigned], { encoding: 'utf-8' });
+    assert.equal(made.status, 0, made.stderr);
+
+    const res = spawnSync(BIN, ['sign', '--launcher', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], { encoding: 'utf-8' });
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(FS.readFileSync(signed).subarray(0, FS.statSync(SHELL_BASE).size), FS.readFileSync(SHELL_BASE));
+    assert.equal(verifyBundleSync(signed, { roots: [ROOT_PEM] }).state, 'valid');
 });
 
 test('the signed bin can be verified, and run verified, by a copy you trust', async () => {

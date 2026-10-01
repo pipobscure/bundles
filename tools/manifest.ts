@@ -15,8 +15,9 @@ import { ensureTestPki } from './testpki.ts';
 //
 // Two passes, because neither is sufficient alone.
 //
-//   1. A computed closure — every compiled module, the skills, and the full
-//      dependency tree of the runtime dependencies. Complete by construction,
+//   1. A computed closure — every compiled module, the skills, the launcher
+//      prefix `sign --launcher` reads, and the full dependency tree of the
+//      runtime dependencies. Complete by construction,
 //      including code that only a path never taken in a test run would reach.
 //
 //   2. An observation run — the CLI driven through a recording mount, doing
@@ -37,7 +38,9 @@ const RUNTIME = ['@sigstore/bundle', '@sigstore/sign', '@sigstore/verify', '@sig
 
 const files = moduleFiles({
     base: ROOT,
-    files: ['package.json'],
+    // `shell-base` is read by `sign --launcher`, which resolves it beside the
+    // package root — and inside the archive, the archive is the package root.
+    files: ['package.json', 'shell-base'],
     dirs: ['dist', 'skills'],
     dependencies: RUNTIME,
     // The bundle is what runs; the maps and declarations beside it are what you
@@ -65,8 +68,8 @@ console.error(`* wrote ${PATH.relative(ROOT, OUTPUT)}`);
 console.error("* next: 'npm run pack:cli' to build the unsigned archive");
 
 // Drive the CLI through a recording mount of the package root, doing enough
-// real work to be worth checking against: help, a build, a signature, a
-// verification, a skill install, and loading every runtime dependency. The manifest lands outside the mount, so
+// real work to be worth checking against: help, a build, a signature behind the
+// launcher prefix, a verification, a skill install, and loading every runtime dependency. The manifest lands outside the mount, so
 // writing it is not itself a read of the tree being observed.
 function observe(): string[] {
     const scratch = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-observe-'));
@@ -83,7 +86,9 @@ function observe(): string[] {
         const runs: string[][] = [
             ['help'],
             ['create', '--base', ROOT, '--files', list, '--output', archive],
-            ['sign', '--key', pki.key, '--chain', pki.chain, '--output', signed, archive],
+            // --launcher, because that is the path that reads a file of this
+            // package's own rather than one it was handed.
+            ['sign', '--launcher', '--key', pki.key, '--chain', pki.chain, '--output', signed, archive],
             ['verify', '--root', pki.root, '--json', signed],
             ['skill', '--list'],
             ['skill', '--dir', PATH.join(scratch, 'skills')],
