@@ -35,19 +35,22 @@ of the process.
 ## Install
 
 ```sh
-npx @pipobscure/bundle install      # -> a signed `bundle` on your PATH
+npm install -g @pipobscure/bundle   # -> a signed `bundle` on your PATH
 bundle --help
-bundle update                       # later, when there is a new release
 ```
 
-That is the whole install: npm fetches the package once, and what stays behind is the signed
-archive itself, on your PATH and keeping itself current. Or take it from the release page and
-skip npm altogether — Node 26.10 or later is all it needs:
+What npm puts on your PATH is the signed archive itself (see below). Or take it from the
+release page and skip npm altogether — Node 26.10 or later is all it needs — and let it
+install itself like any other archive, so `bundle update` keeps it current:
 
 ```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
 chmod +x bundle.nzip
-./bundle.nzip install                # the same thing: fetch, verify, put on PATH
+./bundle.nzip install \
+  --identity https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main \
+  --issuer https://token.actions.githubusercontent.com \
+  https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
+bundle update                       # later, when there is a new release
 ```
 
 As a library instead:
@@ -202,6 +205,10 @@ bundle <command> [options]
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
+  install   fetch a signed archive from a URL or domain and put it on your PATH
+  update    refetch what was installed, and replace it if it changed
+  installed list what is installed, and re-check each against its record
+  uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root
   skill     install the bundle-auditing skill into a project
@@ -273,7 +280,7 @@ package's modules loaded in it. For a process of its own, spawn one with the arg
 
 ```sh
 bundle install https://example.com/tool.nzip     # fetch, verify, put on PATH
-bundle install                                  # this package, from its own release
+bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 ```
 
 `curl | sh` with the two dangerous parts removed: nothing is executed to install
@@ -297,16 +304,26 @@ by name, or by an unquoted path, but refuses a *quoted* path — quoted, it look
 for a program rather than a document. See
 [examples/echo-argv/windows](examples/echo-argv/windows/).
 
-**With no URL it installs this package itself**, from its own published release,
-requiring the identity its [publish workflow](.github/workflows/publish.yml)
-signs with. So
+**A domain works in place of a URL.** `bundle install tool.example.com` looks up
+the TXT records of `tool.example.com` for one of the form
 
-```sh
-npx @pipobscure/bundle install
+```
+nzip:<url>
 ```
 
-is the whole bootstrap: npm fetches it once, and what stays behind is a signed archive on
-your PATH — called `bundle`, or `bundle.nzip` on Windows — that keeps itself current.
+and installs what `<url>` points at, named after the domain's first label —
+`tool`. The URL is either a full `https:` URL or a reference resolved against
+`https://tool.example.com/`, so a publisher can give people one short thing to
+type. For instance, a TXT record `nzip:/app/npm.nzip` on `npm.npmjs.org` would
+make `bundle install npm.npmjs.org` fetch `https://npm.npmjs.org/app/npm.nzip`
+and install it as `npm`.
+
+The record says *where* to fetch from and nothing more. DNS is not
+authenticated, so the archive is verified exactly as a URL's would be, the
+signer is pinned exactly the same way, and only `https:` is accepted. More than
+one differing `nzip:` record on a domain is refused rather than guessed between.
+`--name` still overrides the name, and `bundle uninstall tool.example.com`
+removes what it installed.
 
 **Whoever signed the first install is recorded**, and every later `update` of
 that name must match. That is trust on first use, said plainly — the first fetch
@@ -348,12 +365,10 @@ It exits non-zero when anything is not `OK`, so a script can gate on it.
 ```sh
 bundle uninstall tool                        # by name
 bundle uninstall https://example.com/tool.nzip   # by where it came from
-bundle uninstall                             # this package's own install
+bundle uninstall tool.example.com                # by the domain it was installed by
 ```
 
-Deletes the file and forgets the record. With neither a name nor a URL it
-removes what `bundle install` left behind — found by the URL it came from,
-whatever it ended up called. The `.nzip` association on Windows is left alone:
+Deletes the file and forgets the record. The `.nzip` association on Windows is left alone:
 other archives may need it, and it is not this one's to take away.
 
 ### `skill`

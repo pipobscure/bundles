@@ -26,7 +26,7 @@ commands:
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   run       mount a signed archive and run it
-  install   fetch a signed archive from a URL and put it on your PATH
+  install   fetch a signed archive from a URL or domain and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   uninstall remove an installed archive, and forget where it came from
@@ -124,7 +124,7 @@ sea options:                        usage: sea [options] [archive]
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
 
-install options:                    usage: install [options] [url]
+install options:                    usage: install [options] <url | domain>
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -134,12 +134,16 @@ install options:                    usage: install [options] [url]
   -d, --dir <dir>       where to install (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
 
-  with no url, this package installs itself from its own published release,
-  requiring the identity its publish workflow signs with — so
-  'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
-  'bundle update' keeps current. The archive is named '.nzip', and the name it
-  installs under drops that everywhere but Windows, where the extension is what
-  makes it runnable.
+  a domain instead of a url is looked up in DNS: a TXT record of the form
+  'nzip:<url>' says what to fetch, with <url> either https or resolved
+  against https://<domain>/, and the domain's first label is the name. So a
+  TXT record 'nzip:/app/npm.nzip' on npm.npmjs.org makes
+  'bundle install npm.npmjs.org' fetch https://npm.npmjs.org/app/npm.nzip
+  and install it as 'npm'. The record only says where; the archive is
+  verified exactly as a url's would be.
+
+  an archive named '.nzip' installs without that everywhere but Windows,
+  where the extension is what makes it runnable.
 
   nothing is written until the signature verifies. Whoever signed the first
   install is recorded, and every later 'update' of that name must match — so
@@ -162,11 +166,10 @@ installed options:                  usage: installed [options]
   installed, and it still verifies as the identity it was installed as. Exits
   non-zero if any of that is no longer true.
 
-uninstall options:                  usage: uninstall [name | url]
+uninstall options:                  usage: uninstall <name | url | domain>
 
-  deletes the file and forgets the record. With neither a name nor a url it
-  removes this package's own install — what 'bundle install' left behind. The
-  .nzip association on Windows is left alone: other archives may need it.
+  deletes the file and forgets the record. The .nzip association on Windows
+  is left alone: other archives may need it.
 
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
@@ -438,19 +441,14 @@ async function install(args: string[], io: Console): Promise<number> {
     });
     const INSTALL = await import('./install.ts');
 
-    // With no URL, this package installs itself: the published release, signed
-    // by the workflow that publishes it. `npx @pipobscure/bundle install` is
-    // then the whole bootstrap — npm fetches it once, and what stays behind is
-    // a signed archive that updates itself from its own releases.
-    const itself = !positionals[0] ? INSTALL.self() : undefined;
-    const url = positionals[0] ?? itself!.url;
-    if (itself) io.err(`* installing this package itself from ${url}`);
+    const target = positionals[0];
+    if (!target) throw new Error('install: a url or a domain is required');
 
     try {
-        const record = await INSTALL.install(url, {
+        const record = await INSTALL.install(target, {
             roots: values.root ?? [], name: values.name, dir: values.dir,
-            identity: values.identity ?? itself?.identity,
-            issuer: values.issuer ?? itself?.issuer,
+            identity: values.identity,
+            issuer: values.issuer,
             allowUntrusted: values.untrusted,
             log: (line) => io.err(line),
         });
@@ -536,13 +534,13 @@ async function installed(args: string[], io: Console): Promise<number> {
     return worst;
 }
 
-// Remove an install: the file, and the record of where it came from. With no
-// argument it is this package's own, which is what somebody who typed
-// `bundle uninstall` means.
+// Remove an install: the file, and the record of where it came from.
 async function uninstall(args: string[], io: Console): Promise<number> {
     const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+    const which = positionals[0];
+    if (!which) throw new Error('uninstall: a name, a url or a domain is required');
     const INSTALL = await import('./install.ts');
-    const record = INSTALL.uninstall(positionals[0]);
+    const record = INSTALL.uninstall(which);
     io.out(`removed ${record.name} from ${record.dir}`);
     io.err(`  it came from ${record.url}`);
     return 0;

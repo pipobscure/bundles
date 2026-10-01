@@ -1212,10 +1212,21 @@ is executed to install it, and an archive that fails verification never exists a
 destination — it is written to a temporary name beside the target and renamed over it, or
 deleted.
 
-With no URL it installs *this* package, from its own published release, requiring the
-identity its publish workflow signs with. `npx @pipobscure/bundle install` is therefore the
-whole bootstrap: npm fetches it once, and what stays behind is a signed archive that
-updates itself.
+**A domain can stand in for the URL.** `bundle install npm.npmjs.org` looks up the TXT
+records of `npm.npmjs.org` for one reading `nzip:<url>` — an `https:` URL, or a path resolved
+against `https://npm.npmjs.org/` — fetches that, and installs it as `npm`, the domain's first
+label. It is the short name a publisher can hand out without anybody keeping a list of
+names: whoever controls the domain controls the alias, which is the same party that controls
+the URL anyway. DNS is unauthenticated, so the record is trusted for exactly one thing,
+*where to fetch*; the archive is verified and its signer pinned as for any URL, plain `http:`
+is refused, and two different `nzip:` records on one domain are refused rather than chosen
+between. The domain is kept in the record, so `bundle uninstall npm.npmjs.org` finds it again.
+
+There was, for a while, a `bundle install` with no URL, which installed *this* package from
+its own release under the identity its publish workflow signs with. It went when aliases
+arrived: a special case in the CLI for one publisher is exactly what a published alias makes
+unnecessary, and `npm install -g @pipobscure/bundle` already leaves the signed archive on the
+PATH.
 
 `bundle installed` is what makes the record worth keeping rather than merely
 kept: it lists what is there and re-checks each one — the file exists, its bytes
@@ -1226,8 +1237,7 @@ installed archive, so a file whose hash moved without the record moving with it
 was changed by something else, and the replacement may be perfectly well signed.
 
 `bundle uninstall` is the other end: it deletes the file and forgets the record,
-by name, by the URL it came from, or — given neither — this package's own
-install. What it does not undo is the Windows association, which other archives
+by name, by the URL it came from, or by the domain whose alias installed it. What it does not undo is the Windows association, which other archives
 may be relying on.
 
 **The record is the interesting part.** Each install is remembered — name, URL, ETag,

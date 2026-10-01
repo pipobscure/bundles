@@ -5,8 +5,7 @@ import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
-import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir } from '../src/install.ts';
-import { STATES } from '../src/manifest.ts';
+import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias } from '../src/install.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 
 // Installing from a URL, and keeping it current.
@@ -202,9 +201,7 @@ test('installed re-checks each record: the bytes, and who signed them', async ()
     uninstall('checked.nzip');
 });
 
-test('uninstall takes a name, a url, or nothing at all', async () => {
-    const { selfName, self } = await import('../src/install.ts');
-
+test('uninstall takes a name or a url', async () => {
     // By name.
     await install(URL_, { ...options, name: 'by-name.nzip' });
     assert.equal(uninstall('by-name.nzip').name, 'by-name.nzip');
@@ -216,18 +213,9 @@ test('uninstall takes a name, a url, or nothing at all', async () => {
     assert.equal(uninstall(URL_).name, 'by-url.nzip');
     assert.equal(Object.hasOwn(records(), 'by-url.nzip'), false);
 
-    // With nothing: this package's own install, found by the URL it came from
-    // whatever it ended up called.
-    await install(URL_, { ...options, name: 'renamed-self.nzip' });
-    const all = records();
-    all['renamed-self.nzip'] = { ...all['renamed-self.nzip']!, url: self().url };
-    FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
-    assert.equal(uninstall().name, 'renamed-self.nzip');
-
     // ...and the errors say what there is rather than only what there is not.
     assert.throws(() => uninstall('nothing-like-this'), /nothing installed as/);
     assert.throws(() => uninstall('https://example.invalid/x.nzip'), /nothing installed from/);
-    assert.throws(() => uninstall(), new RegExp(`this package is not installed as '${selfName()}'`));
 });
 
 test('update with no name checks everything, and uninstall forgets one', async () => {
@@ -268,36 +256,73 @@ test('the installed name comes from the server, and cannot escape the directory'
     assert.throws(() => named('attachment; filename=".."', 'https://example.com/'), /cannot tell what to call/);
 });
 
-test('install with no url means this package, from its own release', async () => {
-    // The CLI path, because the defaulting lives there: no positional url, so
-    // the self target and the identity that comes with it are used. The URL is
-    // pointed at this suite's server; the identity requirement is real, and the
-    // test PKI does not meet it — which is exactly what should be refused.
-    const { main } = await import('../src/cli.ts');
-    const { self, SELF } = await import('../src/install.ts');
+test('a domain\'s nzip: TXT record says what to fetch, and its first label what to call it', async () => {
+    const txt = (...records: string[][]) => async () => records;
+    const alias = (...records: string[][]) => resolveAlias('npm.npmjs.org', txt(...records));
 
-    assert.equal(SELF.url, 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip');
-    assert.match(SELF.identity, /publish\.yml@refs\/heads\/main$/);
+    // Relative to the domain, absolute, and split into 255-byte chunks — which
+    // is how DNS delivers a long record, and is still one value.
+    assert.deepEqual(await alias(['v=spf1 -all'], ['nzip:/app/npm.nzip']),
+        { domain: 'npm.npmjs.org', name: installed('npm'), url: 'https://npm.npmjs.org/app/npm.nzip' });
+    assert.deepEqual(await alias(['nzip:https://cdn.example.com/npm.nzip']),
+        { domain: 'npm.npmjs.org', name: installed('npm'), url: 'https://cdn.example.com/npm.nzip' });
+    assert.equal((await alias(['nzip:https://cdn.exa', 'mple.com/npm.nzip'])).url, 'https://cdn.example.com/npm.nzip');
+    assert.equal((await alias(['nzip:/a.nzip'], ['nzip:/a.nzip'])).url, 'https://npm.npmjs.org/a.nzip', 'a duplicate is one answer');
+    assert.deepEqual(await resolveAlias('NPMJS.org.', txt(['nzip:x.nzip'])),
+        { domain: 'npmjs.org', name: installed('npmjs'), url: 'https://npmjs.org/x.nzip' });
 
-    process.env['BUNDLE_SELF_SOURCE'] = URL_;
+    await assert.rejects(() => alias(['v=spf1 -all']), /no 'nzip:<url>' TXT record/);
+    await assert.rejects(() => alias(['nzip:/a.nzip'], ['nzip:/b.nzip']), /2 different 'nzip:' records/);
+    await assert.rejects(() => alias(['nzip:']), /not of the form/);
+    // Plain HTTP would let anyone on the path choose the bytes.
+    await assert.rejects(() => alias(['nzip:http://npmjs.org/npm.nzip']), /not https/);
+    await assert.rejects(() => resolveAlias('nowhere.example', async () => {
+        throw Object.assign(new Error('queryTxt ENOTFOUND'), { code: 'ENOTFOUND' });
+    }), /has no TXT records/);
+});
+
+test('install takes a domain, and uninstall finds it again by that domain', async () => {
+    served.bytes = first;
+    served.etag = '"aliased"';
+    served.disposition = 'attachment; filename="ignored.nzip"';
+
+    // Aliases are https only; this suite's server is not, so that one origin is
+    // pointed at it. Everything after the fetch is the real thing.
+    const original = globalThis.fetch;
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        return original(url.replace('https://mytool.example/', `http://127.0.0.1:${port}/`), init);
+    }) as typeof fetch;
     try {
-        assert.equal(self().url, URL_, 'a mirror can be pointed at, the identity still applies');
-        served.bytes = first;
-        served.etag = '"self"';
+        const looked: string[] = [];
+        const record = await install('mytool.example', {
+            ...options,
+            resolveTxt: async (domain) => (looked.push(domain), [['nzip:/dl/tool.nzip']]),
+        });
+        assert.deepEqual(looked, ['mytool.example']);
+        assert.equal(record.name, installed('mytool'), 'the domain names it, not the server');
+        assert.equal(record.url, 'https://mytool.example/dl/tool.nzip');
+        assert.equal(record.alias, 'mytool.example');
+        assert.deepEqual(FS.readFileSync(PATH.join(BIN, record.name)), first);
 
-        const io = collector();
-        assert.equal(await main(['install'], io), STATES['valid-untrusted'].code);
-        assert.match(io.stderr.join('\n'), /installing this package itself/);
-        assert.match(io.stderr.join('\n'), /a sigstore identity was required/);
-
-        // ...and with the identity requirement lifted, the same fetch installs.
-        const forced = collector();
-        assert.equal(await main(['install', '--root', ROOT_PEM, '--identity', '', '--issuer', '', '--name', 'self.nzip'], forced), 0);
-        assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'self.nzip')), first);
-        uninstall('self.nzip');
+        assert.equal(uninstall('mytool.example').name, installed('mytool'));
+        assert.equal(FS.existsSync(PATH.join(BIN, record.name)), false);
     } finally {
-        delete process.env['BUNDLE_SELF_SOURCE'];
+        globalThis.fetch = original;
+        served.disposition = undefined;
     }
+
+    await assert.rejects(() => install('not a domain', options), /neither a URL nor a domain/);
+});
+
+test('install and uninstall need to be told what', async () => {
+    const { main } = await import('../src/cli.ts');
+    const bare = collector();
+    assert.equal(await main(['install'], bare), 70);
+    assert.match(bare.stderr.join('\n'), /install: a url or a domain is required/);
+    const nothing = collector();
+    assert.equal(await main(['uninstall'], nothing), 70);
+    assert.match(nothing.stderr.join('\n'), /uninstall: a name, a url or a domain is required/);
 });
 
 test('reg query output is read by name, values with spaces included', async () => {

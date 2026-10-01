@@ -2,6 +2,7 @@ import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
+import * as DNS from 'node:dns';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyBundleSync } from './api.ts';
@@ -17,6 +18,7 @@ const require = createRequire(import.meta.url);
 // rename into place, remember where it came from.
 //
 //   bundle install https://example.com/tool.nzip
+//   bundle install example.com
 //   bundle update tool.nzip
 //   bundle update
 //
@@ -32,33 +34,14 @@ const require = createRequire(import.meta.url);
 // an update sends it back as `If-None-Match`, and a 304 means there is nothing
 // to do — so `bundle update` over a dozen installs is a dozen cheap requests.
 
-/**
- * Where this package's own release lives, and who is allowed to have signed it
- * — what `bundle install` with no URL fetches.
- *
- * It is a constant rather than something read out of `package.json`, because it
- * is a *trust* statement: the identity below is what makes a self-install
- * meaningful, and a value that could be edited by whatever is being installed
- * would not be worth checking. `BUNDLE_SELF_SOURCE` overrides the URL for a
- * mirror; the identity still has to match, unless `--identity` says otherwise.
- */
-export const SELF = {
-    url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
-    identity: 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main',
-    issuer: 'https://token.actions.githubusercontent.com',
-} as const;
-
-/** The self-install target, with the environment's override applied. */
-export function self(): { url: string; identity: string; issuer: string } {
-    return { ...SELF, url: process.env['BUNDLE_SELF_SOURCE'] || SELF.url };
-}
-
 /** What an installed archive is, and where it came from. */
 export interface InstallRecord {
     /** The file name it was installed as, which is the key in the record. */
     name: string;
     /** Where it was fetched from, and where an update refetches. */
     url: string;
+    /** The domain whose `nzip:` TXT record named the URL, when it was installed by one. */
+    alias?: string | undefined;
     /** The server's ETag, for the conditional request an update makes. */
     etag?: string | undefined;
     /** `Last-Modified`, used when there is no ETag. */
@@ -98,6 +81,8 @@ export interface InstallOptions {
      */
     associate?: boolean | undefined;
     log?: ((line: string) => void) | undefined;
+    /** How a domain's TXT records are looked up (default: `node:dns`). For tests. */
+    resolveTxt?: ((domain: string) => Promise<string[][]>) | undefined;
 }
 
 export interface UpdateResult {
@@ -148,23 +133,36 @@ export function records(): Record<string, InstallRecord> {
 }
 
 /**
- * Fetch `url`, verify what comes back, and put it on the PATH under the name
+ * Fetch `target`, verify what comes back, and put it on the PATH under the name
  * the server suggests — `Content-Disposition`, or the last segment of the URL.
+ *
+ * `target` is a URL, or a bare domain whose `nzip:` TXT record names one — see
+ * `resolveAlias()`. The record's name is used then, rather than the server's.
  *
  * Nothing is written outside a temporary file until the signature checks out,
  * and the temporary file is removed if it does not.
  */
-export async function install(url: string, options: InstallOptions = {}): Promise<InstallRecord> {
+export async function install(target: string, options: InstallOptions = {}): Promise<InstallRecord> {
     const log = options.log ?? (() => {});
     const dir = options.dir ? PATH.resolve(options.dir) : installDir();
+
+    let url = target;
+    let alias: { domain: string; name: string } | undefined;
+    if (!hasScheme(target)) {
+        if (!isDomain(target)) throw new Error(`'${target}' is neither a URL nor a domain name`);
+        const resolved = await resolveAlias(target, options.resolveTxt);
+        log(`* ${resolved.domain} names ${resolved.name} at ${resolved.url}`);
+        url = resolved.url;
+        alias = resolved;
+    }
 
     log(`* fetching ${url}`);
     const response = await fetch(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
 
-    const name = options.name ?? fileName(response, url);
+    const name = options.name ?? (alias ? alias.name : fileName(response, url));
     const bytes = Buffer.from(await response.arrayBuffer());
-    const record = await place(bytes, { name, dir, url, response, options, log });
+    const record = await place(bytes, { name, dir, url, alias: alias?.domain, response, options, log });
 
     log(`* installed ${PATH.join(dir, name)}`);
     if (!onPath(dir)) {
@@ -217,6 +215,7 @@ export async function update(name: string | undefined, options: InstallOptions =
             name: each,
             dir: previous.dir,
             url: previous.url,
+            alias: previous.alias,
             response,
             log,
             options: {
@@ -230,6 +229,74 @@ export async function update(name: string | undefined, options: InstallOptions =
         results.push({ record, state: 'updated', previous: previous.sha256 });
     }
     return results;
+}
+
+/**
+ * What a domain publishes as its installable app: a TXT record of the form
+ *
+ *     nzip:<url>
+ *
+ * where `<url>` is an absolute `https:` URL, or a reference resolved against
+ * `https://<domain>/`. The command it installs as is the domain's first label.
+ * So `npm.npmjs.org` carrying `nzip:/app/npm.nzip` means
+ * `bundle install npm.npmjs.org` fetches `https://npm.npmjs.org/app/npm.nzip`
+ * and installs it as `npm`.
+ *
+ * The record only says *where* to fetch from, and DNS is not authenticated, so
+ * it is worth exactly that: the archive is verified like any other, and the
+ * identity that signed it is pinned like any other. What an alias does not do
+ * is tell you who should have signed it — `--identity` is still how you say so.
+ *
+ * Only `https:` is accepted: a record that points at plain HTTP would let
+ * anyone on the path choose the bytes, and the signature check would then be
+ * the only thing between them and the first install's trust decision.
+ */
+export async function resolveAlias(
+    domain: string,
+    resolveTxt: (domain: string) => Promise<string[][]> = DNS.promises.resolveTxt,
+): Promise<{ domain: string; name: string; url: string }> {
+    const host = domain.replace(/\.$/, '').toLowerCase();
+    let answers: string[][];
+    try {
+        answers = await resolveTxt(host);
+    } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === 'ENOTFOUND' || code === 'ENODATA') throw new Error(`${host} has no TXT records, so no 'nzip:' alias`);
+        throw new Error(`${host}: TXT lookup failed (${message(err)})`);
+    }
+
+    // A TXT record longer than 255 bytes arrives as several strings, which are
+    // one value; and the same record published twice is still one answer.
+    const entries = [...new Set(answers.map((chunks) => chunks.join('').trim()).filter((text) => text.startsWith('nzip:')))];
+    if (!entries.length) throw new Error(`${host} publishes no 'nzip:<url>' TXT record`);
+    if (entries.length > 1) throw new Error(`${host} publishes ${entries.length} different 'nzip:' records — refusing to guess between them`);
+
+    const entry = entries[0]!;
+    const reference = entry.slice('nzip:'.length).trim();
+    if (!reference) throw new Error(`${host}: '${entry}' is not of the form 'nzip:<url>'`);
+
+    let url: URL;
+    try {
+        url = new URL(reference, `https://${host}/`);
+    } catch {
+        throw new Error(`${host}: '${reference}' is not a URL`);
+    }
+    if (url.protocol !== 'https:') throw new Error(`${host}: '${reference}' is not https — refusing to fetch an alias over ${url.protocol.replace(/:$/, '')}`);
+
+    // The first label is the name: `npm.npmjs.org` installs `npm`. A hostname
+    // label is letters, digits and hyphens, so it is a file name by construction.
+    return { domain: host, name: commandName(host.split('.')[0]!), url: url.href };
+}
+
+function hasScheme(target: string): boolean {
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(target);
+}
+
+// A hostname with at least two labels: `npmjs.org`, `app.example.com`, with or
+// without the trailing dot of a fully qualified name.
+function isDomain(target: string): boolean {
+    return target.length <= 254
+        && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$/i.test(target);
 }
 
 /** What is on disk, measured against what the record says should be. */
@@ -293,12 +360,11 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
 /**
  * Forget an install, and remove the file it put on the PATH.
  *
- * `which` is a name, a URL, or nothing — and nothing means this package's own
- * install, which is what somebody typing `bundle uninstall` means. The file
+ * `which` is a name, a URL, or the domain it was installed by. The file
  * association on Windows is left alone: other archives may rely on it, and it
  * is not this one's to take away.
  */
-export function uninstall(which?: string): InstallRecord {
+export function uninstall(which: string): InstallRecord {
     const all = records();
     const name = resolve(all, which);
     const record = all[name]!;
@@ -308,39 +374,33 @@ export function uninstall(which?: string): InstallRecord {
     return record;
 }
 
-/** The name this package installs itself under, which the extension decides. */
-export function selfName(): string {
-    return commandName('bundle.nzip');
-}
-
-// Which install is meant: the one named, the one fetched from that URL, or —
-// when nothing is said — this package's own.
-function resolve(all: Record<string, InstallRecord>, which: string | undefined): string {
+// Which install is meant: the one named, the one fetched from that URL, or the
+// one installed by that domain's alias.
+function resolve(all: Record<string, InstallRecord>, which: string): string {
     const installed = Object.keys(all);
     const known = installed.length ? `installed: ${installed.sort().join(', ')}` : 'nothing is installed';
 
-    if (which === undefined) {
-        const mine = installed.find((name) => all[name]!.url === self().url) ?? selfName();
-        if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
-        return mine;
-    }
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(which)) {
+    if (hasScheme(which)) {
         const found = installed.find((name) => all[name]!.url === which);
         if (!found) throw new Error(`nothing installed from ${which} — ${known}`);
         return found;
     }
-    if (!all[which]) throw new Error(`nothing installed as '${which}' — ${known}`);
-    return which;
+    if (all[which]) return which;
+    const domain = which.replace(/\.$/, '').toLowerCase();
+    const aliased = installed.find((name) => all[name]!.alias === domain);
+    if (aliased) return aliased;
+    throw new Error(`nothing installed as '${which}' — ${known}`);
 }
 
 // ------------------------------------------------------------------ the act ---
 
 // Verify, then move into place. The order is the whole point: an archive that
 // does not verify never exists at its destination, not even briefly.
-async function place(bytes: Buffer, { name, dir, url, response, options, log }: {
+async function place(bytes: Buffer, { name, dir, url, alias, response, options, log }: {
     name: string;
     dir: string;
     url: string;
+    alias?: string | undefined;
     response: Response;
     options: InstallOptions;
     log: (line: string) => void;
@@ -380,6 +440,7 @@ async function place(bytes: Buffer, { name, dir, url, response, options, log }: 
     return remember({
         name,
         url,
+        alias,
         ...validators(response),
         identity: result.identity,
         issuer: result.issuer,
