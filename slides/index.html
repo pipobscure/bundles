@@ -19,6 +19,8 @@ h1,h2,h3{margin:0;text-wrap:balance;font-weight:800;letter-spacing:-.02em;line-h
 #fit{position:fixed;inset:0;display:grid;place-items:center}
 #stage{width:1280px;height:720px;position:relative;transform-origin:center center;flex:none}
 .slide{position:absolute;inset:0;display:none;padding:56px 72px 62px 116px}
+.qr{position:absolute;top:44px;right:56px;width:124px;height:124px;padding:9px;border-radius:10px;background:#F4F1EA;box-shadow:0 2px 14px rgba(0,0,0,.35);display:block}
+.qr svg{width:100%;height:100%;display:block}
 .slide.on{display:block;animation:in .32s cubic-bezier(.2,.7,.3,1) both}
 @keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.slide.on{animation:none}}
@@ -184,17 +186,12 @@ svg{display:block;max-width:100%}
 
 <div id="fit"><div id="stage">
 
-<!-- ═══ 00 ═══ -->
+<!-- ═══ 1 ═══ -->
 <section class="slide" data-act="" data-t="20">
   <div class="gutter"><span class="off">0x00</span><span class="act"></span></div>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
     <div class="eyebrow">Node.js &middot; module loading &middot; distribution</div>
     <h1 style="font-size:104px">Ship the Tree</h1>
-    <p class="lead" style="margin-top:26px;max-width:42ch">Node can now run a program directly out of a zip archive
-      &mdash; <b style="color:var(--accent)">the whole tree</b>, not a flattened bundle. Signing and verifying live
-      outside it, in tools you choose.</p>
-    <p class="lead" style="margin-top:14px;max-width:42ch">On top of that you can build application archives that are
-      <b style="color:var(--accent)">self-executing, signable, verifiable, and fully known</b>.</p>
     <div style="margin-top:40px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <span class="tag acc">node:vfs</span>
       <span class="tag acc">zip in node:zlib</span>
@@ -214,7 +211,7 @@ svg{display:block;max-width:100%}
   </div>
 </section>
 
-<!-- ═══ annoyances ═══ -->
+<!-- ═══ 2 ═══ -->
 <section class="slide" data-act="I · where this comes from" data-t="35">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Where this comes from</div>
@@ -243,7 +240,7 @@ svg{display:block;max-width:100%}
   </div>
 </section>
 
-<!-- ═══ example: durchblicker ═══ -->
+<!-- ═══ 3 ═══ -->
 <section class="slide" data-act="I · where this comes from" data-t="85">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="chapter"><span>durchblicker.at</span><span class="yr">CTO &middot; 2009&ndash;2014</span><span class="ln"></span></div>
@@ -339,7 +336,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 02 ═══ -->
+<!-- ═══ 4 ═══ -->
 <section class="slide" id="provenance" data-act="I · where this comes from" data-t="100">
   <div class="gutter"><span class="off">0x02</span><span class="act">I · where this comes from</span></div>
   <div class="chapter"><span>Bloomberg LP</span><span class="yr">2014&ndash;2026</span><span class="ln"></span><span>i &mdash; provenance</span></div>
@@ -390,7 +387,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 03 ═══ -->
+<!-- ═══ 5 ═══ -->
 <section class="slide" data-act="I · where this comes from" data-t="75">
   <div class="gutter"><span class="off">0x03</span><span class="act">I · where this comes from</span></div>
   <div class="chapter"><span>Bloomberg LP</span><span class="yr">2014&ndash;2026</span><span class="ln"></span><span>ii &mdash; distribution</span></div>
@@ -431,7 +428,48 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 04 ═══ -->
+<!-- ═══ 6 ═══ -->
+<section class="slide" id="tree" data-act="I · where this comes from" data-t="65">
+  <div class="gutter"><span class="off">0x07</span><span class="act">II · the primitive</span></div>
+  <div class="eyebrow">Why this needed the runtime at all</div>
+  <h2>An application is a tree.<br>Not a blob.</h2>
+  <div class="cols w" style="margin-top:26px">
+    <div class="stack">
+      <p class="lead" style="max-width:35ch">Bundlers collapse <i>JavaScript</i> into one file. An application is an
+        entry point, sibling modules, a <code style="color:var(--accent)">package.json</code>, templates, static
+        assets, sometimes a native addon.</p>
+      <div class="cmd" style="border-left-color:var(--bad)"><span class="c"># survives a bundler</span>
+import helper from <span class="o">'./helper.js'</span>
+
+<span class="c"># does not</span>
+readFileSync(join(__dirname, <span class="o">'tmpl/mail.html'</span>))
+require(<span class="o">`./plugins/${name}`</span>)
+dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
+    </div>
+    <div class="stack">
+      <p class="sub" style="font-size:18px;max-width:40ch">Node's module resolution &mdash; and every single
+        <code>fs</code> call &mdash; assumes that tree is on a real disk. A bundler rewrites its slice of module
+        loading; everything else keeps pointing at directories that aren't there.</p>
+      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
+        <p style="color:var(--ink);font-size:20px;line-height:1.34;font-weight:600">
+          Don't teach the bundler about more file types.</p>
+        <p style="color:var(--accent);font-size:20px;line-height:1.34;font-weight:600;margin-top:8px">
+          Teach the runtime that a file can <i>be</i> a directory.</p>
+      </div>
+      <p class="sub" style="font-size:16px;max-width:42ch">Then assets work. Addons work. <code>__dirname</code> works.
+        Dynamic <code>require</code> works. Not because anyone special-cased them &mdash; because they all resolve
+        against a tree, and the tree is real.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">the reframe</span><span>07</span></div>
+  <div class="notes" hidden>
+    <p class="say">"Every bundler bug you've ever filed is downstream of this. It rewrote the imports it could see, then some library did a dynamic require, and it fell over at runtime, in production, on a Friday."</p>
+    <p><b>This slide converts skeptics</b> — everyone has been burned by exactly this. Let the code block land. Pause after "does not."</p>
+    <p>This also answers "why did you have to touch Node?" — because the alternative is patching resolution from userland, forever, incompletely.</p>
+  </div>
+</section>
+
+<!-- ═══ 7 ═══ -->
 <section class="slide" data-act="I · where this comes from" data-t="70">
   <div class="gutter"><span class="off">0x04</span><span class="act">I · where this comes from</span></div>
   <div class="chapter"><span>TC39 &middot; Temporal</span><span class="yr">~10 years</span><span class="ln"></span></div>
@@ -475,7 +513,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 05 ═══ -->
+<!-- ═══ 8 ═══ -->
 <section class="slide" data-act="I · where this comes from" data-t="60">
   <div class="gutter"><span class="off">0x05</span><span class="act">I · where this comes from</span></div>
   <div class="chapter"><span>Prior art</span><span class="yr">jar &middot; apk &middot; zipapp</span><span class="ln"></span></div>
@@ -504,7 +542,7 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 06 ═══ -->
+<!-- ═══ 9 ═══ -->
 <section class="slide" data-act="II · the primitive" data-t="55">
   <div class="gutter"><span class="off">0x06</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Sorting the takeaways</div>
@@ -542,49 +580,8 @@ npm <span class="r">ERR!</span> <span class="r">503 Service Unavailable</span>
   </div>
 </section>
 
-<!-- ═══ 07 ═══ -->
-<section class="slide" id="tree" data-act="II · the primitive" data-t="65">
-  <div class="gutter"><span class="off">0x07</span><span class="act">II · the primitive</span></div>
-  <div class="eyebrow">Why this needed the runtime at all</div>
-  <h2>An application is a tree.<br>Not a blob.</h2>
-  <div class="cols w" style="margin-top:26px">
-    <div class="stack">
-      <p class="lead" style="max-width:35ch">Bundlers collapse <i>JavaScript</i> into one file. An application is an
-        entry point, sibling modules, a <code style="color:var(--accent)">package.json</code>, templates, static
-        assets, sometimes a native addon.</p>
-      <div class="cmd" style="border-left-color:var(--bad)"><span class="c"># survives a bundler</span>
-import helper from <span class="o">'./helper.js'</span>
-
-<span class="c"># does not</span>
-readFileSync(join(__dirname, <span class="o">'tmpl/mail.html'</span>))
-require(<span class="o">`./plugins/${name}`</span>)
-dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
-    </div>
-    <div class="stack">
-      <p class="sub" style="font-size:18px;max-width:40ch">Node's module resolution &mdash; and every single
-        <code>fs</code> call &mdash; assumes that tree is on a real disk. A bundler rewrites its slice of module
-        loading; everything else keeps pointing at directories that aren't there.</p>
-      <div class="card" style="border-color:var(--accent-dim);background:rgba(240,169,59,.05)">
-        <p style="color:var(--ink);font-size:20px;line-height:1.34;font-weight:600">
-          Don't teach the bundler about more file types.</p>
-        <p style="color:var(--accent);font-size:20px;line-height:1.34;font-weight:600;margin-top:8px">
-          Teach the runtime that a file can <i>be</i> a directory.</p>
-      </div>
-      <p class="sub" style="font-size:16px;max-width:42ch">Then assets work. Addons work. <code>__dirname</code> works.
-        Dynamic <code>require</code> works. Not because anyone special-cased them &mdash; because they all resolve
-        against a tree, and the tree is real.</p>
-    </div>
-  </div>
-  <div class="kicker"><span class="mono">the reframe</span><span>07</span></div>
-  <div class="notes" hidden>
-    <p class="say">"Every bundler bug you've ever filed is downstream of this. It rewrote the imports it could see, then some library did a dynamic require, and it fell over at runtime, in production, on a Friday."</p>
-    <p><b>This slide converts skeptics</b> — everyone has been burned by exactly this. Let the code block land. Pause after "does not."</p>
-    <p>This also answers "why did you have to touch Node?" — because the alternative is patching resolution from userland, forever, incompletely.</p>
-  </div>
-</section>
-
-<!-- ═══ 08 ═══ -->
-<section class="slide" id="baseoffset" data-act="II · the primitive" data-t="70">
+<!-- ═══ 10 ═══ -->
+<section class="slide" data-cut id="baseoffset" data-act="II · the primitive" data-t="70">
   <div class="gutter"><span class="off">0x08</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Piece 1 &middot; <span style="color:var(--ok)">zip support in node:zlib</span></div>
   <h2><code style="font-size:42px">baseOffset</code> &mdash; a zip that<br>doesn't start at byte zero.</h2>
@@ -632,8 +629,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 09 ═══ -->
-<section class="slide" data-act="II · the primitive" data-t="75">
+<!-- ═══ 11 ═══ -->
+<section class="slide" data-cut data-act="II · the primitive" data-t="75">
   <div class="gutter"><span class="off">0x09</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Piece 2 &middot; <span style="color:var(--ok)">mount and load</span></div>
   <h2>Resolve the program<br>against the archive.</h2>
@@ -682,8 +679,8 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 0A ═══ -->
-<section class="slide" data-act="II · the primitive" data-t="65">
+<!-- ═══ 12 ═══ -->
+<section class="slide" data-cut data-act="II · the primitive" data-t="65">
   <div class="gutter"><span class="off">0x0A</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">Piece 3 &middot; the extension point</div>
   <h2><code style="font-size:38px">registerProvider()</code> &mdash; you<br>decide what backs a mount.</h2>
@@ -730,7 +727,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ signature format stays out ═══ -->
+<!-- ═══ 13 ═══ -->
 <section class="slide" id="sigfmt" data-act="II · the primitive" data-t="85">
   <div class="gutter"><span class="off">0x0B</span><span class="act">II · the primitive</span></div>
   <div class="eyebrow">One of the design decisions</div>
@@ -778,7 +775,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 0C ═══ -->
+<!-- ═══ 14 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="105">
   <div class="gutter"><span class="off">0x0C</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">One policy, entirely in userland</div>
@@ -830,7 +827,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 0D ═══ -->
+<!-- ═══ 15 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="20">
   <div class="gutter"><span class="off">0x0D</span><span class="act">III · the optional layer</span></div>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
@@ -859,7 +856,7 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
   </div>
 </section>
 
-<!-- ═══ 0E ═══ -->
+<!-- ═══ 16 ═══ -->
 <section class="slide" id="demo1" data-act="III · the optional layer" data-t="120">
   <div class="gutter"><span class="off">0x0E</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 01</div>
@@ -919,7 +916,7 @@ exec node --experimental-vfs \
   </div>
 </section>
 
-<!-- ═══ 0F ═══ -->
+<!-- ═══ 17 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="115">
   <div class="gutter"><span class="off">0x0F</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 02 &middot; 03</div>
@@ -967,7 +964,7 @@ exec node --experimental-vfs \
   </div>
 </section>
 
-<!-- ═══ 10 ═══ -->
+<!-- ═══ 18 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="40">
   <div class="gutter"><span class="off">0x10</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 04</div>
@@ -1004,7 +1001,7 @@ exec node --experimental-vfs \
   </div>
 </section>
 
-<!-- ═══ 11 ═══ -->
+<!-- ═══ 19 ═══ -->
 <section class="slide" id="audit" data-act="III · the optional layer" data-t="80">
   <div class="gutter"><span class="off">0x11</span><span class="act">III · the optional layer</span></div>
   <div class="eyebrow">Demo 05</div>
@@ -1064,7 +1061,7 @@ exec node --experimental-vfs \
   </div>
 </section>
 
-<!-- ═══ 12 ═══ -->
+<!-- ═══ 20 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="70">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Demo 06</div>
@@ -1111,7 +1108,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   </div>
 </section>
 
-<!-- ═══ 13 ═══ -->
+<!-- ═══ 21 ═══ -->
 <section class="slide" data-act="III · the optional layer" data-t="60">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Demo 6 &middot; <span style="color:var(--ok)">shipping it to someone else</span></div>
@@ -1156,7 +1153,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   </div>
 </section>
 
-<!-- ═══ 14 ═══ -->
+<!-- ═══ 22 ═══ -->
 <section class="slide" data-act="IV · close" data-t="65">
   <div class="gutter"><span class="off">0x12</span><span class="act">IV · close</span></div>
   <div class="eyebrow">Status</div>
@@ -1192,7 +1189,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   </div>
 </section>
 
-<!-- ═══ 15 ═══ -->
+<!-- ═══ 23 ═══ -->
 <section class="slide" data-act="IV · close" data-t="55">
   <div class="gutter"><span class="off">0x13</span><span class="act">IV · close</span></div>
   <div class="eyebrow">Before anyone else says it</div>
@@ -1225,9 +1222,15 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   </div>
 </section>
 
-<!-- ═══ 16 ═══ -->
+<!-- ═══ 24 ═══ -->
 <section class="slide" data-act="IV · close" data-t="45">
   <div class="gutter"><span class="off">0x14</span><span class="act">IV · close</span></div>
+  <a class="qr" href="https://github.com/pipobscure/bundles" aria-label="github.com/pipobscure/bundles">
+    <svg viewBox="-4 -4 37 37" shape-rendering="crispEdges" role="img">
+      <rect x="-4" y="-4" width="37" height="37" fill="#F4F1EA"/>
+      <path fill="#12151C" d="M0 0h7v1h-7zM8 0h2v1h-2zM13 0h1v1h-1zM18 0h1v1h-1zM22 0h7v1h-7zM0 1h1v1h-1zM6 1h1v1h-1zM8 1h1v1h-1zM14 1h1v1h-1zM16 1h2v1h-2zM19 1h2v1h-2zM22 1h1v1h-1zM28 1h1v1h-1zM0 2h1v1h-1zM2 2h3v1h-3zM6 2h1v1h-1zM8 2h2v1h-2zM11 2h5v1h-5zM19 2h1v1h-1zM22 2h1v1h-1zM24 2h3v1h-3zM28 2h1v1h-1zM0 3h1v1h-1zM2 3h3v1h-3zM6 3h1v1h-1zM10 3h1v1h-1zM12 3h1v1h-1zM14 3h1v1h-1zM16 3h2v1h-2zM22 3h1v1h-1zM24 3h3v1h-3zM28 3h1v1h-1zM0 4h1v1h-1zM2 4h3v1h-3zM6 4h1v1h-1zM8 4h7v1h-7zM16 4h4v1h-4zM22 4h1v1h-1zM24 4h3v1h-3zM28 4h1v1h-1zM0 5h1v1h-1zM6 5h1v1h-1zM12 5h3v1h-3zM16 5h1v1h-1zM18 5h1v1h-1zM20 5h1v1h-1zM22 5h1v1h-1zM28 5h1v1h-1zM0 6h7v1h-7zM8 6h1v1h-1zM10 6h1v1h-1zM12 6h1v1h-1zM14 6h1v1h-1zM16 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM22 6h7v1h-7zM10 7h3v1h-3zM14 7h1v1h-1zM16 7h1v1h-1zM18 7h3v1h-3zM0 8h1v1h-1zM3 8h6v1h-6zM12 8h3v1h-3zM16 8h2v1h-2zM21 8h1v1h-1zM24 8h1v1h-1zM26 8h3v1h-3zM1 9h1v1h-1zM3 9h3v1h-3zM7 9h1v1h-1zM10 9h1v1h-1zM14 9h2v1h-2zM19 9h1v1h-1zM21 9h1v1h-1zM23 9h2v1h-2zM26 9h2v1h-2zM1 10h1v1h-1zM4 10h1v1h-1zM6 10h1v1h-1zM10 10h1v1h-1zM12 10h1v1h-1zM14 10h2v1h-2zM18 10h1v1h-1zM20 10h1v1h-1zM23 10h2v1h-2zM26 10h1v1h-1zM0 11h1v1h-1zM4 11h1v1h-1zM8 11h2v1h-2zM11 11h2v1h-2zM14 11h1v1h-1zM17 11h1v1h-1zM21 11h3v1h-3zM25 11h1v1h-1zM28 11h1v1h-1zM1 12h2v1h-2zM4 12h1v1h-1zM6 12h2v1h-2zM11 12h1v1h-1zM13 12h4v1h-4zM19 12h1v1h-1zM22 12h2v1h-2zM28 12h1v1h-1zM0 13h2v1h-2zM3 13h1v1h-1zM7 13h2v1h-2zM12 13h1v1h-1zM15 13h2v1h-2zM18 13h1v1h-1zM22 13h7v1h-7zM1 14h2v1h-2zM5 14h2v1h-2zM8 14h1v1h-1zM10 14h1v1h-1zM12 14h1v1h-1zM14 14h9v1h-9zM24 14h1v1h-1zM26 14h1v1h-1zM28 14h1v1h-1zM1 15h1v1h-1zM3 15h3v1h-3zM13 15h3v1h-3zM19 15h1v1h-1zM23 15h2v1h-2zM26 15h1v1h-1zM28 15h1v1h-1zM0 16h7v1h-7zM9 16h3v1h-3zM19 16h3v1h-3zM25 16h1v1h-1zM0 17h2v1h-2zM4 17h2v1h-2zM8 17h1v1h-1zM10 17h2v1h-2zM15 17h1v1h-1zM17 17h1v1h-1zM19 17h1v1h-1zM24 17h1v1h-1zM26 17h2v1h-2zM0 18h5v1h-5zM6 18h2v1h-2zM11 18h1v1h-1zM13 18h3v1h-3zM17 18h1v1h-1zM19 18h1v1h-1zM24 18h2v1h-2zM28 18h1v1h-1zM0 19h2v1h-2zM3 19h1v1h-1zM5 19h1v1h-1zM8 19h2v1h-2zM13 19h1v1h-1zM16 19h1v1h-1zM19 19h1v1h-1zM22 19h1v1h-1zM25 19h2v1h-2zM0 20h2v1h-2zM3 20h6v1h-6zM10 20h1v1h-1zM13 20h1v1h-1zM15 20h1v1h-1zM17 20h1v1h-1zM20 20h8v1h-8zM8 21h6v1h-6zM15 21h1v1h-1zM20 21h1v1h-1zM24 21h2v1h-2zM0 22h7v1h-7zM8 22h2v1h-2zM11 22h3v1h-3zM15 22h1v1h-1zM18 22h3v1h-3zM22 22h1v1h-1zM24 22h2v1h-2zM0 23h1v1h-1zM6 23h1v1h-1zM8 23h1v1h-1zM10 23h1v1h-1zM12 23h2v1h-2zM15 23h6v1h-6zM24 23h1v1h-1zM27 23h2v1h-2zM0 24h1v1h-1zM2 24h3v1h-3zM6 24h1v1h-1zM8 24h2v1h-2zM13 24h1v1h-1zM15 24h2v1h-2zM19 24h7v1h-7zM28 24h1v1h-1zM0 25h1v1h-1zM2 25h3v1h-3zM6 25h1v1h-1zM8 25h1v1h-1zM11 25h6v1h-6zM18 25h1v1h-1zM21 25h1v1h-1zM28 25h1v1h-1zM0 26h1v1h-1zM2 26h3v1h-3zM6 26h1v1h-1zM10 26h3v1h-3zM15 26h1v1h-1zM20 26h2v1h-2zM23 26h2v1h-2zM26 26h3v1h-3zM0 27h1v1h-1zM6 27h1v1h-1zM9 27h1v1h-1zM11 27h3v1h-3zM15 27h1v1h-1zM22 27h2v1h-2zM25 27h2v1h-2zM28 27h1v1h-1zM0 28h7v1h-7zM8 28h1v1h-1zM14 28h1v1h-1zM18 28h3v1h-3zM22 28h1v1h-1zM24 28h1v1h-1z"/>
+    </svg>
+  </a>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
     <div class="eyebrow">What I actually want</div>
     <h2 style="font-size:52px;max-width:26ch">An application in one file.<br>Self-executing, checkable,<br>and fully known.</h2>
@@ -1258,9 +1261,15 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   </div>
 </section>
 
-<!-- ═══ 17 ═══ -->
+<!-- ═══ 25 ═══ -->
 <section class="slide" data-act="IV · close" data-t="120">
   <div class="gutter"><span class="off">0x15</span><span class="act">IV · close</span></div>
+  <a class="qr" href="https://github.com/pipobscure/bundles" aria-label="github.com/pipobscure/bundles">
+    <svg viewBox="-4 -4 37 37" shape-rendering="crispEdges" role="img">
+      <rect x="-4" y="-4" width="37" height="37" fill="#F4F1EA"/>
+      <path fill="#12151C" d="M0 0h7v1h-7zM8 0h2v1h-2zM13 0h1v1h-1zM18 0h1v1h-1zM22 0h7v1h-7zM0 1h1v1h-1zM6 1h1v1h-1zM8 1h1v1h-1zM14 1h1v1h-1zM16 1h2v1h-2zM19 1h2v1h-2zM22 1h1v1h-1zM28 1h1v1h-1zM0 2h1v1h-1zM2 2h3v1h-3zM6 2h1v1h-1zM8 2h2v1h-2zM11 2h5v1h-5zM19 2h1v1h-1zM22 2h1v1h-1zM24 2h3v1h-3zM28 2h1v1h-1zM0 3h1v1h-1zM2 3h3v1h-3zM6 3h1v1h-1zM10 3h1v1h-1zM12 3h1v1h-1zM14 3h1v1h-1zM16 3h2v1h-2zM22 3h1v1h-1zM24 3h3v1h-3zM28 3h1v1h-1zM0 4h1v1h-1zM2 4h3v1h-3zM6 4h1v1h-1zM8 4h7v1h-7zM16 4h4v1h-4zM22 4h1v1h-1zM24 4h3v1h-3zM28 4h1v1h-1zM0 5h1v1h-1zM6 5h1v1h-1zM12 5h3v1h-3zM16 5h1v1h-1zM18 5h1v1h-1zM20 5h1v1h-1zM22 5h1v1h-1zM28 5h1v1h-1zM0 6h7v1h-7zM8 6h1v1h-1zM10 6h1v1h-1zM12 6h1v1h-1zM14 6h1v1h-1zM16 6h1v1h-1zM18 6h1v1h-1zM20 6h1v1h-1zM22 6h7v1h-7zM10 7h3v1h-3zM14 7h1v1h-1zM16 7h1v1h-1zM18 7h3v1h-3zM0 8h1v1h-1zM3 8h6v1h-6zM12 8h3v1h-3zM16 8h2v1h-2zM21 8h1v1h-1zM24 8h1v1h-1zM26 8h3v1h-3zM1 9h1v1h-1zM3 9h3v1h-3zM7 9h1v1h-1zM10 9h1v1h-1zM14 9h2v1h-2zM19 9h1v1h-1zM21 9h1v1h-1zM23 9h2v1h-2zM26 9h2v1h-2zM1 10h1v1h-1zM4 10h1v1h-1zM6 10h1v1h-1zM10 10h1v1h-1zM12 10h1v1h-1zM14 10h2v1h-2zM18 10h1v1h-1zM20 10h1v1h-1zM23 10h2v1h-2zM26 10h1v1h-1zM0 11h1v1h-1zM4 11h1v1h-1zM8 11h2v1h-2zM11 11h2v1h-2zM14 11h1v1h-1zM17 11h1v1h-1zM21 11h3v1h-3zM25 11h1v1h-1zM28 11h1v1h-1zM1 12h2v1h-2zM4 12h1v1h-1zM6 12h2v1h-2zM11 12h1v1h-1zM13 12h4v1h-4zM19 12h1v1h-1zM22 12h2v1h-2zM28 12h1v1h-1zM0 13h2v1h-2zM3 13h1v1h-1zM7 13h2v1h-2zM12 13h1v1h-1zM15 13h2v1h-2zM18 13h1v1h-1zM22 13h7v1h-7zM1 14h2v1h-2zM5 14h2v1h-2zM8 14h1v1h-1zM10 14h1v1h-1zM12 14h1v1h-1zM14 14h9v1h-9zM24 14h1v1h-1zM26 14h1v1h-1zM28 14h1v1h-1zM1 15h1v1h-1zM3 15h3v1h-3zM13 15h3v1h-3zM19 15h1v1h-1zM23 15h2v1h-2zM26 15h1v1h-1zM28 15h1v1h-1zM0 16h7v1h-7zM9 16h3v1h-3zM19 16h3v1h-3zM25 16h1v1h-1zM0 17h2v1h-2zM4 17h2v1h-2zM8 17h1v1h-1zM10 17h2v1h-2zM15 17h1v1h-1zM17 17h1v1h-1zM19 17h1v1h-1zM24 17h1v1h-1zM26 17h2v1h-2zM0 18h5v1h-5zM6 18h2v1h-2zM11 18h1v1h-1zM13 18h3v1h-3zM17 18h1v1h-1zM19 18h1v1h-1zM24 18h2v1h-2zM28 18h1v1h-1zM0 19h2v1h-2zM3 19h1v1h-1zM5 19h1v1h-1zM8 19h2v1h-2zM13 19h1v1h-1zM16 19h1v1h-1zM19 19h1v1h-1zM22 19h1v1h-1zM25 19h2v1h-2zM0 20h2v1h-2zM3 20h6v1h-6zM10 20h1v1h-1zM13 20h1v1h-1zM15 20h1v1h-1zM17 20h1v1h-1zM20 20h8v1h-8zM8 21h6v1h-6zM15 21h1v1h-1zM20 21h1v1h-1zM24 21h2v1h-2zM0 22h7v1h-7zM8 22h2v1h-2zM11 22h3v1h-3zM15 22h1v1h-1zM18 22h3v1h-3zM22 22h1v1h-1zM24 22h2v1h-2zM0 23h1v1h-1zM6 23h1v1h-1zM8 23h1v1h-1zM10 23h1v1h-1zM12 23h2v1h-2zM15 23h6v1h-6zM24 23h1v1h-1zM27 23h2v1h-2zM0 24h1v1h-1zM2 24h3v1h-3zM6 24h1v1h-1zM8 24h2v1h-2zM13 24h1v1h-1zM15 24h2v1h-2zM19 24h7v1h-7zM28 24h1v1h-1zM0 25h1v1h-1zM2 25h3v1h-3zM6 25h1v1h-1zM8 25h1v1h-1zM11 25h6v1h-6zM18 25h1v1h-1zM21 25h1v1h-1zM28 25h1v1h-1zM0 26h1v1h-1zM2 26h3v1h-3zM6 26h1v1h-1zM10 26h3v1h-3zM15 26h1v1h-1zM20 26h2v1h-2zM23 26h2v1h-2zM26 26h3v1h-3zM0 27h1v1h-1zM6 27h1v1h-1zM9 27h1v1h-1zM11 27h3v1h-3zM15 27h1v1h-1zM22 27h2v1h-2zM25 27h2v1h-2zM28 27h1v1h-1zM0 28h7v1h-7zM8 28h1v1h-1zM14 28h1v1h-1zM18 28h3v1h-3zM22 28h1v1h-1zM24 28h1v1h-1z"/>
+    </svg>
+  </a>
   <div style="display:flex;flex-direction:column;height:100%;justify-content:center;align-items:flex-start">
     <div class="eyebrow q">Two, if we're lucky</div>
     <h1 style="font-size:100px">Questions?</h1>
@@ -1321,7 +1330,13 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
 
 <script>
 (function(){
-  var slides = [].slice.call(document.querySelectorAll('.slide'));
+  // A slide marked `data-cut` is kept in the file but left out of the deck —
+  // parked rather than deleted. Add `?cut` to the URL to put them all back;
+  // everything else (offsets, act labels, kicker numbers, the timing plan) is
+  // derived from this list, so a cut slide costs nothing and leaves no gap.
+  var SHOW_CUT = /[?&](cut|all)\b/.test(location.search) || /[?&](cut|all)\b/.test(location.hash);
+  var slides = [].slice.call(document.querySelectorAll('.slide'))
+    .filter(function (s) { return SHOW_CUT || !s.hasAttribute('data-cut'); });
   var stage = document.getElementById('stage');
   var N = slides.length, cur = 0;
 

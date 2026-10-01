@@ -24,7 +24,8 @@ xdg-open index.html          # or just drag it into a browser
 | <kbd>?</kbd> | controls |
 
 The pace timer turns **red** when you are behind the plan for the current slide and
-**green** when you are ahead. Planned runtime is **29:15** of content across 25 slides.
+**green** when you are ahead. Planned runtime is **25:45** of content across 22 slides —
+29:15 across 25 with the cut ones put back (see below).
 That is tight for a 30-minute slot with questions, so decide your cuts in advance rather
 than discovering them on stage: `0x13` (the tool as a bundle of itself) goes first — it is
 the most satisfying beat in Act III and the least load-bearing — then `0x11` (open it with
@@ -143,6 +144,15 @@ hidden>` at the end of each section and are rendered into the notes panel as HTM
 
 To add a slide, copy an existing `<section>`, set `data-act` and `data-t`, and leave the
 `.off`, `.act` and kicker-number spans empty — they fill themselves in.
+
+**To cut one without losing it**, put `data-cut` on its `<section>`. It stays in the file and
+drops out of the deck: offsets, act labels, kicker numbers and the timing plan are all
+derived from the slides that remain, so it leaves no gap. Open the deck with `?cut` in the
+URL to put every cut slide back — useful for a longer version of the talk, or for deciding
+whether a cut was right.
+
+Currently cut: `baseOffset`, `--vfs-load` and `registerProvider` — the three mechanism slides
+from Act II.
 
 Keep the deck in step with the repository as the tool changes; it is a talk about a thing
 that is still moving, and a slide asserting something the code stopped doing is worse than
