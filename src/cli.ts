@@ -79,8 +79,8 @@ sign options:                       usage: sign [options] <archive>
   -c, --chain <file>    full certificate chain (PEM, leaf first)
 
 audit options:                      usage: audit [options] <archive>
-  -b, --baseline <file> a previously approved archive to review against, so the
-                        review is of what changed rather than of everything
+  -b, --baseline <file>  a previously approved archive to review against, so
+                        the review is of what changed rather than of everything
   -v, --verdict <file>  where the verdict is (default: <archive>.audit.json)
       --check           exit non-zero unless a clean verdict pins these bytes
       --approve         record a clean verdict you reached by reading it yourself
@@ -233,8 +233,15 @@ install options:                    usage: install [options] [url | domain]
 
 update options:                     usage: update [options] [name]
   -y, --yes             accept everything found for a new version, rather than asking
-      --identity, --issuer, --attester, --quorum, --block, --no-discover, --root
-                        as for install, demanded of every new version this run
+      --identity <san>  require this sigstore signing identity of every new version
+      --issuer <url>    require this sigstore OIDC issuer of every new version
+      --attester <[kind@]who>  require an attestation from this DID or handle of
+                        every new version; repeatable
+      --quorum <n>      how many of the attesters must have attested (default: all)
+      --block <who>     refuse a new version this DID or handle has marked bad;
+                        repeatable
+      --no-discover     do not ask the backlink index who has attested it
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
 
   with no name, every install is checked. Each is a conditional request with
   the recorded ETag, so nothing is downloaded twice. A new version is reviewed
