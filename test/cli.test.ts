@@ -337,3 +337,27 @@ function execute(file: string, args: string[]): SpawnSyncReturns<string> {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
 }
+
+test('the README documents every command, and every option each one accepts', async () => {
+    const { COMMANDS, OPTIONS } = await import('../src/cli.ts');
+    const readme = FS.readFileSync(PATH.join(ROOT, 'README.md'), 'utf-8');
+    const missing: string[] = [];
+    for (const command of Object.keys(COMMANDS)) {
+        // A command's section runs from its heading to the next heading at its level
+        // or above — a real one, not a `# comment` line inside an example.
+        const start = readme.indexOf(`\n#### \`${command}\`\n`);
+        if (start < 0) {
+            missing.push(`a section for ${command}`);
+            continue;
+        }
+        const rest = readme.slice(start + 1);
+        const end = rest.slice(1).search(/\n#{1,4} [\w`]/);
+        const section = end < 0 ? rest : rest.slice(0, end + 1);
+        const options = (OPTIONS as Record<string, Record<string, { type: string; default?: unknown }>>)[command] ?? {};
+        for (const [name, option] of Object.entries(options)) {
+            const spelled = option.type === 'boolean' && option.default === true ? `--no-${name}` : `--${name}`;
+            if (!new RegExp(`${spelled}\\b`).test(section)) missing.push(`${command} ${spelled}`);
+        }
+    }
+    assert.deepEqual(missing, []);
+});
