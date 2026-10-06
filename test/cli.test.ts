@@ -340,7 +340,8 @@ function execute(file: string, args: string[]): SpawnSyncReturns<string> {
 
 test('the README documents every command, and every option each one accepts', async () => {
     const { COMMANDS, OPTIONS } = await import('../src/cli.ts');
-    const readme = FS.readFileSync(PATH.join(ROOT, 'README.md'), 'utf-8');
+    // A Windows checkout may have turned every line ending into CRLF.
+    const readme = FS.readFileSync(PATH.join(ROOT, 'README.md'), 'utf-8').replace(/\r\n/g, '\n');
     const missing: string[] = [];
     for (const command of Object.keys(COMMANDS)) {
         // A command's section runs from its heading to the next heading at its level
