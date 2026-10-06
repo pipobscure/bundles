@@ -14,6 +14,7 @@ import { formatAttester, parseDuration, policyFromEnvironment, cachedDids, type 
 export { STATES };
 import * as SKILLS from './skill.ts';
 import * as REVIEW from './review.ts';
+import type { Validation, Seen } from './install.ts';
 
 // Argument parsing and reporting, and nothing else. Every command below is a
 // `parseArgs` call, a message or two, and one call into `api.ts` — which is
@@ -33,12 +34,14 @@ commands:
   install   fetch a signed archive from a URL or domain and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
+  validate  re-check installs, and say what has been attested since — at startup
   uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root and the cached attestations
   policy    show the rules this machine installs by, and where they come from
   lexicon   show, check or publish the atproto lexicons attestations are written in
   skill     install this package's bundle-auditing skill into a project
+  shell     print what to load at shell start: Tab completion, and validate
 
 create options:
   -b, --base <dir>      base directory the file list is relative to (default: .)
@@ -192,6 +195,7 @@ install options:                    usage: install [options] [url | domain]
                         server suggests (Content-Disposition, else the URL)
   -d, --dir <dir>       where to install (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
+      --no-shell        installing itself, do not offer to set up the shell
 
   everything that vouches for the archive is found and shown: its signature,
   and every attestation of it — from attesters this machine knows, and from
@@ -221,7 +225,11 @@ install options:                    usage: install [options] [url | domain]
   'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
   'bundle update' keeps current. The archive is named '.nzip', and the name it
   installs under drops that everywhere but Windows, where the extension is what
-  makes it runnable.
+  makes it runnable. It then offers to add 'bundle shell' to the startup file
+  of the shell it is run from — Tab completion, and a quiet daily re-check of
+  installs (see 'shell'); 'bundle uninstall' takes that out again. Run again
+  once installed, it fetches nothing and only sets up the current shell — so
+  after switching shells, 'bundle install' is all it takes.
 
 update options:                     usage: update [options] [name]
   -y, --yes             accept everything found for a new version, rather than asking
@@ -244,6 +252,23 @@ installed options:                  usage: installed [options]
   installed, someone accepted for it still vouches for it, the policy still
   holds, and nobody it blocks on has marked it bad since. Attestations are
   fetched fresh first. Exits non-zero if any of that is no longer true.
+
+validate options:                   usage: validate [options] [name | url | domain]...
+  -q, --quiet           say nothing unless something needs attention
+      --every <time>    leave alone anything validated more recently (30m, 1d)
+      --timeout <time>  give up on the network after this, and answer from the cache
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --json            print the results as JSON
+
+  re-checks installs — the named ones, or all — exactly as 'installed' does,
+  attestations fetched afresh and discovery asked again, and says what is new
+  since the last time: an attestation that was not there before, one that was
+  withdrawn, and above all a warning — someone marking it bad. Then it
+  remembers what it saw, so each change is reported once. Exits 0 when
+  nothing needs attention, 1 for a new warning or an install nobody accepted
+  vouches for any more, 2 for one that is changed, missing, invalid or
+  blocked. Made for startup — e.g. 'bundle validate --quiet --every 1d' in a
+  shell profile; offline, it answers from the cache.
 
 policy options:                     usage: policy [show | init | check <file>] [options]
   -a, --app <name>      the rules for this installed name, apps section included
@@ -294,6 +319,30 @@ trust options:
   what a verifying runtime — which never reaches for the network — checks
   against, and what decides how stale its answer can be.
 
+shell options:                      usage: shell [bash | zsh | fish] [options]
+      --every <time>    how often a new shell re-validates installs (default: 1d)
+      --timeout <time>  how long it may wait for the network (default: 5s)
+      --no-validate     leave out the re-validation
+      --no-complete     leave out Tab completion
+
+  prints what to load when a shell starts, for the shell named or the one
+  $SHELL names:
+
+      bash   eval "$(bundle shell bash)"       in ~/.bashrc
+      zsh    eval "$(bundle shell zsh)"        in ~/.zshrc
+      fish   bundle shell fish | source        in ~/.config/fish/config.fish
+
+  'bundle install', installing itself, offers to add exactly that line, for
+  the shell $SHELL names — Git Bash on Windows included, where bundle is run
+  as 'bundle.nzip' and the setup uses that name.
+
+  Tab completion: commands, their options, the values those take, installed
+  names, and file names where a file goes. And, in interactive shells,
+  'bundle validate --quiet', so a warning about something you installed —
+  someone marking it bad since — is the first thing a new terminal says. It
+  asks the network at most once per --every, gives up after --timeout and
+  answers from the cache, and says nothing when there is nothing to say.
+
 skill options:                      usage: skill [options] [name]
   -d, --dir <dir>       where to install (default: .claude/skills)
   -f, --force           overwrite files that are already there
@@ -338,7 +387,7 @@ export const UNDECIDED = 4;
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, attest, run, install, update, installed, uninstall, sea, trust, policy: policyCommand, lexicon, skill,
+    create, sign, audit, verify: check, attest, run, install, update, installed, validate, uninstall, sea, trust, policy: policyCommand, lexicon, skill, shell,
 };
 
 /**
@@ -362,6 +411,17 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
             io.out(version());
             return 0;
         }
+        // What a shell runs on Tab: not a command anyone types, so not listed.
+        // It must never fail loudly — an error is simply nothing to offer.
+        if (cmd === '__complete') {
+            try {
+                const COMPLETION = await import('./completion.ts');
+                for (const line of await COMPLETION.respond(rest)) io.out(line);
+            } catch {
+                // nothing to offer
+            }
+            return 0;
+        }
         const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
         if (!command) throw new Error(`unknown command: ${cmd}`);
         return await command(rest, io);
@@ -381,16 +441,7 @@ function version(): string {
 async function create(args: string[], io: Console): Promise<number> {
     const { values } = parseArgs({
         args,
-        options: {
-            base:   { type: 'string', short: 'b', default: '.' },
-            prefix: { type: 'string', short: 'p' },
-            files:  { type: 'string', short: 'f' },
-            output: { type: 'string', short: 'o' },
-            key:    { type: 'string', short: 'k' },
-            chain:  { type: 'string', short: 'c' },
-            hash:   { type: 'string', default: 'sha256' },
-            sign:   { type: 'string', default: 'sha256' },
-        },
+        options: OPTIONS.create,
     });
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('create: --key and --chain must be given together');
 
@@ -416,23 +467,7 @@ async function sign(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            output:     { type: 'string',  short: 'o' },
-            launcher:   { type: 'boolean', short: 'l' },
-            prefix:     { type: 'string',  short: 'p' },
-            executable: { type: 'boolean', short: 'x' },
-            key:        { type: 'string',  short: 'k' },
-            chain:      { type: 'string',  short: 'c' },
-            hash:       { type: 'string',  default: 'sha256' },
-            sign:       { type: 'string',  default: 'sha256' },
-            flow:       { type: 'string',  default: 'auto' },
-            token:      { type: 'string' },
-            'oidc-issuer': { type: 'string' },
-            connector:  { type: 'string' },
-            fulcio:     { type: 'string' },
-            rekor:      { type: 'string' },
-            tsa:        { type: 'string' },
-        },
+        options: OPTIONS.sign,
     });
     const source = positionals[0];
     if (!source) throw new Error('sign: an archive path is required');
@@ -461,15 +496,7 @@ async function check(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            archive:  { type: 'string', short: 'a' },
-            root:     { type: 'string', short: 'r', multiple: true },
-            identity: { type: 'string' },
-            issuer:   { type: 'string' },
-            'sigstore-root': { type: 'string' },
-            json:     { type: 'boolean' },
-            ...POLICY_OPTIONS,
-        },
+        options: OPTIONS.verify,
     });
     const archive = values.archive ?? positionals[0];
     if (!archive) throw new Error('verify: an archive path is required');
@@ -493,15 +520,7 @@ async function attest(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            as:              { type: 'string' },
-            kind:            { type: 'string' },
-            note:            { type: 'string' },
-            verdict:         { type: 'string', default: 'good' },
-            'password-file': { type: 'string' },
-            revoke:          { type: 'boolean' },
-            root:            { type: 'string', short: 'r', multiple: true },
-        },
+        options: OPTIONS.attest,
     });
     const archives = [...new Set(positionals)];
     if (!archives.length) throw new Error('attest: at least one archive path is required');
@@ -710,7 +729,7 @@ export function splitRunArgs(args: string[]): { mine: string[]; archive?: string
 // own argv.
 async function run(args: string[], io: Console): Promise<number> {
     const { mine, archive, theirs } = splitRunArgs(args);
-    const { values } = parseArgs({ args: mine, allowPositionals: false, options: RUN_OPTIONS });
+    const { values } = parseArgs({ args: mine, allowPositionals: false, options: OPTIONS.run });
     if (!archive) throw new Error('run: an archive path is required');
     const { attesters, quorum, maxAge, block } = await policy(values);
     await fetchAttestations(archive, [...attesters, ...block], io);
@@ -738,11 +757,7 @@ async function install(args: string[], io: Console): Promise<number> {
         args,
         allowPositionals: true,
         allowNegative: true,
-        options: {
-            ...INSTALL_OPTIONS,
-            name:      { type: 'string', short: 'n' },
-            dir:       { type: 'string', short: 'd' },
-        },
+        options: OPTIONS.install,
     });
     const INSTALL = await import('./install.ts');
     const demands = await policy(values);
@@ -752,7 +767,18 @@ async function install(args: string[], io: Console): Promise<number> {
     // then the whole bootstrap — npm fetches it once, and what stays behind is
     // a signed archive that updates itself from its own releases.
     const target = positionals[0] ?? INSTALL.self().url;
-    if (!positionals[0]) io.err(`* installing this package itself from ${target}`);
+    if (!positionals[0]) {
+        // Already here: nothing to fetch — 'update' is what brings a newer one
+        // — but the shell this is being run from may be new to it, so that
+        // part is still offered. Switching shells is one 'bundle install'.
+        const existing = Object.values(INSTALL.records()).find((record) => record.url === target);
+        if (existing && FS.existsSync(PATH.join(existing.dir, existing.name))) {
+            io.out(`${existing.name} is already installed in ${existing.dir} ('bundle update' fetches a newer one)`);
+            if (values.shell) await offerShellHook(io, existing.name);
+            return 0;
+        }
+        io.err(`* installing this package itself from ${target}`);
+    }
 
     try {
         const record = await INSTALL.install(target, {
@@ -765,10 +791,45 @@ async function install(args: string[], io: Console): Promise<number> {
             log: (line) => io.err(line),
         });
         io.out(`${record.name} installed in ${record.dir}`);
+        // Installing itself is setting up a machine, so it offers the rest of
+        // the setup too: the shell hook, for the shell this is being run from.
+        if (!positionals[0] && values.shell) await offerShellHook(io, record.name);
         return 0;
     } catch (err) {
         return refused(err, io);
     }
+}
+
+// Add `bundle shell` to the startup file of the shell `bundle install` was run
+// from — asked first, never assumed: it is somebody's own file. With nobody to
+// ask, say what to add instead. What decides is the shell, not the platform:
+// Git Bash on Windows is bash. `program` is the name it was installed under —
+// `bundle.nzip` on Windows, where Git Bash runs it by its `#!` line.
+async function offerShellHook(io: Console, program: string): Promise<void> {
+    const COMPLETION = await import('./completion.ts');
+    const shell = COMPLETION.detectShell();
+    if (!shell) {
+        // No SHELL at all is cmd.exe or PowerShell, which this cannot set up;
+        // a SHELL that names something else gets a pointer.
+        if (process.env['SHELL']) io.err("* for Tab completion and a daily re-check of installs at shell start, see 'bundle shell --help'");
+        return;
+    }
+    const file = COMPLETION.startupFile(shell);
+    if (COMPLETION.hasHook(file)) {
+        io.err(`* ${file} already loads bundle's shell setup`);
+        return;
+    }
+    const line = COMPLETION.hookLine(shell, program);
+    const answer = io.ask
+        ? (await io.ask(`* add Tab completion, and a quiet daily re-check of what you install, to ${file}? [Y/n] `)).trim().toLowerCase()
+        : undefined;
+    if (answer === undefined || answer === 'n' || answer === 'no') {
+        io.err(`* for Tab completion and a daily re-check of installs at shell start, add to ${file}:`);
+        io.err(`    ${line}`);
+        return;
+    }
+    COMPLETION.addHook(shell, process.env, program);
+    io.err(`* added to ${file} — new ${shell} shells have it ('bundle uninstall' takes it out again)`);
 }
 
 /** What `install` and `update` both take. */
@@ -851,7 +912,7 @@ async function update(args: string[], io: Console): Promise<number> {
         args,
         allowPositionals: true,
         allowNegative: true,
-        options: INSTALL_OPTIONS,
+        options: OPTIONS.update,
     });
 
     const INSTALL = await import('./install.ts');
@@ -889,7 +950,7 @@ async function update(args: string[], io: Console): Promise<number> {
 async function installed(args: string[], io: Console): Promise<number> {
     const { values } = parseArgs({
         args,
-        options: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
+        options: OPTIONS.installed,
     });
 
     const INSTALL = await import('./install.ts');
@@ -936,12 +997,7 @@ async function lexicon(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            as:              { type: 'string' },
-            'dry-run':       { type: 'boolean' },
-            force:           { type: 'boolean' },
-            'password-file': { type: 'string' },
-        },
+        options: OPTIONS.lexicon,
     });
     const LEXICON = await import('./lexicon.ts');
     const docs = LEXICON.lexicons();
@@ -1010,19 +1066,31 @@ async function lexicon(args: string[], io: Console): Promise<number> {
     return 0;
 }
 
+// What a shell loads at start: Tab completion, and a quiet re-validation of
+// everything installed.
+async function shell(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, allowNegative: true, options: OPTIONS.shell });
+    const COMPLETION = await import('./completion.ts');
+    const INSTALL = await import('./install.ts');
+    parseDuration(values.every);
+    parseDuration(values.timeout);
+    // Whatever this package is called on the PATH — `bundle`, or `bundle.nzip`
+    // where the extension stays — is what gets completed and what is run.
+    const urls = [INSTALL.self().url, INSTALL.SELF.url];
+    const program = Object.values(INSTALL.records()).find((record) => urls.includes(record.url))?.name ?? 'bundle';
+    io.out(COMPLETION.script(positionals[0] ?? COMPLETION.currentShell(), {
+        complete: values.complete, validate: values.validate, every: values.every, timeout: values.timeout,
+    }, program).trimEnd());
+    return 0;
+}
+
 // The rules this machine installs by: what is in force, the files themselves,
 // a file to start from, and a check of one.
 async function policyCommand(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            app:    { type: 'string', short: 'a' },
-            json:   { type: 'boolean' },
-            system: { type: 'boolean' },
-            user:   { type: 'boolean' },
-            force:  { type: 'boolean', short: 'f' },
-        },
+        options: OPTIONS.policy,
     });
     const POLICY = await import('./policy.ts');
     const [sub, file] = positionals;
@@ -1094,15 +1162,79 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
     return 0;
 }
 
+// Re-check installs against what is known now, and say what has changed since
+// the last look — quietly, when nothing has, so it can run at every login.
+async function validate(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: OPTIONS.validate,
+    });
+    const INSTALL = await import('./install.ts');
+    // One deadline for every request this run makes, so a shell starting
+    // without a network waits --timeout at most, and the cache answers.
+    const deadline = values.timeout !== undefined ? AbortSignal.timeout(parseDuration(values.timeout)) : undefined;
+    const results = await INSTALL.validate(positionals, {
+        roots: values.root ?? [],
+        every: values.every !== undefined ? parseDuration(values.every) : undefined,
+        network: deadline ? { fetch: (input, init) => globalThis.fetch(input, { ...init, signal: deadline }) } : {},
+    });
+
+    // What deserves attention: a new warning, or an install that is no longer
+    // what it was or no longer vouched for. A new good attestation is news,
+    // not a problem.
+    const exit = (each: Validation) => Math.max(
+        each.added.some((seen) => seen.verdict === 'bad') ? 1 : 0,
+        each.check.state === 'ok' ? 0
+            : each.check.state === 'missing' || each.check.state === 'changed' || each.check.state === 'invalid' ? 2
+            : each.check.state === 'unsigned' ? 3 : 1);
+    const code = results.reduce((worst, each) => Math.max(worst, exit(each)), 0);
+
+    if (values.json) {
+        io.out(JSON.stringify(results.map((each) => ({
+            name: each.record.name, state: each.check.state, reason: each.check.reason, skipped: each.skipped,
+            added: each.added, removed: each.removed, problems: each.problems, validatedAt: each.record.validatedAt,
+        })), null, 2));
+        return code;
+    }
+
+    const who = (seen: Seen) => `${seen.handle ? `${seen.handle} (${seen.did})` : seen.did}${seen.kind ? ` as ${seen.kind}` : ''}`;
+    for (const each of results) {
+        const attention = exit(each) > 0;
+        if (values.quiet && !attention) continue;
+        const name = each.record.name;
+        if (each.skipped) {
+            io.out(`${name}: validated ${each.record.validatedAt}, recently enough`);
+            continue;
+        }
+        if (each.check.state !== 'ok') io.out(`${name}: ${each.check.state.toUpperCase()} — ${each.check.reason}`);
+        for (const seen of each.added.filter((one) => one.verdict === 'bad')) io.out(`${name}: WARNING — ${who(seen)} has marked it bad since it was last checked`);
+        if (!values.quiet) {
+            for (const seen of each.added.filter((one) => one.verdict === 'good')) io.out(`${name}: new — attested by ${who(seen)}`);
+            for (const seen of each.removed) io.out(`${name}: withdrawn — ${who(seen)}${seen.verdict === 'bad' ? ' (a warning)' : ''}`);
+            if (!attention && !each.added.length && !each.removed.length) io.out(`${name}: OK — nothing new`);
+            for (const problem of each.problems) io.err(`! ${problem} — the cache answered instead`);
+        }
+    }
+    if (!results.length && !values.quiet) io.out('nothing installed');
+    return code;
+}
+
 // Remove an install: the file, and the record of where it came from. With no
 // argument it is this package's own, which is what somebody who typed
 // `bundle uninstall` means.
 async function uninstall(args: string[], io: Console): Promise<number> {
-    const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+    const { positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.uninstall });
     const INSTALL = await import('./install.ts');
     const record = INSTALL.uninstall(positionals[0]);
     io.out(`removed ${record.name} from ${record.dir}`);
     io.err(`  it came from ${record.url}`);
+    // This package going takes its shell hook with it — the hook would only
+    // look for a `bundle` that is no longer there.
+    if (!positionals[0]) {
+        const COMPLETION = await import('./completion.ts');
+        for (const file of COMPLETION.removeHooks()) io.err(`  took bundle's shell setup out of ${file}`);
+    }
     return 0;
 }
 
@@ -1113,13 +1245,7 @@ function audit(args: string[], io: Console): number {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            baseline: { type: 'string',  short: 'b' },
-            verdict:  { type: 'string',  short: 'v' },
-            note:     { type: 'string',  short: 'n' },
-            check:    { type: 'boolean' },
-            approve:  { type: 'boolean' },
-        },
+        options: OPTIONS.audit,
     });
     const bundle = positionals[0];
     if (!bundle) throw new Error('audit: an archive path is required');
@@ -1180,28 +1306,7 @@ async function sea(args: string[], io: Console): Promise<number> {
         allowPositionals: true,
         // `--no-sigstore` is spelled as the negation of `sigstore`.
         allowNegative: true,
-        options: {
-            output:    { type: 'string',  short: 'o' },
-            node:      { type: 'string' },
-            base:      { type: 'string' },
-            sigstore:  { type: 'boolean', default: true },
-            untrusted: { type: 'boolean' },
-            root:      { type: 'string',  short: 'r', multiple: true },
-            identity:  { type: 'string' },
-            issuer:    { type: 'string' },
-            key:       { type: 'string',  short: 'k' },
-            chain:     { type: 'string',  short: 'c' },
-            hash:      { type: 'string',  default: 'sha256' },
-            sign:      { type: 'string',  default: 'sha256' },
-            flow:      { type: 'string',  default: 'auto' },
-            token:     { type: 'string' },
-            'oidc-issuer': { type: 'string' },
-            connector: { type: 'string' },
-            fulcio:    { type: 'string' },
-            rekor:     { type: 'string' },
-            tsa:       { type: 'string' },
-            ...POLICY_OPTIONS,
-        },
+        options: OPTIONS.sea,
     });
     const app = positionals[0];
     if (!values.output) throw new Error('sea: --output is required');
@@ -1269,11 +1374,7 @@ async function trust(args: string[], io: Console): Promise<number> {
     const { values } = parseArgs({
         args,
         allowNegative: true,
-        options: {
-            mirror:   { type: 'string' },
-            attester: { type: 'string', multiple: true },
-            sigstore: { type: 'boolean', default: true },
-        },
+        options: OPTIONS.trust,
     });
     let failed = false;
 
@@ -1321,11 +1422,7 @@ function skill(args: string[], io: Console): number {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            dir:   { type: 'string',  short: 'd' },
-            force: { type: 'boolean', short: 'f' },
-            list:  { type: 'boolean', short: 'l' },
-        },
+        options: OPTIONS.skill,
     });
 
     const available = SKILLS.skills();
@@ -1394,3 +1491,131 @@ function readStdin(): Promise<string> {
             .on('error', reject);
     });
 }
+
+/**
+ * Every command's options, as `parseArgs` takes them — the one place they are
+ * defined. The commands parse with these, and completion (completion.ts)
+ * offers exactly these, so what Tab suggests is what a command accepts.
+ */
+export const OPTIONS = {
+    create: {
+        base:   { type: 'string', short: 'b', default: '.' },
+        prefix: { type: 'string', short: 'p' },
+        files:  { type: 'string', short: 'f' },
+        output: { type: 'string', short: 'o' },
+        key:    { type: 'string', short: 'k' },
+        chain:  { type: 'string', short: 'c' },
+        hash:   { type: 'string', default: 'sha256' },
+        sign:   { type: 'string', default: 'sha256' },
+    },
+    sign: {
+        output:     { type: 'string',  short: 'o' },
+        launcher:   { type: 'boolean', short: 'l' },
+        prefix:     { type: 'string',  short: 'p' },
+        executable: { type: 'boolean', short: 'x' },
+        key:        { type: 'string',  short: 'k' },
+        chain:      { type: 'string',  short: 'c' },
+        hash:       { type: 'string',  default: 'sha256' },
+        sign:       { type: 'string',  default: 'sha256' },
+        flow:       { type: 'string',  default: 'auto' },
+        token:      { type: 'string' },
+        'oidc-issuer': { type: 'string' },
+        connector:  { type: 'string' },
+        fulcio:     { type: 'string' },
+        rekor:      { type: 'string' },
+        tsa:        { type: 'string' },
+    },
+    audit: {
+        baseline: { type: 'string',  short: 'b' },
+        verdict:  { type: 'string',  short: 'v' },
+        note:     { type: 'string',  short: 'n' },
+        check:    { type: 'boolean' },
+        approve:  { type: 'boolean' },
+    },
+    verify: {
+        archive:  { type: 'string', short: 'a' },
+        root:     { type: 'string', short: 'r', multiple: true },
+        identity: { type: 'string' },
+        issuer:   { type: 'string' },
+        'sigstore-root': { type: 'string' },
+        json:     { type: 'boolean' },
+        ...POLICY_OPTIONS,
+    },
+    attest: {
+        as:              { type: 'string' },
+        kind:            { type: 'string' },
+        note:            { type: 'string' },
+        verdict:         { type: 'string', default: 'good' },
+        'password-file': { type: 'string' },
+        revoke:          { type: 'boolean' },
+        root:            { type: 'string', short: 'r', multiple: true },
+    },
+    run: RUN_OPTIONS,
+    install: {
+        ...INSTALL_OPTIONS,
+        name:      { type: 'string', short: 'n' },
+        dir:       { type: 'string', short: 'd' },
+        shell:     { type: 'boolean', default: true },
+    },
+    update: INSTALL_OPTIONS,
+    installed: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
+    validate: {
+        quiet:   { type: 'boolean', short: 'q' },
+        every:   { type: 'string' },
+        timeout: { type: 'string' },
+        root:    { type: 'string', short: 'r', multiple: true },
+        json:    { type: 'boolean' },
+    },
+    uninstall: {},
+    sea: {
+        output:    { type: 'string',  short: 'o' },
+        node:      { type: 'string' },
+        base:      { type: 'string' },
+        sigstore:  { type: 'boolean', default: true },
+        untrusted: { type: 'boolean' },
+        root:      { type: 'string',  short: 'r', multiple: true },
+        identity:  { type: 'string' },
+        issuer:    { type: 'string' },
+        key:       { type: 'string',  short: 'k' },
+        chain:     { type: 'string',  short: 'c' },
+        hash:      { type: 'string',  default: 'sha256' },
+        sign:      { type: 'string',  default: 'sha256' },
+        flow:      { type: 'string',  default: 'auto' },
+        token:     { type: 'string' },
+        'oidc-issuer': { type: 'string' },
+        connector: { type: 'string' },
+        fulcio:    { type: 'string' },
+        rekor:     { type: 'string' },
+        tsa:       { type: 'string' },
+        ...POLICY_OPTIONS,
+    },
+    trust: {
+        mirror:   { type: 'string' },
+        attester: { type: 'string', multiple: true },
+        sigstore: { type: 'boolean', default: true },
+    },
+    policy: {
+        app:    { type: 'string', short: 'a' },
+        json:   { type: 'boolean' },
+        system: { type: 'boolean' },
+        user:   { type: 'boolean' },
+        force:  { type: 'boolean', short: 'f' },
+    },
+    lexicon: {
+        as:              { type: 'string' },
+        'dry-run':       { type: 'boolean' },
+        force:           { type: 'boolean' },
+        'password-file': { type: 'string' },
+    },
+    shell: {
+        every:    { type: 'string', default: '1d' },
+        timeout:  { type: 'string', default: '5s' },
+        validate: { type: 'boolean', default: true },
+        complete: { type: 'boolean', default: true },
+    },
+    skill: {
+        dir:   { type: 'string',  short: 'd' },
+        force: { type: 'boolean', short: 'f' },
+        list:  { type: 'boolean', short: 'l' },
+    },
+} as const;

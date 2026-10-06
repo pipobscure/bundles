@@ -98,6 +98,13 @@ export interface InstallRecord {
     /** Who had attested the installed version (good verdicts), as `[kind@]did`. */
     attestedBy?: string[] | undefined;
     /**
+     * Every attestation of the installed version seen so far, good and bad —
+     * what `validate()` compares against to say what is new.
+     */
+    seen?: Seen[] | undefined;
+    /** When `validate()` last checked it, ISO 8601. */
+    validatedAt?: string | undefined;
+    /**
      * Who has been accepted for this install, across its versions: their
      * evidence on a later version proceeds without asking.
      */
@@ -110,6 +117,14 @@ export interface InstallRecord {
     at: string;
     /** Where it was installed to, so an update can find it again. */
     dir: string;
+}
+
+/** One attestation, as an install remembers having seen it. */
+export interface Seen {
+    did: string;
+    handle?: string | undefined;
+    kind?: string | undefined;
+    verdict: 'good' | 'bad';
 }
 
 export interface InstallOptions {
@@ -429,31 +444,100 @@ export function installed({ roots = [] }: { roots?: string[] | undefined } = {})
  * problems met, if any; the cache keeps what it had for those.
  */
 export async function refreshInstalled(network: NetworkOptions = {}): Promise<string[]> {
+    const problems: string[] = [];
+    for (const record of Object.values(records())) problems.push(...await refreshRecord(record, network));
+    return problems;
+}
+
+// Fetch every attestation of one install's archive: from everyone known to
+// have said something, plus anyone who has since — which is how a scanner's
+// warning about something already installed reaches the person who installed it.
+async function refreshRecord(record: InstallRecord, network: NetworkOptions): Promise<string[]> {
+    const hash = record.hash?.split(':');
+    if (!hash || hash.length !== 2) return [];
     const { refreshFor, discover } = await import('./atproto.ts');
     const { cachedFor } = await import('./attestation.ts');
     const problems: string[] = [];
-    for (const record of Object.values(records())) {
-        const hash = record.hash?.split(':');
-        if (!hash || hash.length !== 2) continue;
-        const policy = loadPolicy(record.name);
-        // Everyone known to have said something, plus anyone who has since —
-        // which is how a scanner's warning about something already installed
-        // reaches the person who installed it.
-        const dids = new Set([...candidates(record, policy), ...cachedFor(hash[1]!)]);
-        if (policy.discovery) {
-            try {
-                for (const did of await discover(hash[0]!, hash[1]!, { ...network, index: policy.discovery })) dids.add(did);
-            } catch (err) {
-                problems.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
-            }
-        }
-        for (const did of policy.ignore) dids.delete(did);
-        if (!dids.size) continue;
-        for (const problem of await refreshFor([...dids].map((did) => ({ did })), hash[0]!, hash[1]!, network)) {
-            problems.push(`${record.name}: ${problem}`);
+    const policy = loadPolicy(record.name);
+    const dids = new Set([...candidates(record, policy), ...cachedFor(hash[1]!)]);
+    if (policy.discovery) {
+        try {
+            for (const did of await discover(hash[0]!, hash[1]!, { ...network, index: policy.discovery })) dids.add(did);
+        } catch (err) {
+            problems.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
         }
     }
+    for (const did of policy.ignore) dids.delete(did);
+    if (!dids.size) return problems;
+    for (const problem of await refreshFor([...dids].map((did) => ({ did })), hash[0]!, hash[1]!, network)) {
+        problems.push(`${record.name}: ${problem}`);
+    }
     return problems;
+}
+
+/** What `validate()` found for one install. */
+export interface Validation {
+    record: InstallRecord;
+    check: InstalledCheck;
+    /** Attestations not seen before. */
+    added: Seen[];
+    /** Attestations seen before that are gone: withdrawn, or no longer counted. */
+    removed: Seen[];
+    /** Fetches that failed; the cache answered instead. */
+    problems: string[];
+    /** True when it was validated recently enough to be left alone (`every`). */
+    skipped: boolean;
+}
+
+/**
+ * Re-validate installs — `which` names them as `uninstall` does, and none
+ * means all — against everything known about them now: the attestations are
+ * fetched afresh, discovery included, and each install is re-checked exactly
+ * as `installed()` does. What sets this apart is the comparison: each install
+ * remembers which attestations it has seen, so the answer says what is *new*
+ * — a scanner's warning published since the install, an auditor vouching
+ * late — and what has been withdrawn, and then remembers the new picture.
+ *
+ * Made to run unattended, at login or on a timer: `every` leaves alone any
+ * install validated more recently than that, so a shell that starts often
+ * does not ask the network each time.
+ */
+export async function validate(which: string[] = [], { roots = [], network = {}, every }: {
+    roots?: string[] | undefined;
+    network?: NetworkOptions | undefined;
+    /** Milliseconds: skip installs validated more recently than this. */
+    every?: number | undefined;
+} = {}): Promise<Validation[]> {
+    const all = records();
+    const names = which.length ? [...new Set(which.map((each) => resolve(all, each)))] : Object.keys(all).sort();
+    const results: Validation[] = [];
+    for (const name of names) {
+        const record = all[name]!;
+        const last = record.validatedAt ? Date.parse(record.validatedAt) : NaN;
+        if (every !== undefined && Date.now() - last < every) {
+            results.push({ record, check: { record, path: PATH.join(record.dir, record.name), state: 'ok', reason: 'validated recently' }, added: [], removed: [], problems: [], skipped: true });
+            continue;
+        }
+        const problems = await refreshRecord(record, network);
+        const result = check(record, roots);
+        // Only a check that got as far as a review knows who has attested; a
+        // file that is missing or changed keeps its previous picture.
+        const now = result.review ? seenIn(result.review) : record.seen ?? [];
+        const before = record.seen ?? [];
+        const key = (each: Seen) => `${each.did} ${each.kind ?? ''} ${each.verdict}`;
+        const added = now.filter((each) => !before.some((other) => key(other) === key(each)));
+        const removed = before.filter((each) => !now.some((other) => key(other) === key(each)));
+        const updated = remember({ ...record, seen: now, validatedAt: new Date().toISOString() });
+        results.push({ record: updated, check: { ...result, record: updated }, added, removed, problems, skipped: false });
+    }
+    return results;
+}
+
+/** The attestations a review saw, as an install remembers them. */
+function seenIn(review: Review): Seen[] {
+    return review.items.flatMap(({ evidence }) => evidence.type === 'attestation'
+        ? [{ did: evidence.did, handle: evidence.handle, kind: evidence.kind, verdict: evidence.verdict }]
+        : []);
 }
 
 function check(record: InstallRecord, roots: string[]): InstalledCheck {
@@ -671,6 +755,9 @@ async function place(bytes: Buffer, { name, dir, url, alias, response, options, 
         hash: `${gathered.hashAlg}:${gathered.hash}`,
         attestedBy: attestedBy.length ? attestedBy : undefined,
         accepted: accept(accepted, chosen),
+        seen: gathered.evidence.flatMap((each) => each.type === 'attestation'
+            ? [{ did: each.did, handle: each.handle, kind: each.kind, verdict: each.verdict }]
+            : []),
         sha256: digest(bytes),
         at: new Date().toISOString(),
         dir,

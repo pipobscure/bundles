@@ -43,6 +43,11 @@ process.env['BUNDLE_INSTALL_DIR'] = BIN;
 process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
 process.env['XDG_STATE_HOME'] = PATH.join(HOME, 'state');
 process.env['LOCALAPPDATA'] = PATH.join(HOME, 'AppData');
+// Installing itself offers to edit the shell's startup file: never the real one.
+process.env['HOME'] = HOME;
+process.env['XDG_CONFIG_HOME'] = PATH.join(HOME, '.config');
+process.env['SHELL'] = '/bin/bash';
+delete process.env['ZDOTDIR'];
 // No machine policy, and a user policy that keeps discovery off: nothing here
 // may ask the public backlink index about a test archive.
 FS.mkdirSync(HOME, { recursive: true });
@@ -397,9 +402,11 @@ test('install with no url means this package, from its own release', async () =>
     assert.equal(SELF.url, 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip');
     assert.match(SELF.identity, /publish\.yml@refs\/heads\/main$/);
 
-    process.env['BUNDLE_SELF_SOURCE'] = URL_;
+    // Its own path on this suite's server, so no other install here is mistaken for it.
+    const SELF_URL = `http://127.0.0.1:${port}/self/bundle.nzip`;
+    process.env['BUNDLE_SELF_SOURCE'] = SELF_URL;
     try {
-        assert.equal(self().url, URL_, 'a mirror can be pointed at, the identity still applies');
+        assert.equal(self().url, SELF_URL, 'a mirror can be pointed at, the trust still applies');
         served.bytes = first;
         served.etag = '"self"';
 
@@ -414,16 +421,48 @@ test('install with no url means this package, from its own release', async () =>
         assert.equal(await main(['install', '--identity', SELF.identity, '--yes'], demanded), STATES['valid-untrusted'].code);
         assert.match(demanded.stderr.join('\n'), /a signature by .*publish\.yml.* is required/);
 
-        // Asked at a terminal, and accepted.
-        const asked = { ...collector(), ask: async () => '1' };
+        // Asked at a terminal, and accepted — and then asked about the shell,
+        // and that declined: the line to add is printed, nothing is written.
+        const asked = { ...collector(), ask: async (question: string) => (question.includes('accept which') ? '1' : 'n') };
         assert.equal(await main(['install', '--name', 'self.nzip'], asked), 0);
         assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'self.nzip')), first);
+        // The hook runs it by the name it was installed under.
+        assert.match(asked.stderr.join('\n'), /add to .*\.bashrc:\n {4}command -v self\.nzip >\/dev\/null 2>&1 && eval "\$\(self\.nzip shell bash\)"/);
+        assert.equal(FS.existsSync(PATH.join(HOME, '.bashrc')), false);
         uninstall('self.nzip');
 
-        // An anchored root is trusted as it always was, with no question at all.
-        const anchored = collector();
+        // An anchored root is trusted as it always was, with no question about
+        // the archive — only the shell, said yes to this time.
+        FS.writeFileSync(PATH.join(HOME, '.bashrc'), 'export EDITOR=vi\n');
+        const anchored = { ...collector(), ask: async () => 'y' };
         assert.equal(await main(['install', '--root', ROOT_PEM, '--name', 'self.nzip'], anchored), 0);
-        uninstall('self.nzip');
+        const rc = FS.readFileSync(PATH.join(HOME, '.bashrc'), 'utf-8');
+        assert.match(rc, /^export EDITOR=vi\n\n# >>> bundle: .*\ncommand -v self\.nzip .*\n# <<< bundle <<<\n$/);
+        // Installing again fetches nothing, and finds the shell set up already.
+        const before = hits;
+        const again = { ...collector(), ask: async () => assert.fail('nothing to ask') };
+        assert.equal(await main(['install'], again), 0);
+        assert.equal(hits, before, 'nothing fetched');
+        assert.match(again.stdout.join('\n'), /self\.nzip is already installed/);
+        assert.match(again.stderr.join('\n'), /already loads bundle's shell setup/);
+
+        // Switched to fish: installing again sets up fish, and only that.
+        process.env['SHELL'] = '/usr/bin/fish';
+        const fish = { ...collector(), ask: async () => 'y' };
+        assert.equal(await main(['install'], fish), 0);
+        assert.equal(hits, before, 'still nothing fetched');
+        assert.match(FS.readFileSync(PATH.join(HOME, '.config', 'fish', 'config.fish'), 'utf-8'), /command -q self\.nzip; and self\.nzip shell fish \| source/);
+        process.env['SHELL'] = '/bin/bash';
+        // Uninstalling itself takes it out, and leaves the rest of the file as it was.
+        const all = records();
+        all['self.nzip'] = { ...all['self.nzip']!, url: self().url };
+        FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
+        const removed = collector();
+        assert.equal(await main(['uninstall'], removed), 0);
+        assert.match(removed.stderr.join('\n'), /took bundle's shell setup out of .*\.bashrc/);
+        assert.match(removed.stderr.join('\n'), /took bundle's shell setup out of .*config\.fish/);
+        assert.equal(FS.readFileSync(PATH.join(HOME, '.config', 'fish', 'config.fish'), 'utf-8'), '');
+        assert.equal(FS.readFileSync(PATH.join(HOME, '.bashrc'), 'utf-8'), 'export EDITOR=vi\n');
     } finally {
         delete process.env['BUNDLE_SELF_SOURCE'];
     }

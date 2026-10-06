@@ -207,11 +207,13 @@ bundle -v, --version
   install   fetch a signed archive from a URL or domain and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
+  validate  re-check installs, and say what has been attested since — at startup
   uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root and the cached attestations
   policy    show the rules this machine installs by, and where they come from
   lexicon   show, check or publish the atproto lexicons attestations are written in
+  shell     print what to load at shell start: Tab completion, and validate
   skill     install the bundle-auditing skill into a project
 ```
 
@@ -453,6 +455,77 @@ signature check alone would not notice, because the replacement may be perfectly
 well signed. That case reports `CHANGED`.
 
 It exits non-zero when anything is not `OK`, so a script can gate on it.
+
+### `validate`
+
+```sh
+bundle validate                      # every install: what has changed since the last look
+bundle validate tool                 # just one (a name, URL or domain, as for uninstall)
+bundle validate --quiet --every 1d   # for a shell profile: silent unless something needs attention
+```
+
+`installed` says what *is*; `validate` says what is *new*. It re-checks each install
+exactly as `installed` does. Attestations are fetched afresh and discovery is asked
+again, so attesters nobody knew about at install time are found too. It then compares
+the result with what the install saw last time: a new attestation, one that was
+withdrawn, and above all a new warning (someone marking it bad). Afterwards it
+remembers what it saw, so each change is reported once.
+
+It is made to run unattended, at login or on a timer, so you hear about a warning
+published after you installed something:
+
+The easiest way is `bundle shell` (below), which does this in every new interactive
+shell. By hand:
+
+```sh
+bundle validate --quiet --every 1d --timeout 5s
+```
+
+`--every` leaves alone any install validated more recently than that, so opening a
+terminal does not ask the network each time. `--timeout` is one deadline for all of
+its requests together, after which the cache answers, so a shell never waits long
+on a missing network.
+
+| exit | meaning |
+|---|---|
+| 0 | nothing needs attention (new good attestations are reported, but are not a problem) |
+| 1 | a new warning, or nobody accepted for an install vouches for it any more |
+| 2 | an install is changed, missing or invalid, or someone the policy blocks on has marked it bad |
+| 3 | an install is unsigned and nothing vouches for it |
+
+### `shell`
+
+```sh
+eval "$(bundle shell bash)"      # in ~/.bashrc
+eval "$(bundle shell zsh)"       # in ~/.zshrc
+bundle shell fish | source       # in ~/.config/fish/config.fish
+```
+
+Prints what to load when a shell starts:
+
+- **Tab completion** for commands, their options, the values those take
+  (`--verdict good|bad`, `--flow`, …), installed names for `update`, `uninstall` and
+  `validate`, and file names wherever a file goes. Options come from the same table
+  the commands parse with, so what Tab offers is what a command accepts. fish shows
+  each option's description. fish also ships completions for Ruby's Bundler, which
+  is called `bundle` too; this replaces them.
+- **`bundle validate --quiet --every 1d --timeout 5s`** in interactive shells, so a
+  warning about something you installed is the first thing a new terminal says.
+
+`--no-validate` and `--no-complete` leave either half out.
+
+What decides is the shell, not the platform: Git Bash on Windows is bash, and gets the
+bash setup. There, bundle is installed as `bundle.nzip` (Windows needs the extension)
+and Git Bash runs it by its `#!` line, so the setup completes and runs it under that
+name. In general it uses whatever name bundle was installed under. cmd.exe has no
+programmable completion; PowerShell is not supported yet.
+
+**`bundle install` sets this up for you.** When it installs bundle itself, it offers to
+add the line to the startup file of the shell it is run from, asking first. The line
+is a marked block, guarded so a shell still starts if `bundle` is gone. Run
+`bundle install` again once installed and it fetches nothing; it only offers the
+same for the current shell. After switching from fish to bash, `bundle install` is
+all it takes. `bundle uninstall` takes the block out of every startup file again.
 
 ### `policy`
 

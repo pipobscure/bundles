@@ -203,6 +203,15 @@ make a signer mandatory, write it into the policy.
 This package's own release is a trusted signer for its own install, not a required one,
 so the same reasoning applies to it.
 
+**After installing, `bundle validate` keeps watching.** Attestations keep arriving after
+an install: a scanner flags a release a week later, or an auditor gets to it. Each
+install record remembers every attestation it has seen. `validate` re-fetches them,
+re-runs discovery, re-checks the install against the policy, and reports the
+difference: new attestations, withdrawn ones, and new warnings. Then it updates the
+record, so each change is reported once. With `--quiet --every 1d` it is meant for a
+shell profile or a timer. It is silent unless something needs attention, and its exit
+code says what (1 for a new warning, 2 for something blocked or tampered with).
+
 ## The policy file
 
 `bundle policy` shows the rules in force. They come from two JSON files that both apply:

@@ -1026,3 +1026,69 @@ test('lexicon publish needs DNS to name the account, writes with lexicon-only ac
     dana.records.set(`${SCHEMA_COLLECTION}/${COLLECTION}`, { ...record, description: 'an older version' });
     assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different']);
 });
+
+// ---------------------------------------------------------------- validate ---
+
+test('validate reports what was attested since the last look — once — and is quiet otherwise', async () => {
+    const auditor = account();
+    const scanner = account();
+    const latecomer = account();
+    const archive = await version();
+    await attestAs(auditor, archive, 'audited');
+    DOWNLOADS.set('/watched.nzip', FS.readFileSync(archive));
+    writePolicy({ trust: { attesters: [auditor.did] } });
+    try {
+        await install('https://dl.test/watched.nzip');
+        const name = named('watched');
+        const run = async (...args: string[]) => {
+            const io = collector();
+            const code = await main(['validate', ...args, name], io);
+            return { code, out: io.stdout.join('\n') };
+        };
+
+        // Nothing has happened since the install.
+        assert.deepEqual(await run(), { code: 0, out: `${name}: OK — nothing new` });
+        assert.deepEqual(await run('--quiet'), { code: 0, out: '' });
+
+        // A scanner marks it bad: a warning, and a non-zero exit, so a startup
+        // hook notices — reported once, and quiet again after that.
+        await attestAs(scanner, archive, 'malware', 'bad');
+        const warned = await run('--quiet');
+        assert.equal(warned.code, 1);
+        assert.match(warned.out, new RegExp(`${name.replace('.', '\\.')}: WARNING — ${scanner.handle} .* as malware has marked it bad since it was last checked`));
+        assert.deepEqual(await run('--quiet'), { code: 0, out: '' });
+
+        // Someone vouching late is news, not a problem.
+        await attestAs(latecomer, archive, 'reproduced');
+        const news = await run();
+        assert.equal(news.code, 0);
+        assert.match(news.out, /new — attested by .* as reproduced/);
+
+        // The only accepted attester withdraws: nothing accepted vouches for it.
+        auditor.records.clear();
+        const withdrawn = await run();
+        assert.equal(withdrawn.code, 1);
+        assert.match(withdrawn.out, /withdrawn — .* as audited/);
+        assert.match(withdrawn.out, /VALID-UNTRUSTED — nothing that was accepted for it vouches for it any more/);
+
+        // --every leaves alone what was validated recently, without asking anyone.
+        const before = requests.length;
+        const skipped = await run('--every', '1d');
+        assert.equal(requests.length, before, 'no network for a skipped install');
+        assert.match(skipped.out, /validated .*, recently enough/);
+
+        // A blocked scanner turns the warning into a refusal: exit 2.
+        writePolicy({ trust: { attesters: [auditor.did] }, block: [scanner.did] });
+        const blocked = await run('--quiet');
+        assert.equal(blocked.code, 2);
+        assert.match(blocked.out, /INVALID — marked bad by .*, which this machine blocks on/);
+
+        const json = collector();
+        await main(['validate', '--json', name], json);
+        const [entry] = JSON.parse(json.stdout.join('\n')) as { name: string; state: string; added: unknown[] }[];
+        assert.equal(entry!.name, name);
+        assert.equal(entry!.state, 'invalid');
+    } finally {
+        writePolicy({});
+    }
+});
