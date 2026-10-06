@@ -641,6 +641,8 @@ async function sea(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
+        // `--no-sigstore` is spelled as the negation of `sigstore`.
+        allowNegative: true,
         options: {
             output:    { type: 'string',  short: 'o' },
             node:      { type: 'string' },
