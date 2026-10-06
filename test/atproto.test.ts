@@ -7,7 +7,7 @@ import {
     CID, decode, encode, readCar, writeCar, verifyRecordProof, signingKey, formatMultikey, sign, verifySignature,
     pointKey, compressedPoint, type Curve, type DidDocument, type Value,
 } from '../src/repo.ts';
-import { COLLECTION, parseAttester, parseDuration, readProof, writeProof, type Attester } from '../src/attestation.ts';
+import { COLLECTION, stateDir, parseAttester, parseDuration, readProof, writeProof, type Attester } from '../src/attestation.ts';
 import * as ATPROTO from '../src/atproto.ts';
 import { verifySync, wholeFileHash, STATES } from '../src/manifest.ts';
 import { open as openBundle } from '../src/provider.ts';
@@ -35,6 +35,10 @@ process.env['BUNDLE_ATTESTATIONS'] = CACHE;
 process.env['BUNDLE_PLC_DIRECTORY'] = 'https://plc.test';
 process.env['BUNDLE_INSTALL_DIR'] = PATH.join(tmp, 'bin');
 process.env['XDG_STATE_HOME'] = PATH.join(tmp, 'state');
+// Where the same state, and the user's policy, live on Windows: this suite
+// installs for real, and must never read or write the machine's own.
+process.env['LOCALAPPDATA'] = PATH.join(tmp, 'AppData', 'Local');
+process.env['APPDATA'] = PATH.join(tmp, 'AppData', 'Roaming');
 process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
 delete process.env['BUNDLE_ATTESTERS'];
 // Discovery goes to the fake index below; no machine policy.
@@ -349,6 +353,12 @@ async function attestAs(who: Account, archive: string, kind?: string, verdict?: 
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash, kind, verdict });
 }
 
+/**
+ * What `https://dl.test/<name>.nzip` installs as: the bare name, except on
+ * Windows, where the `.nzip` extension is what makes it runnable and stays.
+ */
+const named = (name: string): string => (process.platform === 'win32' ? `${name}.nzip` : name);
+
 let versions = 0;
 /** A fresh unsigned archive — a new version nobody has said anything about yet. */
 async function version(): Promise<string> {
@@ -655,17 +665,16 @@ test('an install that demands an attester is refused without it, and installed n
     // A release nobody has said anything about is refused — there is nothing
     // to ask about — and the installed copy stays.
     DOWNLOADS.set('/tool.nzip', FS.readFileSync(await version()));
-    const [nothing] = await update('tool');
+    const [nothing] = await update(named('tool'));
     assert.equal(nothing!.state, 'refused');
     assert.match(nothing!.reason ?? '', /nothing that can be checked vouches for it/);
-    assert.equal(records()['tool']?.sha256, record.sha256);
+    assert.equal(records()[named('tool')]?.sha256, record.sha256);
 
     // Withdrawn: installed() reports it once the cache has been refreshed.
     nina.records.clear();
     await ATPROTO.refreshAttester(nina.did);
     assert.equal(installed()[0]?.state, 'unsigned');
-    FS.rmSync(PATH.join(tmp, 'bin', 'tool'));
-    (await import('../src/install.ts')).uninstall('tool');
+    (await import('../src/install.ts')).uninstall(named('tool'));
 });
 
 test('install discovers attesters nobody named, asks about them, and update remembers the answer', async () => {
@@ -686,7 +695,7 @@ test('install discovers attesters nobody named, asks about them, and update reme
     const second = await version();
     await attestAs(quinn, second, 'audited');
     DOWNLOADS.set('/found.nzip', FS.readFileSync(second));
-    const [proceeded] = await update('found', { decide: async () => assert.fail('nothing should be asked') });
+    const [proceeded] = await update(named('found'), { decide: async () => assert.fail('nothing should be asked') });
     assert.equal(proceeded!.state, 'updated');
 
     // Only rita, whom nobody accepted, vouches for the one after: a question,
@@ -694,17 +703,17 @@ test('install discovers attesters nobody named, asks about them, and update reme
     const third = await version();
     await attestAs(rita, third, 'reproduced');
     DOWNLOADS.set('/found.nzip', FS.readFileSync(third));
-    const [waiting] = await update('found');
+    const [waiting] = await update(named('found'));
     assert.equal(waiting!.state, 'unconfirmed');
-    const [accepted] = await update('found', { decide: async (review) => selectable(review) });
+    const [accepted] = await update(named('found'), { decide: async (review) => selectable(review) });
     assert.equal(accepted!.state, 'updated');
-    assert.deepEqual(records()['found']!.accepted?.attesters.sort(), [quinn.did, rita.did].sort());
+    assert.deepEqual(records()[named('found')]!.accepted?.attesters.sort(), [quinn.did, rita.did].sort());
 
     // Turned off, discovery finds nobody new.
     const fourth = await version();
     await attestAs(account(), fourth);
     DOWNLOADS.set('/found.nzip', FS.readFileSync(fourth));
-    const [blind] = await update('found', { discover: false });
+    const [blind] = await update(named('found'), { discover: false });
     assert.equal(blind!.state, 'refused');
 });
 
@@ -728,7 +737,7 @@ test('bad verdicts: a warning from strangers, a question from the trusted, a ref
     const warning = shown?.items.find((item) => (item.evidence as { did?: string }).did === tess.did);
     assert.equal(warning?.excluded, 'marked it bad');
     assert.deepEqual(warningsOf(shown!), [`warning: ${tess.handle} marked it bad (malware)`]);
-    assert.match(installed().find((check) => check.record.name === 'warned')!.reason, /warning: .* marked it bad \(malware\)/);
+    assert.match(installed().find((check) => check.record.name === named('warned'))!.reason, /warning: .* marked it bad \(malware\)/);
 
     // Someone this machine trusts says it is bad: nothing proceeds without asking.
     await attestAs(uma, archive, 'vulnerable', 'bad');
@@ -740,7 +749,7 @@ test('bad verdicts: a warning from strangers, a question from the trusted, a ref
     writePolicy({ ...policy, block: [scanner.did] });
     await assert.rejects(install('https://dl.test/warned.nzip', { name: 'warned3', decide: async (review) => selectable(review) }),
         /marked bad by .*, which this machine blocks on/);
-    assert.equal(installed().find((check) => check.record.name === 'warned')?.state, 'invalid');
+    assert.equal(installed().find((check) => check.record.name === named('warned'))?.state, 'invalid');
 
     // And the same at mount time, from the cache: the verifier refuses outright.
     const blocked = verifySync(archive, { block: [{ did: scanner.did }] });
@@ -816,15 +825,15 @@ test('the review is shown numbered, and a terminal answer picks from it', async 
     assert.match(said, / {2}1 attested by .* as (audited|reproduced), .* — new/);
     assert.match(said, / {2}2 attested by /);
     assert.match(said, /'5' is not one of 1–2/);
-    assert.equal(records()['picked']!.accepted?.attesters.length, 1);
+    assert.equal(records()[named('picked')]!.accepted?.attesters.length, 1);
 
     // Non-interactive, nothing to proceed on: exit 4, not a verification failure.
     const another = await version();
     await attestAs(account(), another);
     DOWNLOADS.set('/picked.nzip', FS.readFileSync(another));
     const quiet = collector();
-    assert.equal(await main(['update', 'picked'], quiet), UNDECIDED);
-    assert.match(quiet.stdout.join('\n'), /picked: unconfirmed/);
+    assert.equal(await main(['update', named('picked')], quiet), UNDECIDED);
+    assert.match(quiet.stdout.join('\n'), new RegExp(`${named('picked').replace('.', '\\.')}: unconfirmed`));
 });
 
 test('bundle attest, verify --attester and attest --revoke, end to end', async () => {
@@ -897,7 +906,9 @@ test('attest signs in with OAuth — attestation-only scope, DPoP-bound — writ
     const live = AUTH.refreshTokens.size;
     await session.end?.();
     assert.equal(AUTH.refreshTokens.size, live - 1);
-    assert.equal(FS.existsSync(PATH.join(tmp, 'state', 'bundle', 'oauth')), false);
+    assert.ok(stateDir().startsWith(tmp), 'the state directory is this suite\'s own');
+    assert.deepEqual(FS.existsSync(stateDir()) ? FS.readdirSync(stateDir()).filter((name) => name !== 'installed.json' && name !== 'attestations') : [], [],
+        'nothing but install records and the attestation cache is ever written there');
 });
 
 test('an access token that expires mid-command is refreshed, in memory', async () => {
