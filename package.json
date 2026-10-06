@@ -42,6 +42,7 @@
     "./atproto": "./dist/atproto.js",
     "./policy": "./dist/policy.js",
     "./review": "./dist/review.js",
+    "./policy.schema.json": "./schemas/policy.schema.json",
     "./oidc": "./dist/oidc.js",
     "./oauth": "./dist/oauth.js",
     "./lexicon": "./dist/lexicon.js",
@@ -51,6 +52,7 @@
     "dist/",
     "src/",
     "skills/",
+    "schemas/",
     "lexicons/",
     "bundle.nzip",
     "shell-base",
@@ -74,6 +76,7 @@
     "verify:cli": "node --no-warnings dist/main.js verify bundle.nzip",
     "release:cli": "npm run build && npm run manifest:cli && npm run pack:cli && npm run baseline:cli && npm run audit:cli",
     "trust": "node --no-warnings dist/main.js trust",
+    "schema:release": "node --no-warnings tools/schema.ts build/policy.schema.json",
     "prepublishOnly": "node --no-warnings --experimental-vfs tools/prepublish.ts",
     "testpki": "node --no-warnings --experimental-vfs tools/testpki.ts"
   },

@@ -494,6 +494,24 @@ on macOS, `%ProgramData%\bundle\` on Windows) and the user's
 Requirements from every file and section apply together, and trust adds up.
 Unknown settings are an error, so a typo cannot quietly loosen anything.
 
+**The format is described by a JSON Schema**, [`schemas/policy.schema.json`](schemas/policy.schema.json),
+which is also the full reference for every setting. Each release attaches the schema
+for that version, and the files `bundle policy init` writes, and the ones `bundle
+policy show` prints, start with a `$schema` pointing at it:
+
+```json
+{
+  "$schema": "https://github.com/pipobscure/bundles/releases/download/v0.0.13/policy.schema.json",
+  "require": {}
+}
+```
+
+So an editor that understands JSON Schema, VS Code among them, completes settings,
+shows what each one means, and flags mistakes as you type. The schema ships in the
+npm package as `@pipobscure/bundle/policy.schema.json` too, and a test holds it to the
+checker `bundle` itself uses: the same settings, the same patterns, the same verdict
+on every document.
+
 ### `uninstall`
 
 ```sh

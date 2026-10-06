@@ -223,7 +223,14 @@ for one installed name under `apps`.
 
 Requirements from every file and section apply together; trust adds up; the shortest
 `maxAge` wins; a machine that turns discovery off keeps it off. Unknown settings are an
-error, so a typo cannot quietly loosen anything. The policy governs `install`, `update`
+error, so a typo cannot quietly loosen anything.
+
+The format is defined by a JSON Schema, [`schemas/policy.schema.json`](../schemas/policy.schema.json),
+which documents every setting. Each GitHub release attaches the schema for its version
+(`releases/download/v<version>/policy.schema.json`, with a matching `$id`). The files
+`bundle policy init` writes and `bundle policy show` prints start with a `$schema`
+pointing there, so editors can complete and check them. A test holds the schema and
+the runtime checker to the same keys, patterns and verdicts. The policy governs `install`, `update`
 and `installed`. Applying it to `verify` and `run` as well is a natural next step.
 
 ## Making an attestation

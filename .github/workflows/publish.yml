@@ -21,7 +21,9 @@
 #   4. sign          sigstore, with this workflow's own OIDC identity
 #      publish       npm trusted publishing, from the same identity
 #   5. github        a GitHub release carrying the signed bundle.nzip, marked
-#                    latest — the CLI for anyone with node and nothing else
+#                    latest — the CLI for anyone with node and nothing else —
+#                    and policy.schema.json, the JSON Schema for policy files,
+#                    which `bundle policy init` points new files at by version
 #
 # There is no npm token. npm trusts this workflow file by name, configured on
 # the package's npm settings page (Trusted Publisher: GitHub Actions,
@@ -250,6 +252,11 @@ jobs:
           node --no-warnings dist/main.js verify \
             --identity "$RELEASE_IDENTITY" --issuer "$RELEASE_ISSUER" bundle.nzip
 
+      # The schema policy files point at, with its $id naming this release —
+      # the URL `bundle policy init` writes into a file for this version.
+      - name: Stamp the policy schema with this version
+        run: npm run schema:release
+
       - name: Keep the artifacts with the run
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -258,6 +265,7 @@ jobs:
             bundle.nzip
             build/cli.manifest
             build/cli.audit.json
+            build/policy.schema.json
 
       # prepublishOnly refuses a package whose signed CLI is missing, unsigned,
       # or stale relative to this tree. Trusted publishing needs npm 11.5.1 or
@@ -317,8 +325,11 @@ jobs:
           \`\`\`
 
           \`cli.audit.json\` is the audit verdict it was signed under, pinned to the unsigned archive's sha256.
+
+          \`policy.schema.json\` is the JSON Schema for this version's policy files — what \`bundle policy init\` points a new file at, so an editor can complete and check it.
           EOF
           cp build/cli.audit.json cli.audit.json
-          gh release create "v$VERSION" bundle.nzip cli.audit.json \
+          cp build/policy.schema.json policy.schema.json
+          gh release create "v$VERSION" bundle.nzip cli.audit.json policy.schema.json \
             --target "$TARGET" --title "v$VERSION" --notes-file notes.md --latest
 

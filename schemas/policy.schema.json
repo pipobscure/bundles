@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pipobscure/bundles/releases/latest/download/policy.schema.json",
+  "title": "bundle install policy",
+  "description": "The rules a machine installs and updates bundles by (`bundle install`, `bundle update`, `bundle installed`).\n\nTwo files are read, and both apply: the machine's (/etc/bundle/policy.json, /Library/Application Support/bundle/policy.json on macOS, %ProgramData%\\bundle\\policy.json on Windows; BUNDLE_SYSTEM_POLICY overrides) and the user's (~/.config/bundle/policy.json, ~/Library/Application Support/bundle/policy.json on macOS, %APPDATA%\\bundle\\policy.json on Windows; BUNDLE_POLICY overrides).\n\nWhen something new is installed, everything that vouches for it is gathered — its signature, and every attestation of its hash — and then:\n• it is REFUSED if a requirement here (or a command-line flag) is not met, or an attester under `block` has marked it bad;\n• it PROCEEDS if any of the evidence comes from someone accepted for this install before, someone under `trust`, or a certificate anchored in the trust store;\n• otherwise the person installing is ASKED.\n\nRequirements from every file and every `apps` section apply together; trust adds up. Unknown settings are an error, so a typo cannot quietly loosen anything. `bundle policy` shows what is in force; `bundle policy check <file>` checks a file.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "This schema, so an editor can help. `bundle policy init` writes it; nothing else reads it.",
+      "type": "string"
+    },
+    "require": { "$ref": "#/$defs/require" },
+    "issuers": { "$ref": "#/$defs/issuers" },
+    "trust": { "$ref": "#/$defs/trust" },
+    "block": { "$ref": "#/$defs/block" },
+    "ignore": { "$ref": "#/$defs/ignore" },
+    "discovery": {
+      "description": "The backlink index asked who has attested a file — its `blue.microcosm.links.getBacklinks` endpoint — or false not to ask. The index only says whom to ask: every attestation it names is fetched from the attester's own PDS and verified. The user's setting wins over the machine's, except that a machine which turns discovery off keeps it off.",
+      "anyOf": [
+        { "type": "string", "pattern": "^https?://", "format": "uri" },
+        { "const": false }
+      ],
+      "default": "https://constellation.microcosm.blue",
+      "examples": ["https://constellation.microcosm.blue", false]
+    },
+    "maxAge": {
+      "description": "How long a cached attestation proof counts after it was last confirmed — and so how long a withdrawn attestation can still be honoured by a machine that has not refreshed. Where both files set one, the shorter wins.",
+      "$ref": "#/$defs/duration",
+      "default": "7d"
+    },
+    "apps": {
+      "description": "Rules for one installed name — the name on your PATH, e.g. \"pnpm\" — on top of the global ones. They add requirements and trust; they cannot remove what the global rules require.",
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/rules" },
+      "examples": [{ "pnpm": { "require": { "sameIssuer": true } } }]
+    }
+  },
+  "$defs": {
+    "rules": {
+      "description": "Rules for one installed name.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require": { "$ref": "#/$defs/require" },
+        "issuers": { "$ref": "#/$defs/issuers" },
+        "trust": { "$ref": "#/$defs/trust" },
+        "block": { "$ref": "#/$defs/block" },
+        "ignore": { "$ref": "#/$defs/ignore" }
+      }
+    },
+    "require": {
+      "description": "What must hold. An archive that does not meet a requirement is refused, never offered — so these are for decisions that should not be left to a prompt. Nothing an archive was installed with is a requirement by itself: a publisher who moves to another signer produces a question unless something here says otherwise.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "signature": {
+          "description": "The archive must carry a signature that verifies — sigstore, from an issuer `issuers` accepts, or a certificate chain. Attestations alone are not enough.",
+          "type": "boolean",
+          "default": false
+        },
+        "sameIssuer": {
+          "description": "An update must be signed through the same OIDC issuer as the version it replaces — a release signed by GitHub Actions cannot be replaced by one signed by somebody's Google account. Applies once an install has a sigstore signature; says nothing about the first install.",
+          "type": "boolean",
+          "default": false
+        },
+        "attesters": {
+          "description": "Attesters that must have vouched for the archive (with a good verdict), as `did` or `kind@did` — the kind, when given, must match what they attested. Handles are not accepted here, because they can change hands; `bundle verify --attester <handle>` shows the DID.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/attester" },
+          "uniqueItems": true,
+          "examples": [["audited@did:web:audit.example.com"]]
+        },
+        "quorum": {
+          "description": "How many of `attesters` must have vouched. Default: all of them. At most the number of attesters.",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "dependentRequired": { "quorum": ["attesters"] }
+    },
+    "issuers": {
+      "description": "The only OIDC issuers whose sigstore signatures count at all; a signature through any other issuer is shown but cannot be accepted. Where several files or sections give a list, a signature must be in every one.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "examples": [["https://token.actions.githubusercontent.com"]]
+    },
+    "trust": {
+      "description": "Who is accepted without asking: evidence from these lets an install or update proceed. A bad verdict from anyone trusted here stops that and asks instead.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "signers": {
+          "description": "Sigstore signers, matched exactly — identity and issuer both, never as a pattern.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["identity", "issuer"],
+            "properties": {
+              "identity": {
+                "description": "The signing identity (the certificate's subject alternative name): a workflow ref for CI, an email address for a person.",
+                "type": "string",
+                "minLength": 1,
+                "examples": ["https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main"]
+              },
+              "issuer": {
+                "description": "The OIDC issuer that vouched for the identity.",
+                "type": "string",
+                "minLength": 1,
+                "examples": ["https://token.actions.githubusercontent.com"]
+              }
+            }
+          }
+        },
+        "attesters": {
+          "description": "Attesters whose good verdict is accepted, as `did` or `kind@did` — with a kind, only attestations of that kind.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/attester" },
+          "uniqueItems": true,
+          "examples": [["did:web:audit.example.com", "reproduced@did:plc:ewvi7nxzyoun6zhxrhs64oiz"]]
+        },
+        "certificates": {
+          "description": "Certificate-chain roots, by SHA-256 fingerprint, for archives signed against a certificate authority of your own rather than sigstore.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "block": {
+      "description": "DIDs whose bad verdict refuses an archive outright — at install and update, and at mount time through the cache (BUNDLE_BLOCK). A scanning service you rely on belongs here. A bad verdict from anyone not listed is a warning, since anyone can publish one.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/did" },
+      "uniqueItems": true
+    },
+    "ignore": {
+      "description": "DIDs whose attestations, good or bad, are not shown or counted.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/did" },
+      "uniqueItems": true
+    },
+    "did": {
+      "description": "A did:plc or a hostname did:web.",
+      "type": "string",
+      "pattern": "^did:(?:plc:[a-z2-7]{24}|web:[A-Za-z0-9.%-]+)$",
+      "examples": ["did:web:audit.example.com", "did:plc:ewvi7nxzyoun6zhxrhs64oiz"]
+    },
+    "attester": {
+      "description": "An attester: a DID, optionally preceded by the kind of attestation required of it (`audited@did:web:audit.example.com`).",
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9._-]+@)?did:(?:plc:[a-z2-7]{24}|web:[A-Za-z0-9.%-]+)$",
+      "examples": ["did:web:audit.example.com", "audited@did:web:audit.example.com"]
+    },
+    "duration": {
+      "description": "A duration: `90s`, `30m`, `12h`, `7d`, or a bare number of seconds.",
+      "type": "string",
+      "pattern": "^\\s*(\\d+(?:\\.\\d+)?)\\s*(s|m|h|d)?\\s*$",
+      "examples": ["7d", "12h"]
+    }
+  }
+}
