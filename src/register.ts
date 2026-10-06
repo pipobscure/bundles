@@ -21,6 +21,13 @@ import type * as Provider from './provider.ts';
 //   BUNDLE_IDENTITY         require this sigstore signing identity
 //   BUNDLE_ISSUER           require this sigstore OIDC issuer
 //   BUNDLE_SIGSTORE_ROOT    path to the sigstore trust root to check against
+//   BUNDLE_ATTESTERS        require attestations from these, as space- or
+//                           comma-separated `[kind@]did`; checked against the
+//                           cache `bundle trust` fills, never the network
+//   BUNDLE_QUORUM           how many of them (default: all)
+//   BUNDLE_ATTESTATION_MAX_AGE  how stale a cached proof may be (default: 7d)
+//   BUNDLE_BLOCK            refuse an archive any of these DIDs has marked bad
+//   BUNDLE_ATTESTATIONS     where that cache is
 //
 // For anything more, import `@pipobscure/bundle/provider` and call `register()`
 // with options from a preload module of your own.

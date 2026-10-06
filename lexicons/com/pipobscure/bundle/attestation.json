@@ -1,0 +1,58 @@
+{
+  "lexicon": 1,
+  "id": "com.pipobscure.bundle.attestation",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A statement by the repository's owner about a bundle \u2014 that they vouch for it, or that it is bad \u2014 identified by its whole-file hash \u2014 the hash a bundle signature covers. The record key is that hash in lowercase hex, so there is at most one attestation per account per bundle, and a verifier knows which record to ask for.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "hash",
+          "createdAt"
+        ],
+        "properties": {
+          "hash": {
+            "type": "string",
+            "description": "The whole-file hash as '<algorithm>:<lowercase hex>', e.g. 'sha256:3f1a\u2026'. Must equal the algorithm the bundle's manifest declares and the record key.",
+            "maxLength": 256
+          },
+          "kind": {
+            "type": "string",
+            "description": "What is being vouched for. A policy can require a particular kind from a particular attester.",
+            "knownValues": [
+              "published",
+              "audited",
+              "reproduced",
+              "malware",
+              "vulnerable",
+              "abandoned"
+            ],
+            "maxLength": 64
+          },
+          "verdict": {
+            "type": "string",
+            "description": "Whether the attester vouches for the bundle or warns against it. Absent means good. Only good verdicts count towards a requirement; a bad verdict is shown to anyone installing the bundle, and refuses it under a policy that blocks on this attester.",
+            "knownValues": [
+              "good",
+              "bad"
+            ],
+            "maxLength": 16
+          },
+          "note": {
+            "type": "string",
+            "description": "A short free-text note; informational only.",
+            "maxLength": 3000,
+            "maxGraphemes": 300
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the attester made the attestation, by their own clock."
+          }
+        }
+      }
+    }
+  }
+}

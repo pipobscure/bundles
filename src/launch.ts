@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { open as openBundle, type ProviderOptions } from './provider.ts';
 import { message, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
+import { attestersFrom, parseDuration } from './attestation.ts';
 
 // Verifying a container, mounting it, and running what is inside — the one path
 // every shape of this tool ends up taking, factored out of the SEA it used to
@@ -38,6 +39,14 @@ export interface LaunchOptions {
     issuer?: string | undefined;
     /** Path to the sigstore trust root to check against. */
     trustedRoot?: string | undefined;
+    /** Require attestations from these attesters, as `[kind@]did`. */
+    attesters?: string[] | undefined;
+    /** How many of `attesters` must have attested (default: all of them). */
+    quorum?: number | undefined;
+    /** Milliseconds a cached attestation proof stays good for (default: seven days). */
+    maxAge?: number | undefined;
+    /** Refuse a container any of these DIDs has marked bad. */
+    block?: string[] | undefined;
     /**
      * Run a container whose signature is good but whose chain is not anchored
      * in the trust store (default: false).
@@ -77,6 +86,10 @@ export function mount(container: string, options: LaunchOptions = {}): Mounted {
         identity: options.identity,
         issuer: options.issuer,
         trustedRoot: options.trustedRoot,
+        attesters: options.attesters,
+        quorum: options.quorum,
+        maxAge: options.maxAge,
+        block: options.block,
         allowUntrusted: options.allowUntrusted,
         deep: options.deep,
         name: 'bundle-launch',
@@ -124,6 +137,9 @@ export function verify(container: string, options: LaunchOptions = {}): Verifica
     return verifySync(container, {
         extraRoots: roots, deep: options.deep ?? false,
         identity: options.identity, issuer: options.issuer, trustedRoot: options.trustedRoot,
+        attesters: options.attesters ? attestersFrom(options.attesters) : undefined,
+        quorum: options.quorum, maxAge: options.maxAge,
+        block: options.block ? attestersFrom(options.block) : undefined,
     });
 }
 
@@ -169,6 +185,11 @@ options:
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
+      --attester <[kind@]did>  require an attestation from this DID; repeatable.
+                        Checked against the cache 'bundle trust' fills
+      --quorum <n>      how many of the attesters must have attested (default: all)
+      --max-age <time>  how stale a cached attestation may be (default: 7d)
+      --block <did>     refuse an archive this DID has marked bad; repeatable
       --untrusted       run an archive whose signature is good but unanchored
       --deep            check every member digest at mount, not on first read
       --entry <path>    entry point inside the archive, overriding its main
@@ -177,8 +198,9 @@ options:
       --version         the verifier's version, and the runtime's
 
 The same policy can come from the environment — BUNDLE_ROOTS, BUNDLE_IDENTITY,
-BUNDLE_ISSUER, BUNDLE_SIGSTORE_ROOT, BUNDLE_ALLOW_UNTRUSTED — which is what a
-container built with no policy of its own falls back to.
+BUNDLE_ISSUER, BUNDLE_SIGSTORE_ROOT, BUNDLE_ATTESTERS, BUNDLE_QUORUM,
+BUNDLE_ATTESTATION_MAX_AGE, BUNDLE_BLOCK, BUNDLE_ALLOW_UNTRUSTED — which is what a container
+built with no policy of its own falls back to.
 `;
 
 /** Options baked into a runtime at build time, and whether they are the last word. */
@@ -186,8 +208,9 @@ export interface Baked extends LaunchOptions {
     /**
      * A runtime built with a policy of its own accepts no policy from its
      * command line: a binary that demands a signing identity is not one whose
-     * user can ask it to stop. Adding a root, requiring a different identity
-     * and `--untrusted` are all refused. What remains — `--entry`, `--verify`,
+     * user can ask it to stop. Adding a root, requiring a different identity,
+     * naming attesters and `--untrusted` are all refused. What remains —
+     * `--entry`, `--verify`,
      * `--help` — cannot loosen anything.
      */
     sealed?: boolean | undefined;
@@ -249,6 +272,22 @@ export async function main(argv: string[], baked: Baked = {}): Promise<number> {
             case '--issuer':
                 if (baked.sealed) return sealedRefusal(name);
                 flags.issuer = value();
+                break;
+            case '--attester':
+                if (baked.sealed) return sealedRefusal(name);
+                flags.attesters = [...(flags.attesters ?? []), value()];
+                break;
+            case '--quorum':
+                if (baked.sealed) return sealedRefusal(name);
+                flags.quorum = Number(value());
+                break;
+            case '--max-age':
+                if (baked.sealed) return sealedRefusal(name);
+                flags.maxAge = parseDuration(value());
+                break;
+            case '--block':
+                // Blocking only ever tightens, so even a sealed runtime takes it.
+                flags.block = [...(flags.block ?? baked.block ?? []), value()];
                 break;
             case '--untrusted':
                 if (baked.sealed) return sealedRefusal(name);

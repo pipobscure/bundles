@@ -202,13 +202,16 @@ bundle -v, --version
   sign      sign an archive into a new file, optionally behind a prefix
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
+  attest    vouch for an archive from an atproto account, or withdraw that
   run       mount a signed archive and run it
   install   fetch a signed archive from a URL or domain and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
-  trust     refresh the sigstore trust root
+  trust     refresh the sigstore trust root and the cached attestations
+  policy    show the rules this machine installs by, and where they come from
+  lexicon   show, check or publish the atproto lexicons attestations are written in
   skill     install the bundle-auditing skill into a project
 ```
 
@@ -245,6 +248,56 @@ a pattern. A mismatch is
 `valid-untrusted`: the signature is genuine, it is simply not the one you asked for. An
 archive signed against an ordinary CA carries no identity claim at all, so it also reads as
 `valid-untrusted` under such a policy rather than passing.
+
+`--attester [kind@]<did or handle>` (repeatable, with `--quorum <n>` and `--max-age`)
+requires attestations instead of, or as well as, a signer — see [`attest`](#attest).
+
+### `attest`
+
+```sh
+bundle attest --as audit.example.com --kind audited app.nzip app-sea app.run   # one browser sign-in for all three
+bundle verify --attester audited@did:web:audit.example.com app.nzip
+bundle attest --as audit.example.com --revoke app.nzip
+bundle attest --as scanner.example --verdict bad --kind malware app.nzip
+```
+
+An attestation is an atproto record in the attester's own repository saying "I vouch for
+the archive with this whole-file hash", the same hash a signature covers, optionally with
+a kind: `published`, `audited`, `reproduced`. Anyone with an atproto account (any `did:plc`
+or `did:web`) can make one, and only they can withdraw it. A policy names the attesters it
+requires:
+
+- With attesters, a signature is optional. If there is one it must verify, but its
+  certificate only has to be trusted if `--identity`/`--issuer` also ask for a signer. So
+  "our auditors vouched for this" can be required without caring who built it, or
+  together with a sigstore identity, so that no single trust root decides.
+- Proofs are fetched with `com.atproto.sync.getRecord` and checked with `node:crypto`
+  alone: the commit's signature against the DID's key, and the Merkle tree path to the
+  record. `verify`, `run`, `install`, `update` and `installed` fetch the proofs they need;
+  mounting, which cannot wait for the network, checks a cache that `bundle trust` keeps
+  current. A cached proof counts for `--max-age` (default 7 days), which is how long a
+  withdrawn attestation can still be honoured by a machine that has not refreshed.
+- **Signing in is OAuth**, against the account's own PDS. It asks for write access to
+  attestation records and nothing else (`repo:com.pipobscure.bundle.attestation`). It falls
+  back to general write access only on a server that does not support that, and says
+  so. Nothing is kept: the session is revoked when the command finishes, so every
+  attestation is approved in the browser by whoever it speaks for. Several archives
+  named in one command share one sign-in. In CI, where there is no browser, an app
+  password from `BUNDLE_ATPROTO_PASSWORD` or `--password-file` is used instead.
+- **Verdicts can be bad.** `--verdict bad` warns everyone who installs the file,
+  and `--kind` says why (`malware`, `vulnerable`, …). Bad verdicts never count
+  towards a requirement. A stranger's is a warning, because anyone can publish
+  one. One from someone you trust forces a question. One from an attester you
+  `--block` on, or the policy blocks on, refuses the file: at install, and at
+  mount time through the cache. Attesters in the policy's `ignore` list are not
+  shown at all.
+- **Install finds attestations nobody named,** through a backlink index
+  (Constellation, by default). The index only says whom to ask: each attestation
+  is fetched from the attester's own PDS and verified. See [`install`](#install)
+  for what is accepted, what is asked and what is refused.
+
+The design, and what an attestation does and does not prove, is in
+[proposals/atproto-attestations.md](proposals/atproto-attestations.md).
 
 ### `audit`
 
@@ -319,13 +372,13 @@ and install it as `npm`.
 
 The record says *where* to fetch from and nothing more. DNS is not
 authenticated, so the archive is verified exactly as a URL's would be, the
-signer is pinned exactly the same way, and only `https:` is accepted. More than
+same people are asked about, and only `https:` is accepted. More than
 one differing `nzip:` record on a domain is refused rather than guessed between.
 `--name` still overrides the name, and `bundle uninstall tool.example.com`
 removes what it installed.
 
 **With neither, it installs this package itself**, from its own published release,
-requiring the identity its [publish workflow](.github/workflows/publish.yml)
+accepting without a question the identity its [publish workflow](.github/workflows/publish.yml)
 signs with. So
 
 ```sh
@@ -335,9 +388,32 @@ npx @pipobscure/bundle install
 is the whole bootstrap: npm fetches it once, and what stays behind is a signed archive on
 your PATH — called `bundle`, or `bundle.nzip` on Windows — that keeps itself current.
 
-**Whoever signed the first install is recorded**, and every later `update` of
-that name must match. That is trust on first use, said plainly — the first fetch
-is the one you have to judge, which is what `--identity` is for.
+**Everything that vouches for the archive is shown, and whom to believe is your
+decision.** That is its signature, if it has one, and every attestation of its
+hash: from attesters this machine knows, and from anyone the backlink index says
+has attested it (see [`attest`](#attest)). Each one is verified before it is shown.
+
+```
+* tool: sha256:3f1a… (signed)
+   1 signed by   https://github.com/acme/tool/.github/workflows/release.yml@refs/heads/main via https://token.actions.githubusercontent.com — new
+   2 attested by audit.acme.com (did:web:audit.acme.com) as audited, 2026-10-01T… — trusted by policy
+     WARNING     scanner.example (did:plc:…) as malware — marked it bad
+* tool: … accept which? numbers (1,2), 'all', or Enter to decline:
+```
+
+- **Accepted without asking:** a signer or attester accepted for this install
+  before, one the [policy](#policy) trusts, one a flag demands, or a certificate
+  anchored in the trust store.
+- **Otherwise you are asked.** On a terminal you pick what to accept, and that is
+  remembered for later updates. Elsewhere it stops with exit code **4** ("needs a
+  decision") unless `--yes` accepts everything shown. A bad verdict from someone
+  you trust or accepted always produces a question.
+- **Refused outright:** bytes or a signature that do not verify; a missing
+  `--identity`, `--issuer` or `--attester`; a policy requirement that is not met;
+  a bad verdict from someone `--block` or the policy blocks on.
+
+Only flags and the policy file make anything mandatory. A signer recorded at
+install time is *accepted* on later versions, not *required*.
 
 ### `update`
 
@@ -348,8 +424,13 @@ bundle update tool       # check one
 
 Each check is a conditional request carrying the ETag recorded at install time,
 so a server with nothing new answers `304` and nothing is downloaded. When there
-is something new it is verified — against the pinned identity — before it
-replaces anything.
+is something new it is reviewed exactly as an install is, against what has been
+accepted for it so far. Evidence from someone accepted before proceeds. A new
+signer, or attestations from people nobody accepted, is a question, not a
+failure: publishers move their releases, and auditors do not review every
+version. To make a signer or attester mandatory, say so in the policy, for
+example `"require": { "sameIssuer": true }`. One install that is refused or
+waiting on a decision does not stop the others.
 
 ### `installed`
 
@@ -358,9 +439,12 @@ bundle installed          # what is here, and whether it still is what it was
 bundle installed --json
 ```
 
-Lists what is installed — where from, who signed it, when — and re-checks each
-one against its record: the file is there, its bytes are still the bytes that
-were installed, and it still verifies as the identity it was installed as.
+Lists what is installed — where from, who signed and attested it, when — and
+re-checks each one against its record: the file is there, its bytes are still
+the bytes that were installed, someone accepted for it still vouches for it, the
+policy still holds, and nobody it blocks on has marked it bad. Attestations are
+fetched fresh first, discovery included, so a warning published since the
+install shows up here.
 
 The hash is the cheap check and the interesting one. `update` is the only thing
 that should ever replace an installed archive, so a file whose hash has moved
@@ -369,6 +453,46 @@ signature check alone would not notice, because the replacement may be perfectly
 well signed. That case reports `CHANGED`.
 
 It exits non-zero when anything is not `OK`, so a script can gate on it.
+
+### `policy`
+
+```sh
+bundle policy              # the rules in force, and the files they came from
+bundle policy --app tool   # including the apps.tool section
+bundle policy init         # write a starter file for you (--system: for the machine)
+bundle policy show         # print the files themselves
+bundle policy check f.json # check a file the way an install will read it
+```
+
+The rules this machine installs by, in JSON, from two files that both apply:
+the machine's (`/etc/bundle/policy.json`, `/Library/Application Support/bundle/`
+on macOS, `%ProgramData%\bundle\` on Windows) and the user's
+(`~/.config/bundle/policy.json`, or `BUNDLE_POLICY`).
+
+```jsonc
+{
+  "require": {                       // mandatory: not met means refused
+    "signature": true,               // it must carry a signature that verifies
+    "sameIssuer": true,              // updates signed through the same OIDC issuer as before
+    "attesters": ["audited@did:web:audit.acme.com"],
+    "quorum": 1
+  },
+  "issuers": ["https://token.actions.githubusercontent.com"],  // the only issuers that count
+  "trust": {                         // accepted without asking
+    "signers": [{ "identity": "…", "issuer": "…" }],
+    "attesters": ["did:web:audit.acme.com"],
+    "certificates": ["AB:CD:…"]      // certificate-chain root fingerprints
+  },
+  "block": ["did:plc:…"],            // their bad verdict refuses it
+  "ignore": ["did:plc:…"],           // their verdicts are not shown at all
+  "discovery": "https://constellation.microcosm.blue",  // or false
+  "maxAge": "7d",
+  "apps": { "tool": { "require": { "sameIssuer": true } } }
+}
+```
+
+Requirements from every file and section apply together, and trust adds up.
+Unknown settings are an error, so a typo cannot quietly loosen anything.
 
 ### `uninstall`
 
@@ -475,6 +599,15 @@ A preload takes no arguments, so the mount is configured through the environment
 | `BUNDLE_ALLOW_UNTRUSTED` | mount an archive whose signature is good but unanchored |
 | `BUNDLE_IDENTITY` / `BUNDLE_ISSUER` | require a particular sigstore signer at mount time |
 | `BUNDLE_SIGSTORE_ROOT` | the sigstore trust root to check against, instead of the cache |
+| `BUNDLE_ATTESTERS` | require attestations at mount time: space- or comma-separated `[kind@]did` |
+| `BUNDLE_QUORUM` / `BUNDLE_ATTESTATION_MAX_AGE` | how many of them, and how stale a cached proof may be |
+| `BUNDLE_BLOCK` | refuse at mount time what any of these DIDs has marked bad |
+| `BUNDLE_ATTESTATIONS` | where the attestation cache is, instead of the state directory |
+| `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file, instead of the defaults |
+| `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` resolves against |
+| `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest` signs in as |
+| `BUNDLE_ATPROTO_PASSWORD` | an app password, for CI: `attest` uses it instead of signing in through the browser |
+| `BUNDLE_OAUTH_CLIENT_ID` | a hosted OAuth client metadata URL, instead of the loopback development client |
 | `BUNDLE_NO_BROWSER` | never try to open a browser when signing; use the device flow |
 | `BUNDLE_AUDIT_VERDICT` | where the audit skill writes its verdict, when CI asks for one |
 
@@ -498,6 +631,12 @@ A preload takes no arguments, so the mount is configured through the environment
   "./skill":    "the shipped skills, and installing them",
   "./audit":    "the audit gate: prepare, check, approve",
   "./sigstore": "the sigstore signer and bundle verification",
+  "./attestation": "attestation policies, and the cache they are checked against",
+  "./policy":   "the machine's install policy file",
+  "./review":   "what install and update find, and what they decide",
+  "./atproto":  "resolving DIDs, fetching and writing attestations",
+  "./oauth":    "signing in to a PDS: atproto OAuth with PAR, PKCE and DPoP",
+  "./lexicon":  "this package's lexicons, and publishing them",
   "./oidc":     "identity tokens: CI, browser, or device code"
 }
 ```

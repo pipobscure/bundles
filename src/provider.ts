@@ -4,6 +4,7 @@ import * as CRYPTO from 'node:crypto';
 import * as PATH from 'node:path';
 import * as FS from 'node:fs';
 import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
+import { attestersFrom, policyFromEnvironment, type Attester } from './attestation.ts';
 
 // A `node:vfs` file provider for signed archives — `.nzip` files — layered on
 // the built-in `ZipProvider`. It is what turns "this archive is signed" into
@@ -11,8 +12,10 @@ import { AUTHORITY, signatureOf, verifySync, type VerificationResult } from './m
 //
 //   * At mount time (`open()` below) the whole-file hash is recomputed, the
 //     signature over it is checked against the leaf certificate in
-//     `AUTHORITY.PEM`, and that chain is anchored in the trust store. An
-//     archive that fails any of those never becomes a filesystem at all.
+//     `AUTHORITY.PEM`, and that chain is anchored in the trust store — or,
+//     under a policy that names attesters, the attestations cached for them
+//     vouch for the hash (see attestation.ts). An archive that fails any of
+//     those never becomes a filesystem at all.
 //
 //   * At *fetch* time every member is hashed as it is read and compared with
 //     the digest recorded for it in the archive that was verified at mount.
@@ -82,6 +85,18 @@ export interface ProviderOptions {
     issuer?: string | undefined;
     /** Path to the sigstore trust root (default: `BUNDLE_SIGSTORE_ROOT`). */
     trustedRoot?: string | undefined;
+    /**
+     * Require attestations from these attesters, as `[kind@]did` (default:
+     * `BUNDLE_ATTESTERS`). Checked against the attestation cache only — a
+     * mount does not reach for the network.
+     */
+    attesters?: string[] | undefined;
+    /** How many of `attesters` must have attested (default: `BUNDLE_QUORUM`, else all). */
+    quorum?: number | undefined;
+    /** DIDs whose bad verdict refuses an archive (default: `BUNDLE_BLOCK`). */
+    block?: string[] | undefined;
+    /** Milliseconds a cached proof stays good for (default: `BUNDLE_ATTESTATION_MAX_AGE`, else seven days). */
+    maxAge?: number | undefined;
     /** Identifier reported in diagnostics (default: 'bundle'). */
     name?: string | undefined;
 }
@@ -98,6 +113,10 @@ interface Settings {
     identity: string | undefined;
     issuer: string | undefined;
     trustedRoot: string | undefined;
+    attesters: Attester[];
+    quorum: number | undefined;
+    maxAge: number | undefined;
+    block: Attester[];
 }
 
 /**
@@ -116,8 +135,11 @@ export function open(path: string, options?: ProviderOptions | Settings): Bundle
         const res = verifySync(resolved, {
             archive, deep: opts.deep, extraRoots: opts.extraRoots,
             trustedRoot: opts.trustedRoot, identity: opts.identity, issuer: opts.issuer,
+            attesters: opts.attesters, quorum: opts.quorum, maxAge: opts.maxAge, block: opts.block,
         });
-        const acceptable = res.state === 'valid' || (opts.allowUntrusted && res.state === 'valid-untrusted');
+        // `allowUntrusted` is about anchoring, never about a demand: an identity
+        // or attesters that were asked for and are not there still refuse.
+        const acceptable = res.state === 'valid' || (opts.allowUntrusted && res.state === 'valid-untrusted' && !res.unmet);
         if (!acceptable) throw refusal(resolved, res);
         return new BundleProvider(archive, { hashAlg: res.hashAlg, digests: res.digests });
     } catch (err) {
@@ -271,6 +293,7 @@ const kSettings: unique symbol = Symbol('bundle.settings');
 function settings(options: ProviderOptions | Settings = {}): Settings {
     if ((options as Settings)[kSettings]) return options as Settings;
     const opts = options as ProviderOptions;
+    const environment = policyFromEnvironment();
     return {
         [kSettings]: true,
         name: opts.name ?? 'bundle',
@@ -283,6 +306,10 @@ function settings(options: ProviderOptions | Settings = {}): Settings {
         identity: opts.identity ?? (process.env['BUNDLE_IDENTITY'] || undefined),
         issuer: opts.issuer ?? (process.env['BUNDLE_ISSUER'] || undefined),
         trustedRoot: opts.trustedRoot ?? (process.env['BUNDLE_SIGSTORE_ROOT'] || undefined),
+        attesters: opts.attesters ? attestersFrom(opts.attesters) : environment.attesters,
+        quorum: opts.quorum ?? environment.quorum,
+        maxAge: opts.maxAge ?? environment.maxAge,
+        block: opts.block ? attestersFrom(opts.block) : environment.block ?? [],
     };
 }
 

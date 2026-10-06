@@ -5,8 +5,14 @@ import * as CRYPTO from 'node:crypto';
 import * as DNS from 'node:dns';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { verifyBundleSync } from './api.ts';
-import { STATES, message, type VerificationResult, type VerificationState } from './manifest.ts';
+import { STATES, message, type VerificationState } from './manifest.ts';
+import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
+import { loadPolicy, type Policy, type Signer } from './policy.ts';
+import {
+    gather, gatherSync, judge, accept, noneAccepted, refusal,
+    type Accepted, type Demands, type Review, type ReviewItem, type Gathered,
+} from './review.ts';
+import type { NetworkOptions } from './atproto.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -22,27 +28,41 @@ const require = createRequire(import.meta.url);
 //   bundle update tool.nzip
 //   bundle update
 //
-// **The first install decides who the publisher is.** Whatever identity signed
-// the archive is written into the record, and every later update of that name
-// must carry the same one. That is trust on first use — the same bargain SSH
-// makes — and it is the honest description: the first fetch is the one you have
-// to judge yourself, and `--identity` lets you say up front who you expect.
-// Afterwards the record is doing the judging, and a publisher swapping identity
-// is a refusal rather than a silent success.
+// **Nothing is installed that nobody vouches for, and whom to believe is the
+// user's decision.** Everything that vouches for an archive is gathered — its
+// signature, and every attestation of its hash, including ones a backlink index
+// finds — and shown (see review.ts). Evidence from someone accepted for this
+// install before, trusted by the machine's policy, demanded by a flag, or a
+// certificate anchored in the trust store, proceeds. Anything else is a question
+// for the person installing, and an answer of yes is remembered.
+//
+// Updates work the same way, against what was accepted so far. A new version
+// signed by a different identity, or attested by different people, is not a
+// failure: it is a question. The things that *refuse* an archive are the ones
+// someone deliberately made mandatory — `--identity`, `--issuer`, `--attester`
+// on the command line, the policy file's requirements, a blocking attester's
+// bad verdict — and an archive whose bytes or signature do not verify. That is
+// what lets a publisher move their releases somewhere else without breaking
+// every install of what they publish.
+//
+// Attestations are fetched fresh for each install and update — this is the
+// online step — so for a `.nzip`, which the shell launcher runs without
+// verifying, the attestation cache's freshness window never comes into it.
 //
 // Updates are conditional requests. The record keeps the ETag the server gave,
 // an update sends it back as `If-None-Match`, and a 304 means there is nothing
 // to do — so `bundle update` over a dozen installs is a dozen cheap requests.
 
 /**
- * Where this package's own release lives, and who is allowed to have signed it
- * — what `bundle install` with no URL fetches.
+ * Where this package's own release lives, and who signs it — what `bundle
+ * install` with no URL fetches.
  *
  * It is a constant rather than something read out of `package.json`, because it
- * is a *trust* statement: the identity below is what makes a self-install
- * meaningful, and a value that could be edited by whatever is being installed
- * would not be worth checking. `BUNDLE_SELF_SOURCE` overrides the URL for a
- * mirror; the identity still has to match, unless `--identity` says otherwise.
+ * is a *trust* statement: the identity below is accepted for this package's own
+ * install without asking, and a value that could be edited by whatever is being
+ * installed would not be worth having. It is trusted rather than required, so a
+ * release signed some other way is a question rather than a refusal.
+ * `BUNDLE_SELF_SOURCE` overrides the URL for a mirror; the trust goes with it.
  */
 export const SELF = {
     url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
@@ -67,12 +87,23 @@ export interface InstallRecord {
     etag?: string | undefined;
     /** `Last-Modified`, used when there is no ETag. */
     lastModified?: string | undefined;
-    /** The sigstore identity that signed it, pinned for later updates. */
+    /** The sigstore identity that signed the installed version. */
     identity?: string | undefined;
     /** The OIDC issuer that vouched for that identity. */
     issuer?: string | undefined;
     /** The certificate subject, for an archive signed against an ordinary CA. */
     subject?: string | undefined;
+    /** The whole-file hash, `<alg>:<hex>` — what attestations of it name. */
+    hash?: string | undefined;
+    /** Who had attested the installed version (good verdicts), as `[kind@]did`. */
+    attestedBy?: string[] | undefined;
+    /**
+     * Who has been accepted for this install, across its versions: their
+     * evidence on a later version proceeds without asking.
+     */
+    accepted?: Accepted | undefined;
+    /** Older records: attesters an install required. Read as accepted. */
+    attesters?: string[] | undefined;
     /** sha256 of the file as installed. */
     sha256: string;
     /** When it was installed or last updated, ISO 8601. */
@@ -90,8 +121,28 @@ export interface InstallOptions {
     identity?: string | undefined;
     /** Require this sigstore OIDC issuer. */
     issuer?: string | undefined;
-    /** Accept a good signature from a chain that is not anchored locally. */
-    allowUntrusted?: boolean | undefined;
+    /** Require attestations from these attesters (DIDs, already resolved). */
+    attesters?: Attester[] | undefined;
+    /** How many of `attesters` must have attested (default: all of them). */
+    quorum?: number | undefined;
+    /** Refuse an archive any of these has marked bad. */
+    block?: Attester[] | undefined;
+    /** Signers accepted without asking, on top of the policy. */
+    trust?: Signer[] | undefined;
+    /** The policy to apply (default: the machine's, for the installed name). */
+    policy?: Policy | undefined;
+    /** Ask the backlink index who has attested it (default: what the policy says). */
+    discover?: boolean | undefined;
+    /** How attestations are fetched — for tests. */
+    network?: NetworkOptions | undefined;
+    /** Shown everything that was found, before anything is decided. */
+    onReview?: ((review: Review, about: { name: string; url: string }) => void) | undefined;
+    /**
+     * Asked when nothing known vouches for the archive: return the items to
+     * accept, or none to decline. Without it, such an install stops with
+     * `ERR_BUNDLE_UNCONFIRMED` instead.
+     */
+    decide?: ((review: Review, about: { name: string; url: string }) => Promise<ReviewItem[]>) | undefined;
     /** Install under this name instead of the one the server suggests. */
     name?: string | undefined;
     /**
@@ -108,10 +159,17 @@ export interface InstallOptions {
 
 export interface UpdateResult {
     record: InstallRecord;
-    /** What happened: the server had nothing new, or a new archive is in place. */
-    state: 'unchanged' | 'updated';
+    /**
+     * What happened: nothing new; a new archive in place; a new archive the
+     * person declined, or that needed a decision nobody was there to make; one
+     * that was refused outright; or a fetch that failed.
+     */
+    state: 'unchanged' | 'updated' | 'declined' | 'unconfirmed' | 'refused' | 'failed';
     /** The sha256 that was replaced, when something was. */
     previous?: string | undefined;
+    /** Why, for anything but `unchanged` and `updated`. */
+    reason?: string | undefined;
+    review?: Review | undefined;
 }
 
 /**
@@ -135,12 +193,7 @@ export function installDir(): string {
 
 /** Where the record of what is installed lives. */
 export function recordPath(): string {
-    const home = OS.homedir();
-    const base = process.platform === 'win32'
-        ? PATH.join(process.env['LOCALAPPDATA'] || PATH.join(home, 'AppData', 'Local'), 'bundle', 'Data')
-        : process.platform === 'darwin' ? PATH.join(home, 'Library', 'Application Support', 'bundle')
-        : PATH.join(process.env['XDG_STATE_HOME'] || PATH.join(home, '.local', 'state'), 'bundle');
-    return PATH.join(base, 'installed.json');
+    return PATH.join(stateDir(), 'installed.json');
 }
 
 /** Everything installed, by name. */
@@ -196,8 +249,10 @@ export async function install(target: string, options: InstallOptions = {}): Pro
  * Re-check what an installed archive came from, and replace it if the publisher
  * has published something new. With no name, every install.
  *
- * The identity recorded at install time is required again: an archive that now
- * verifies as somebody else is refused, and the installed copy is left alone.
+ * A new version goes through the same review as an install, against what has
+ * been accepted for this one so far. One install that is refused, declined or
+ * waiting on a decision does not stop the rest; each has its own result, and
+ * the installed copy stays as it was.
  */
 export async function update(name: string | undefined, options: InstallOptions = {}): Promise<UpdateResult[]> {
     const log = options.log ?? (() => {});
@@ -209,47 +264,57 @@ export async function update(name: string | undefined, options: InstallOptions =
     const results: UpdateResult[] = [];
     for (const each of names) {
         const previous = all[each]!;
-        log(`* ${each}: checking ${previous.url}`);
-
-        const headers: Record<string, string> = {};
-        if (previous.etag) headers['if-none-match'] = previous.etag;
-        else if (previous.lastModified) headers['if-modified-since'] = previous.lastModified;
-
-        const response = await fetch(previous.url, { headers, redirect: 'follow' });
-        if (response.status === 304) {
-            log(`  unchanged`);
-            results.push({ record: previous, state: 'unchanged' });
-            continue;
+        try {
+            results.push(await updateOne(previous, options, log));
+        } catch (err) {
+            const code = (err as { code?: string }).code;
+            const state = code === 'ERR_BUNDLE_UNCONFIRMED' ? 'unconfirmed'
+                : code === 'ERR_BUNDLE_DECLINED' ? 'declined'
+                : code === 'ERR_BUNDLE_UNTRUSTED' ? 'refused'
+                : 'failed';
+            log(`  ${state}: ${message(err)}`);
+            results.push({ record: previous, state, reason: message(err), review: (err as { review?: Review }).review });
         }
-        if (!response.ok) throw new Error(`${previous.url}: ${response.status} ${response.statusText}`);
-
-        const bytes = Buffer.from(await response.arrayBuffer());
-        // A server with no caching headers answers 200 to everything; compare
-        // the bytes rather than reinstalling an identical archive.
-        if (digest(bytes) === previous.sha256) {
-            log(`  unchanged`);
-            results.push({ record: remember({ ...previous, ...validators(response), at: previous.at }), state: 'unchanged' });
-            continue;
-        }
-
-        const record = await place(bytes, {
-            name: each,
-            dir: previous.dir,
-            url: previous.url,
-            alias: previous.alias,
-            response,
-            log,
-            options: {
-                ...options,
-                // What signed it last time must sign it this time.
-                identity: options.identity ?? previous.identity,
-                issuer: options.issuer ?? previous.issuer,
-            },
-        });
-        log(`  updated`);
-        results.push({ record, state: 'updated', previous: previous.sha256 });
     }
     return results;
+}
+
+// One install's update: a conditional fetch, and — if something new came back —
+// the same review an install gets, against what this install has accepted.
+async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult> {
+    log(`* ${previous.name}: checking ${previous.url}`);
+
+    const headers: Record<string, string> = {};
+    if (previous.etag) headers['if-none-match'] = previous.etag;
+    else if (previous.lastModified) headers['if-modified-since'] = previous.lastModified;
+
+    const response = await fetch(previous.url, { headers, redirect: 'follow' });
+    if (response.status === 304) {
+        log(`  unchanged`);
+        return { record: previous, state: 'unchanged' };
+    }
+    if (!response.ok) throw new Error(`${previous.url}: ${response.status} ${response.statusText}`);
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    // A server with no caching headers answers 200 to everything; compare
+    // the bytes rather than reinstalling an identical archive.
+    if (digest(bytes) === previous.sha256) {
+        log(`  unchanged`);
+        return { record: remember({ ...previous, ...validators(response), at: previous.at }), state: 'unchanged' };
+    }
+
+    const record = await place(bytes, {
+        name: previous.name,
+        dir: previous.dir,
+        url: previous.url,
+        alias: previous.alias,
+        response,
+        log,
+        options,
+        previous,
+    });
+    log(`  updated`);
+    return { record, state: 'updated', previous: previous.sha256 };
 }
 
 /**
@@ -326,15 +391,19 @@ export interface InstalledCheck {
     /** Where the file is, or would be. */
     path: string;
     /**
-     * `ok` — present, the recorded bytes, and still verifying as the identity
-     * it was installed as. `missing` — the file is gone. `changed` — something
-     * other than `update` replaced it. Otherwise the verification state that
-     * was reached: `invalid`, `valid-untrusted`, `unsigned`.
+     * `ok` — present, the recorded bytes, and still vouched for by someone
+     * accepted for it. `missing` — the file is gone. `changed` — something
+     * other than `update` replaced it. Otherwise the state that was reached:
+     * `invalid` (including a blocking attester's bad verdict),
+     * `valid-untrusted` (nobody accepted vouches for it any more, or the
+     * policy no longer holds), `unsigned`.
      */
     state: 'ok' | 'missing' | 'changed' | VerificationState;
     /** The whole-file hash as it is now, when there is a file to hash. */
     sha256?: string | undefined;
     reason: string;
+    /** The review it was judged by, when it got that far. */
+    review?: Review | undefined;
 }
 
 /**
@@ -351,6 +420,40 @@ export function installed({ roots = [] }: { roots?: string[] | undefined } = {})
     return Object.values(records())
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((record) => check(record, roots));
+}
+
+/**
+ * Re-fetch the attestations every install depends on, so that `installed()`
+ * judges them as they are now rather than as the cache last saw them — which
+ * is how a withdrawn attestation, or a new warning, shows up. Returns the
+ * problems met, if any; the cache keeps what it had for those.
+ */
+export async function refreshInstalled(network: NetworkOptions = {}): Promise<string[]> {
+    const { refreshFor, discover } = await import('./atproto.ts');
+    const { cachedFor } = await import('./attestation.ts');
+    const problems: string[] = [];
+    for (const record of Object.values(records())) {
+        const hash = record.hash?.split(':');
+        if (!hash || hash.length !== 2) continue;
+        const policy = loadPolicy(record.name);
+        // Everyone known to have said something, plus anyone who has since —
+        // which is how a scanner's warning about something already installed
+        // reaches the person who installed it.
+        const dids = new Set([...candidates(record, policy), ...cachedFor(hash[1]!)]);
+        if (policy.discovery) {
+            try {
+                for (const did of await discover(hash[0]!, hash[1]!, { ...network, index: policy.discovery })) dids.add(did);
+            } catch (err) {
+                problems.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
+            }
+        }
+        for (const did of policy.ignore) dids.delete(did);
+        if (!dids.size) continue;
+        for (const problem of await refreshFor([...dids].map((did) => ({ did })), hash[0]!, hash[1]!, network)) {
+            problems.push(`${record.name}: ${problem}`);
+        }
+    }
+    return problems;
 }
 
 function check(record: InstallRecord, roots: string[]): InstalledCheck {
@@ -371,11 +474,67 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
         };
     }
 
-    // The same policy the install was made under: whoever signed it then has to
-    // have signed what is there now.
-    const result = verifyBundleSync(bytes, { roots, identity: record.identity, issuer: record.issuer });
-    if (result.state !== 'valid') return { record, path, sha256, state: result.state, reason: result.reason };
-    return { record, path, sha256, state: 'ok', reason: result.reason };
+    // The same review an update would get, from the cache: whoever was
+    // accepted must still vouch for it, the policy must still hold, and nobody
+    // it blocks on may have marked it bad since.
+    const policy = loadPolicy(record.name);
+    let gathered: Gathered;
+    try {
+        gathered = gatherSync(bytes, { roots, candidates: candidates(record, policy), ignore: policy.ignore, maxAge: policy.maxAge, everyCached: true });
+    } catch (err) {
+        return { record, path, sha256, state: (err as { state?: VerificationState }).state ?? 'invalid', reason: message(err) };
+    }
+    const review = judge(gathered, { policy, accepted: acceptedOf(record), trust: selfTrust(record.url) });
+    const warnings = warningsOf(review);
+    if (review.decision === 'refuse') return { record, path, sha256, state: review.state, reason: review.reason, review };
+    if (review.decision === 'ask') {
+        const reason = review.alarms.length ? review.reason : 'nothing that was accepted for it vouches for it any more';
+        return { record, path, sha256, state: 'valid-untrusted', reason, review };
+    }
+    return { record, path, sha256, state: 'ok', reason: [review.reason, ...warnings].join('; '), review };
+}
+
+/** The bad verdicts in a review that did not decide anything, as lines to show. */
+export function warningsOf(review: Review): string[] {
+    return review.items
+        .filter(({ evidence }) => evidence.type === 'attestation' && evidence.verdict === 'bad')
+        .map(({ evidence }) => {
+            const e = evidence as Extract<ReviewItem['evidence'], { type: 'attestation' }>;
+            return `warning: ${e.handle ?? e.did} marked it bad${e.kind ? ` (${e.kind})` : ''}`;
+        });
+}
+
+/** What has been accepted for an install, reading older records' fields as acceptance. */
+export function acceptedOf(record: InstallRecord): Accepted {
+    if (record.accepted) return record.accepted;
+    const accepted = noneAccepted();
+    if (record.identity && record.issuer) accepted.signers.push({ identity: record.identity, issuer: record.issuer });
+    for (const spec of [...(record.attesters ?? []), ...(record.attestedBy ?? [])]) {
+        const { subject } = parseAttester(spec);
+        if (!accepted.attesters.includes(subject)) accepted.attesters.push(subject);
+    }
+    return accepted;
+}
+
+// Whom to ask about an install's archive besides whoever the index names: those
+// accepted for it, those who attested the installed version, and everyone the
+// policy mentions.
+function candidates(record: InstallRecord | undefined, policy: Policy, extra: Attester[] = []): string[] {
+    const dids = new Set<string>();
+    if (record) {
+        for (const did of acceptedOf(record).attesters) dids.add(did);
+        for (const spec of record.attestedBy ?? []) dids.add(parseAttester(spec).subject);
+    }
+    for (const { attesters } of policy.attesters) for (const { did } of attesters) dids.add(did);
+    for (const { did } of [...policy.trust.attesters, ...policy.block, ...extra]) dids.add(did);
+    for (const did of policy.ignore) dids.delete(did);
+    return [...dids];
+}
+
+// This package's own release is signed by its publish workflow, and that is
+// trusted for its own install — wherever it was installed from, mirror included.
+function selfTrust(url: string): Signer[] {
+    return url === SELF.url || url === self().url ? [{ identity: SELF.identity, issuer: SELF.issuer }] : [];
 }
 
 /**
@@ -426,9 +585,9 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
 
 // ------------------------------------------------------------------ the act ---
 
-// Verify, then move into place. The order is the whole point: an archive that
-// does not verify never exists at its destination, not even briefly.
-async function place(bytes: Buffer, { name, dir, url, alias, response, options, log }: {
+// Review, decide, then move into place. The order is the whole point: an
+// archive nobody accepted never exists at its destination, not even briefly.
+async function place(bytes: Buffer, { name, dir, url, alias, response, options, log, previous }: {
     name: string;
     dir: string;
     url: string;
@@ -436,19 +595,47 @@ async function place(bytes: Buffer, { name, dir, url, alias, response, options, 
     response: Response;
     options: InstallOptions;
     log: (line: string) => void;
+    previous?: InstallRecord | undefined;
 }): Promise<InstallRecord> {
-    const result = verifyBundleSync(bytes, {
+    const policy = options.policy ?? loadPolicy(name);
+    const demands: Demands = {
+        identity: options.identity || undefined,
+        issuer: options.issuer || undefined,
+        attesters: options.attesters,
+        quorum: options.quorum,
+        block: options.block,
+    };
+    const accepted = previous ? acceptedOf(previous) : noneAccepted();
+    const about = { name, url };
+
+    const gathered = await gather(bytes, {
         roots: options.roots ?? [],
-        identity: options.identity,
-        issuer: options.issuer,
+        candidates: candidates(previous, policy, [...(options.attesters ?? []), ...(options.block ?? [])]),
+        discovery: options.discover === false ? false : policy.discovery,
+        ignore: policy.ignore,
+        network: options.network,
+    }).catch((err: unknown) => {
+        throw refusal((err as { state?: VerificationState }).state ?? 'invalid', `refusing to install ${url}: ${message(err)}`);
     });
-    const acceptable = result.state === 'valid'
-        || (Boolean(options.allowUntrusted) && result.state === 'valid-untrusted');
-    if (!acceptable) {
-        throw Object.assign(new Error(`refusing to install ${url}: ${STATES[result.state].label} — ${result.reason}`),
-            { code: 'ERR_BUNDLE_UNTRUSTED', state: result.state });
+    const review = judge(gathered, {
+        policy, demands, accepted,
+        trust: [...(options.trust ?? []), ...selfTrust(url)],
+        previousIssuer: previous?.issuer,
+    });
+    options.onReview?.(review, about);
+
+    if (review.decision === 'refuse') {
+        throw refusal(review.state, `refusing to install ${url}: ${STATES[review.state].label} — ${review.reason}`, review);
     }
-    log(`  ${describe(result)}`);
+    let chosen = review.items.filter((item) => item.known && !item.excluded);
+    if (review.decision === 'ask') {
+        if (!options.decide) {
+            throw Object.assign(new Error(`${url} needs a decision: ${review.reason}`), { code: 'ERR_BUNDLE_UNCONFIRMED', review });
+        }
+        chosen = await options.decide(review, about);
+        if (!chosen.length) throw Object.assign(new Error(`declined ${url}`), { code: 'ERR_BUNDLE_DECLINED', review });
+    }
+    log(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
 
     FS.mkdirSync(dir, { recursive: true });
     const target = PATH.join(dir, name);
@@ -469,6 +656,10 @@ async function place(bytes: Buffer, { name, dir, url, alias, response, options, 
         for (const line of ensureWindowsAssociation(name)) log(`  ${line}`);
     }
 
+    const { result } = gathered;
+    const attestedBy = gathered.evidence
+        .filter((each) => each.type === 'attestation' && each.verdict === 'good')
+        .map((each) => { const e = each as { did: string; kind?: string | undefined }; return formatAttester({ did: e.did, kind: e.kind }); });
     return remember({
         name,
         url,
@@ -476,7 +667,10 @@ async function place(bytes: Buffer, { name, dir, url, alias, response, options, 
         ...validators(response),
         identity: result.identity,
         issuer: result.issuer,
-        subject: result.subject,
+        subject: result.sigstore ? undefined : result.subject,
+        hash: `${gathered.hashAlg}:${gathered.hash}`,
+        attestedBy: attestedBy.length ? attestedBy : undefined,
+        accepted: accept(accepted, chosen),
         sha256: digest(bytes),
         at: new Date().toISOString(),
         dir,
@@ -492,13 +686,6 @@ function validators(response: Response): { etag?: string | undefined; lastModifi
 
 function digest(bytes: Buffer): string {
     return CRYPTO.createHash('sha256').update(bytes).digest('hex');
-}
-
-function describe(result: VerificationResult): string {
-    const who = result.identity
-        ? `${result.identity}${result.issuer ? ` via ${result.issuer}` : ''}`
-        : result.subject?.replace(/\n/g, ', ') ?? '(no identity)';
-    return `${STATES[result.state].label} — signed by ${who}`;
 }
 
 function remember(record: InstallRecord): InstallRecord {

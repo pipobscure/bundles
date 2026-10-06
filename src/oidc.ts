@@ -314,7 +314,7 @@ async function exchange(config: OIDCConfig, params: Record<string, string>): Pro
     return body.id_token;
 }
 
-function listen(): Promise<{ server: HTTP.Server; port: number }> {
+export function listen(): Promise<{ server: HTTP.Server; port: number }> {
     const server = HTTP.createServer();
     server.listen(0, '127.0.0.1');
     return once(server, 'listening').then(() => {
@@ -324,7 +324,7 @@ function listen(): Promise<{ server: HTTP.Server; port: number }> {
     });
 }
 
-function respond(res: HTTP.ServerResponse, status: number, message: string): void {
+export function respond(res: HTTP.ServerResponse, status: number, message: string): void {
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(`${message}\n`);
 }
@@ -332,7 +332,7 @@ function respond(res: HTTP.ServerResponse, status: number, message: string): voi
 // Whether launching a browser is plausible. A headless Linux box has no
 // DISPLAY, and an SSH session should not try to open one on the far end — in
 // both cases the device flow is the honest answer.
-function canOpenBrowser(): boolean {
+export function canOpenBrowser(): boolean {
     if (process.env['BUNDLE_NO_BROWSER']) return false;
     if (process.env['SSH_CONNECTION'] || process.env['SSH_TTY']) return false;
     if (process.platform === 'darwin' || process.platform === 'win32') return true;
@@ -345,7 +345,7 @@ function canOpenBrowser(): boolean {
 // Windows goes through the URL protocol handler directly rather than
 // `cmd /c start`: cmd would read every `&` in the query string as a command
 // separator, run the pieces after it, and open a truncated URL.
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
     const [cmd, ...args] = process.platform === 'darwin' ? ['open', url]
         : process.platform === 'win32' ? ['rundll32', 'url.dll,FileProtocolHandler', url]
         : ['xdg-open', url];

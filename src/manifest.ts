@@ -3,6 +3,7 @@ import * as CRYPTO from 'node:crypto';
 import * as TLS from 'node:tls';
 import * as FS from 'node:fs';
 import * as SIGSTORE from './sigstore.ts';
+import * as ATTEST from './attestation.ts';
 
 // The signature is staged so a verifier can gate cheaply before doing more:
 //
@@ -40,6 +41,13 @@ import * as SIGSTORE from './sigstore.ts';
 // that establish *when* the archive was signed. Fields are optional and
 // unknown ones are ignored, so a two-field marker written by an older version
 // still parses.
+//
+// Trust can also come from outside the file: attestations, atproto records in
+// which someone vouches for the whole-file hash (see attestation.ts). With a
+// policy that names attesters, the hash is computed and the members checked for
+// an unsigned archive too, since the attestations are then what authenticates
+// it; a signature, when present, must still verify, but its certificate only
+// has to be trusted if `identity`/`issuer` say so.
 //
 // The manifest is the `AUTHORITY.PEM` member: it declares the algorithms and
 // carries the certificate chain (the signing authority) — hence the name, which
@@ -102,6 +110,21 @@ export interface VerificationResult {
     issuer?: string | undefined;
     /** When the signature was witnessed, per the transparency log. */
     signedAt?: Date | undefined;
+    /** The whole-file hash, hex, when it was computed. */
+    hash?: string | undefined;
+    /** What was found for each attester the policy named. */
+    attestations?: ATTEST.Attestation[] | undefined;
+    /**
+     * SHA-256 fingerprint of the top of the certificate chain — what an X.509
+     * signer is recognised by, since leaves come and go and the root stays.
+     */
+    anchor?: string | undefined;
+    /**
+     * True when something the caller explicitly demanded — an identity, an
+     * issuer, attestations — is not there. `allowUntrusted` waives a chain
+     * nobody has anchored; it never waives a demand.
+     */
+    unmet?: boolean | undefined;
 }
 
 export interface VerifyOptions {
@@ -134,6 +157,22 @@ export interface VerifyOptions {
     identity?: string | undefined;
     /** Require this sigstore OIDC issuer. */
     issuer?: string | undefined;
+    /** Require attestations from these attesters (see attestation.ts). */
+    attesters?: ATTEST.Attester[] | undefined;
+    /** How many of `attesters` must have attested (default: all of them). */
+    quorum?: number | undefined;
+    /** Milliseconds a cached attestation proof stays good for (default: seven days). */
+    maxAge?: number | undefined;
+    /** Attesters whose bad verdict refuses the archive, whatever else holds. */
+    block?: ATTEST.Attester[] | undefined;
+    /** The attestation cache to read (default: `BUNDLE_ATTESTATIONS`, else the state directory). */
+    attestationCache?: string | undefined;
+    /**
+     * Hash and check every member even of an unsigned archive, so an
+     * `unsigned` answer still means the bytes hold together (default: only
+     * when attestations are required).
+     */
+    integrity?: boolean | undefined;
 }
 
 /** An archive to be built or verified: a path on disk, or the bytes themselves. */
@@ -257,6 +296,9 @@ function readerFor(archive: ZLIB.ZipFile | ZLIB.ZipBuffer): ArchiveReader {
 // the archive it may have opened.
 function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): VerificationResult {
     const { extraRoots, now = Date.now(), deep = true, trustedRoot, identity, issuer } = options;
+    const policy: ATTEST.AttestationPolicy | undefined = options.attesters?.length || options.block?.length
+        ? { attesters: options.attesters ?? [], quorum: options.quorum, maxAge: options.maxAge, block: options.block, cache: options.attestationCache }
+        : undefined;
     const present = new Map<string, ZLIB.ZipEntry>();
     for (const [name, entry] of reader.entries()) present.set(name, entry);
 
@@ -269,7 +311,10 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     // region the hash covers ends just before the comment's length field.
     const eocd = locateEocd(io.tail(), io.size);
     const marker = parseSignature(eocd.comment.toString('ascii'));
-    if (!signAlg || chain.length === 0 || !marker) {
+    const signed = Boolean(signAlg && chain.length > 0 && marker);
+    // An unsigned archive is only worth hashing when attestations could vouch
+    // for it; otherwise "unsigned" is the whole answer.
+    if (!signed && !policy && !options.integrity) {
         return result('unsigned', 'manifest carries no signature', chain, { hashAlg });
     }
     const regionEnd = eocd.start + 20; // up to, and excluding, the comment-length field
@@ -284,18 +329,21 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     } catch {
         digest = null;
     }
-    if (digest !== marker.hash) return result('invalid', 'archive hash does not match the recorded hash', chain, { hashAlg });
+    if (marker && digest !== marker.hash) return result('invalid', 'archive hash does not match the recorded hash', chain, { hashAlg });
+    if (digest === null) return result('invalid', 'archive could not be hashed', chain, { hashAlg });
 
     // 2. Authenticity: the recorded hash must be signed by the leaf certificate.
     //    Because the signature is over the hash, this needs no re-read of the file.
-    const leaf = chain[0]!;
-    let signatureOk = false;
-    try {
-        signatureOk = CRYPTO.verify(signAlg, Buffer.from(marker.hash, 'hex'), leaf.publicKey, Buffer.from(marker.sig, 'hex'));
-    } catch {
-        signatureOk = false;
+    if (signed) {
+        const leaf = chain[0]!;
+        let signatureOk = false;
+        try {
+            signatureOk = CRYPTO.verify(signAlg!, Buffer.from(marker!.hash, 'hex'), leaf.publicKey, Buffer.from(marker!.sig, 'hex'));
+        } catch {
+            signatureOk = false;
+        }
+        if (!signatureOk) return result('invalid', 'signature does not verify against leaf certificate', chain, { hashAlg });
     }
-    if (!signatureOk) return result('invalid', 'signature does not verify against leaf certificate', chain, { hashAlg });
 
     // 3. Per-member integrity: every member must record a digest of its own
     //    content, and — when `deep` — that digest must match what the member
@@ -318,11 +366,34 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     }
 
     // 4. Signature and digests are sound; what remains is trust — whether this
-    //    certificate means anything to us. Which question that is depends on
-    //    what kind of certificate it is.
+    //    certificate means anything to us, and whether the attesters the policy
+    //    names have vouched for these bytes.
+    const base = signed
+        ? signatureTrust(marker!, chain, { hashAlg, digests, digest, trustedRoot, identity, issuer, extraRoots, now })
+        : undefined;
+    if (!policy) return base ?? result('unsigned', 'manifest carries no signature', chain, { hashAlg, digests, hash: digest });
+    return attested(base, policy, chain, { hashAlg, digests, digest, signed, identity, issuer, now });
+}
+
+// Trust in the signature itself. Which question that is depends on what kind
+// of certificate signed it.
+function signatureTrust(
+    marker: SignatureMarker,
+    chain: CRYPTO.X509Certificate[],
+    { hashAlg, digests, digest, trustedRoot, identity, issuer, extraRoots, now }: {
+        hashAlg: string;
+        digests: Map<string, string>;
+        digest: string;
+        trustedRoot?: string | undefined;
+        identity?: string | undefined;
+        issuer?: string | undefined;
+        extraRoots?: string[] | undefined;
+        now: number;
+    },
+): VerificationResult {
     const sigstoreField = marker.fields.get(SIGSTORE.FIELD);
     if (sigstoreField) {
-        return sigstoreTrust(sigstoreField, marker, chain, { hashAlg, digests, trustedRoot, identity, issuer });
+        return sigstoreTrust(sigstoreField, marker, chain, { hashAlg, digests, digest, trustedRoot, identity, issuer });
     }
 
     // A demanded identity is a demand about *who signed this*, and only the
@@ -334,14 +405,64 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     if (identity || issuer) {
         return result('valid-untrusted',
             'a sigstore identity was required but this archive is not sigstore-signed',
-            chain, { hashAlg, digests });
+            chain, { hashAlg, digests, hash: digest, unmet: true });
     }
 
     const roots = trustRoots(extraRoots);
     const ok = anchored(chain, roots, now);
     return result(ok ? 'valid' : 'valid-untrusted',
         ok ? 'trusted certificate chain' : 'certificate chain not anchored in the trust store',
-        chain, { hashAlg, digests });
+        chain, { hashAlg, digests, hash: digest });
+}
+
+// Trust when a policy names attesters. The attestations must be there, and the
+// signature — if the archive has one — must be genuine; whether its
+// certificate is *trusted* only matters when `identity`/`issuer` demand a
+// particular signer. That is what lets a policy say "our auditors vouched for
+// this" without caring who built it, or say both.
+function attested(
+    base: VerificationResult | undefined,
+    policy: ATTEST.AttestationPolicy,
+    chain: CRYPTO.X509Certificate[],
+    { hashAlg, digests, digest, signed, identity, issuer, now }: {
+        hashAlg: string;
+        digests: Map<string, string>;
+        digest: string;
+        signed: boolean;
+        identity?: string | undefined;
+        issuer?: string | undefined;
+        now: number;
+    },
+): VerificationResult {
+    if (base?.state === 'invalid') return base;
+
+    const outcome = ATTEST.evaluate(policy, hashAlg, digest, now);
+    // A blocker's bad verdict is not a missing attestation but a positive claim
+    // that these bytes are harmful, so it answers the question outright.
+    if (outcome.blocked.length) {
+        return result('invalid', outcome.reason, chain, {
+            hashAlg, digests, hash: digest, signed, attestations: [...outcome.attestations, ...outcome.blocked], unmet: true,
+        });
+    }
+    const signerRequired = Boolean(identity || issuer);
+    const signerOk = !signerRequired || base?.state === 'valid';
+    const extra: Partial<VerificationResult> = {
+        hashAlg, digests, hash: digest, signed, attestations: outcome.attestations,
+        sigstore: base?.sigstore, identity: base?.identity, issuer: base?.issuer, signedAt: base?.signedAt,
+    };
+
+    if (outcome.met && signerOk) {
+        const reason = signerRequired ? `${base!.reason}; ${outcome.reason}` : outcome.reason;
+        return result('valid', reason, chain, extra);
+    }
+    const missing = [
+        signerOk ? null : base ? base.reason : 'a sigstore identity was required but this archive is not signed',
+        outcome.met ? null : outcome.reason,
+    ].filter(Boolean).join('; ');
+    // Genuine but not vouched for is untrusted, the same answer as a signature
+    // from someone other than the one demanded; with no signature at all,
+    // nothing vouches for it.
+    return result(signed ? 'valid-untrusted' : 'unsigned', missing, chain, { ...extra, unmet: true });
 }
 
 // Trust, for an archive signed through sigstore. This replaces the plain X.509
@@ -356,15 +477,16 @@ function sigstoreTrust(
     encoded: string,
     marker: SignatureMarker,
     chain: CRYPTO.X509Certificate[],
-    { hashAlg, digests, trustedRoot, identity, issuer }: {
+    { hashAlg, digests, digest, trustedRoot, identity, issuer }: {
         hashAlg: string;
         digests: Map<string, string>;
+        digest: string;
         trustedRoot?: string | undefined;
         identity?: string | undefined;
         issuer?: string | undefined;
     },
 ): VerificationResult {
-    const extra = { hashAlg, digests, sigstore: true };
+    const extra = { hashAlg, digests, sigstore: true, hash: digest };
     const undecided = (reason: string) => result('valid-untrusted', reason, chain, extra);
 
     // Not being able to check is not the same answer as checking and finding it
@@ -405,7 +527,8 @@ function sigstoreTrust(
         // A policy failure means the signature is genuine and the signer is
         // simply not the one that was demanded — untrusted, not tampered.
         if (err instanceof Error && err.name === 'PolicyError') {
-            return undecided(`sigstore identity does not match the required policy: ${err.message}`);
+            return result('valid-untrusted', `sigstore identity does not match the required policy: ${err.message}`,
+                chain, { ...extra, unmet: true });
         }
         return result('invalid', `sigstore verification failed: ${message(err)}`, chain, extra);
     }
@@ -446,6 +569,32 @@ export function formatSignature({ hash, sig, fields }: {
         parts.push(`${name.toUpperCase()}=${value}`);
     }
     return parts.join(':');
+}
+
+/**
+ * The whole-file hash of `source` — what a signature covers and what an
+ * attestation names — without verifying anything. Null when `source` is not an
+ * archive with a manifest. This is the "which proofs do I need?" question asked
+ * before a verification that will need them; the verification recomputes it.
+ */
+export function wholeFileHash(source: ArchiveSource): { hashAlg: string; hash: string } | null {
+    const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
+    let reader: ArchiveReader | undefined;
+    try {
+        reader = readerFor(io.open());
+        let authority: ZLIB.ZipEntry | undefined;
+        for (const [name, entry] of reader.entries()) if (name === AUTHORITY) authority = entry;
+        if (!authority) return null;
+        const { hashAlg } = parseManifest(authority.contentSync());
+        const eocd = locateEocd(io.tail(), io.size);
+        const hash = CRYPTO.createHash(hashAlg);
+        io.feed(hash, eocd.start + 20);
+        return { hashAlg, hash: hash.digest('hex') };
+    } catch {
+        return null;
+    } finally {
+        reader?.close();
+    }
 }
 
 /**
@@ -569,12 +718,13 @@ function result(
     extra?: Partial<VerificationResult>,
 ): VerificationResult {
     return {
+        subject: chain && chain[0] ? chain[0].subject : undefined,
+        anchor: chain && chain.length ? chain[chain.length - 1]!.fingerprint256 : undefined,
+        signed: state !== 'unsigned',
+        ...extra,
         state,
         reason,
-        subject: chain && chain[0] ? chain[0].subject : undefined,
-        signed: state !== 'unsigned',
         trusted: state === 'valid',
-        ...extra,
     };
 }
 

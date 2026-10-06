@@ -144,6 +144,15 @@ export function packageRoot(): string {
 }
 
 /**
+ * The version of this package as it is running — read from the package.json
+ * beside it, which inside the bundled CLI is the archive's own member.
+ */
+export function packageVersion(): string {
+    const pkg = JSON.parse(FS.readFileSync(PATH.join(packageRoot(), 'package.json'), 'utf-8')) as { version: string };
+    return pkg.version;
+}
+
+/**
  * The directory this package's runnable modules are in: `dist` once compiled,
  * `src` when the source is being run directly under node's type stripping.
  */

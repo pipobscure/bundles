@@ -41,7 +41,8 @@ const files = moduleFiles({
     // `shell-base` is read by `sign --launcher`, which resolves it beside the
     // package root — and inside the archive, the archive is the package root.
     files: ['package.json', 'shell-base'],
-    dirs: ['dist', 'skills'],
+    // `lexicons` is read by `bundle lexicon publish`, beside the package root.
+    dirs: ['dist', 'skills', 'lexicons'],
     dependencies: RUNTIME,
     // The bundle is what runs; the maps and declarations beside it are what you
     // read, and `files` in package.json already ships those.

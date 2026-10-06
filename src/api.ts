@@ -7,6 +7,7 @@ import {
     verify, verifySync, signatureOf, parseManifest, AUTHORITY,
     type VerificationResult, type VerifyOptions, type ArchiveSource, type ManifestFields,
 } from './manifest.ts';
+import { attestersFrom } from './attestation.ts';
 
 // The programmatic face of the tool: bundling, signing, verifying and running,
 // with the file plumbing that the CLI would otherwise be the only user of.
@@ -77,6 +78,14 @@ export interface RunOptions {
     roots?: string[] | undefined;
     identity?: string | undefined;
     issuer?: string | undefined;
+    /** Require attestations from these attesters, as `[kind@]did`. */
+    attesters?: string[] | undefined;
+    /** How many of `attesters` must have attested (default: all of them). */
+    quorum?: number | undefined;
+    /** Milliseconds a cached attestation proof stays good for. */
+    maxAge?: number | undefined;
+    /** Refuse an archive any of these DIDs has marked bad. */
+    block?: string[] | undefined;
     /** Run an archive whose signature is good but whose chain is unanchored. */
     allowUntrusted?: boolean | undefined;
     /** Arguments handed to the application inside the archive. */
@@ -207,6 +216,7 @@ export async function runBundle(archive: string, options: RunOptions = {}): Prom
     try {
         await run(archive, {
             roots: options.roots, identity: options.identity, issuer: options.issuer,
+            attesters: options.attesters, quorum: options.quorum, maxAge: options.maxAge, block: options.block,
             allowUntrusted: options.allowUntrusted,
             // A refusal is the caller's to report; the default here would
             // print a line and exit the process.
@@ -249,8 +259,11 @@ export function registerPath(): string {
 function ensureRunnable(archive: string, options: RunOptions): void {
     const res = verifyBundleSync(archive, {
         roots: options.roots ?? [], deep: false, identity: options.identity, issuer: options.issuer,
+        attesters: options.attesters ? attestersFrom(options.attesters) : undefined,
+        quorum: options.quorum, maxAge: options.maxAge,
+        block: options.block ? attestersFrom(options.block) : undefined,
     });
-    const acceptable = res.state === 'valid' || (Boolean(options.allowUntrusted) && res.state === 'valid-untrusted');
+    const acceptable = res.state === 'valid' || (Boolean(options.allowUntrusted) && res.state === 'valid-untrusted' && !res.unmet);
     if (!acceptable) {
         throw Object.assign(new Error(`refusing to run '${archive}': ${res.state} — ${res.reason}`),
             { code: 'ERR_BUNDLE_UNTRUSTED', state: res.state });

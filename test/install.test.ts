@@ -7,6 +7,8 @@ import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
 import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
+import { selectable, type Review } from '../src/review.ts';
+import { UNDECIDED } from '../src/cli.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 
 // Installing from a URL, and keeping it current.
@@ -41,6 +43,12 @@ process.env['BUNDLE_INSTALL_DIR'] = BIN;
 process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
 process.env['XDG_STATE_HOME'] = PATH.join(HOME, 'state');
 process.env['LOCALAPPDATA'] = PATH.join(HOME, 'AppData');
+// No machine policy, and a user policy that keeps discovery off: nothing here
+// may ask the public backlink index about a test archive.
+FS.mkdirSync(HOME, { recursive: true });
+process.env['BUNDLE_SYSTEM_POLICY'] = PATH.join(HOME, 'no-system-policy.json');
+process.env['BUNDLE_POLICY'] = PATH.join(HOME, 'policy.json');
+FS.writeFileSync(process.env['BUNDLE_POLICY'], JSON.stringify({ discovery: false }));
 
 /** What the server is currently serving, and under what ETag. */
 const served: { bytes: Buffer; etag: string; disposition?: string | undefined } = {
@@ -113,12 +121,23 @@ test('an archive that does not verify is never written', async () => {
     assert.equal(FS.readdirSync(BIN).some((name) => name.includes('incoming')), false, 'no leftovers');
 });
 
-test('an unanchored chain is refused unless it is asked for', async () => {
+test('a signer nobody has accepted is a question, and the answer is remembered', async () => {
     served.bytes = first;
     served.etag = '"one"';
-    await assert.rejects(() => install(URL_, { ...options, roots: [], name: 'untrusted.nzip' }), { code: 'ERR_BUNDLE_UNTRUSTED' });
-    const record = await install(URL_, { ...options, roots: [], allowUntrusted: true, name: 'untrusted.nzip' });
+    const unanchored = { ...options, roots: [], name: 'untrusted.nzip' };
+
+    // Nobody to ask: it stops, and says it needs a decision rather than that it is bad.
+    await assert.rejects(() => install(URL_, unanchored), { code: 'ERR_BUNDLE_UNCONFIRMED' });
+    // Asked, and declined.
+    await assert.rejects(() => install(URL_, { ...unanchored, decide: async () => [] }), { code: 'ERR_BUNDLE_DECLINED' });
+    assert.equal(FS.existsSync(PATH.join(BIN, 'untrusted.nzip')), false);
+
+    // Asked, and accepted: the certificate's root is what is remembered.
+    let shown: Review | undefined;
+    const record = await install(URL_, { ...unanchored, decide: async (review) => (shown = review, selectable(review)) });
     assert.equal(record.name, 'untrusted.nzip');
+    assert.equal(shown?.items[0]?.evidence.type, 'certificate');
+    assert.deepEqual(record.accepted?.certificates, [(shown!.items[0]!.evidence as { anchor: string }).anchor]);
     uninstall('untrusted.nzip');
 });
 
@@ -149,17 +168,49 @@ test('a server with no ETag does not cause a pointless reinstall', async () => {
     assert.equal(result!.state, 'unchanged', 'identical bytes are not an update');
 });
 
-test('update refuses an archive signed by somebody else', async () => {
-    // The record pins whoever signed the first install. Here the archive still
-    // verifies — it is just not from the identity that was installed.
+test('a new version from somebody else is a question, not a failure', async () => {
+    // The install was accepted for a sigstore signer; this version is signed by
+    // a certificate nobody has accepted. Publishers move — that is not tampering.
     const all = records();
-    all[TOOL] = { ...all[TOOL]!, identity: 'someone@else.example', issuer: 'https://accounts.example' };
+    all[TOOL] = {
+        ...all[TOOL]!, identity: 'someone@else.example', issuer: 'https://accounts.example',
+        accepted: { signers: [{ identity: 'someone@else.example', issuer: 'https://accounts.example' }], certificates: [], attesters: [] },
+    };
     FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
-
     served.bytes = first;
     served.etag = '"three"';
-    await assert.rejects(() => update(TOOL, options), { code: 'ERR_BUNDLE_UNTRUSTED' });
+    const unanchored = { ...options, roots: [] };
+
+    const [waiting] = await update(TOOL, unanchored);
+    assert.equal(waiting!.state, 'unconfirmed');
+    assert.match(waiting!.reason ?? '', /needs a decision/);
     assert.deepEqual(FS.readFileSync(PATH.join(BIN, TOOL)), second, 'the installed copy is untouched');
+
+    const [declined] = await update(TOOL, { ...unanchored, decide: async () => [] });
+    assert.equal(declined!.state, 'declined');
+
+    // A policy that does make the issuer mandatory turns the question into a refusal.
+    FS.writeFileSync(process.env['BUNDLE_POLICY']!, JSON.stringify({ discovery: false, apps: { [TOOL]: { require: { sameIssuer: true } } } }));
+    try {
+        const [refused] = await update(TOOL, { ...unanchored, decide: async (review) => selectable(review) });
+        assert.equal(refused!.state, 'refused');
+        assert.match(refused!.reason ?? '', /signed through https:\/\/accounts\.example again/);
+    } finally {
+        FS.writeFileSync(process.env['BUNDLE_POLICY']!, JSON.stringify({ discovery: false }));
+    }
+
+    // Accepted: both the old signer and the new one are remembered.
+    const [accepted] = await update(TOOL, { ...unanchored, decide: async (review) => selectable(review) });
+    assert.equal(accepted!.state, 'updated');
+    assert.deepEqual(FS.readFileSync(PATH.join(BIN, TOOL)), first);
+    assert.equal(records()[TOOL]!.accepted?.signers.length, 1);
+    assert.equal(records()[TOOL]!.accepted?.certificates.length, 1);
+
+    // ...so the next version from that same certificate proceeds without asking.
+    served.bytes = second;
+    served.etag = '"four"';
+    const [again] = await update(TOOL, unanchored);
+    assert.equal(again!.state, 'updated');
 });
 
 test('installed re-checks each record: the bytes, and who signed them', async () => {
@@ -195,9 +246,17 @@ test('installed re-checks each record: the bytes, and who signed them', async ()
     assert.equal(missing?.state, 'missing');
     assert.match(missing?.reason ?? '', /not there any more/);
 
-    // A record whose file is fine but whose signer is no longer accepted.
+    // Accepted at install is accepted afterwards, anchored or not...
     FS.writeFileSync(file, first);
-    assert.equal(installedChecks({ roots: [] }).find((c) => c.record.name === 'checked.nzip')?.state, 'valid-untrusted');
+    assert.equal(installedChecks({ roots: [] }).find((c) => c.record.name === 'checked.nzip')?.state, 'ok');
+
+    // ...but a record whose file is fine and whose signer nobody accepted is not.
+    const all = records();
+    all['checked.nzip'] = { ...all['checked.nzip']!, accepted: { signers: [], certificates: [], attesters: [] } };
+    FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
+    const unvouched = installedChecks({ roots: [] }).find((c) => c.record.name === 'checked.nzip');
+    assert.equal(unvouched?.state, 'valid-untrusted');
+    assert.match(unvouched?.reason ?? '', /nothing that was accepted for it vouches for it any more/);
 
     uninstall('checked.nzip');
 });
@@ -235,7 +294,7 @@ test('update with no name checks everything, and uninstall forgets one', async (
     served.etag = '"one"';
     await install(URL_, { ...options, name: 'other.nzip' });
 
-    const results = await update(undefined, { ...options, allowUntrusted: true });
+    const results = await update(undefined, options);
     assert.equal(results.length, Object.keys(records()).length);
 
     const record = uninstall('other.nzip');
@@ -329,9 +388,9 @@ test('install takes a domain, and uninstall finds it again by that domain', asyn
 
 test('install with no url means this package, from its own release', async () => {
     // The CLI path, because the defaulting lives there: no positional url, so
-    // the self target and the identity that comes with it are used. The URL is
-    // pointed at this suite's server; the identity requirement is real, and the
-    // test PKI does not meet it — which is exactly what should be refused.
+    // the self target is used, and its publish workflow's identity is trusted.
+    // The URL is pointed at this suite's server, where the archive is signed by
+    // the test PKI instead — which is not refused, but is not trusted either.
     const { main } = await import('../src/cli.ts');
     const { self, SELF } = await import('../src/install.ts');
 
@@ -345,14 +404,25 @@ test('install with no url means this package, from its own release', async () =>
         served.etag = '"self"';
 
         const io = collector();
-        assert.equal(await main(['install'], io), STATES['valid-untrusted'].code);
+        assert.equal(await main(['install'], io), UNDECIDED);
         assert.match(io.stderr.join('\n'), /installing this package itself/);
-        assert.match(io.stderr.join('\n'), /a sigstore identity was required/);
+        assert.match(io.stderr.join('\n'), /certificate +CN=Bundle Test Signer.*\(not anchored\) — new/);
+        assert.match(io.stderr.join('\n'), /pass --yes to accept what is shown/);
 
-        // ...and with the identity requirement lifted, the same fetch installs.
-        const forced = collector();
-        assert.equal(await main(['install', '--root', ROOT_PEM, '--identity', '', '--issuer', '', '--name', 'self.nzip'], forced), 0);
+        // Demanding an identity it does not carry is a refusal, not a question.
+        const demanded = collector();
+        assert.equal(await main(['install', '--identity', SELF.identity, '--yes'], demanded), STATES['valid-untrusted'].code);
+        assert.match(demanded.stderr.join('\n'), /a signature by .*publish\.yml.* is required/);
+
+        // Asked at a terminal, and accepted.
+        const asked = { ...collector(), ask: async () => '1' };
+        assert.equal(await main(['install', '--name', 'self.nzip'], asked), 0);
         assert.deepEqual(FS.readFileSync(PATH.join(BIN, 'self.nzip')), first);
+        uninstall('self.nzip');
+
+        // An anchored root is trusted as it always was, with no question at all.
+        const anchored = collector();
+        assert.equal(await main(['install', '--root', ROOT_PEM, '--name', 'self.nzip'], anchored), 0);
         uninstall('self.nzip');
     } finally {
         delete process.env['BUNDLE_SELF_SOURCE'];

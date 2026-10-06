@@ -3,15 +3,17 @@ import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members } from './archive.ts';
-import { launcherPath, packageRoot } from './files.ts';
+import { launcherPath, packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
-import { message, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
+import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
+import { formatAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
 
 // Re-exported because this is where a CLI consumer looks for it; it is defined
 // in the format layer so the `bundle` launcher can report an exit code without
 // loading the whole CLI.
 export { STATES };
 import * as SKILLS from './skill.ts';
+import * as REVIEW from './review.ts';
 
 // Argument parsing and reporting, and nothing else. Every command below is a
 // `parseArgs` call, a message or two, and one call into `api.ts` — which is
@@ -26,13 +28,16 @@ commands:
   sign      sign an archive into a new file, optionally behind a prefix
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
+  attest    vouch for an archive from an atproto account, or withdraw that
   run       mount a signed archive and run it
   install   fetch a signed archive from a URL or domain and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   uninstall remove an installed archive, and forget where it came from
   sea       build a node runtime that verifies an archive before running it
-  trust     refresh the sigstore trust root used to check sigstore signatures
+  trust     refresh the sigstore trust root and the cached attestations
+  policy    show the rules this machine installs by, and where they come from
+  lexicon   show, check or publish the atproto lexicons attestations are written in
   skill     install this package's bundle-auditing skill into a project
 
 create options:
@@ -89,13 +94,54 @@ verify options:                     usage: verify [options] <archive>
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
       --sigstore-root <file>  sigstore trust root (default: the cache 'trust' fills)
+      --attester <[kind@]who>  require an attestation from this DID or handle,
+                        optionally of this kind (audited@did:web:…); repeatable
+      --quorum <n>      how many of the attesters must have attested (default: all)
+      --max-age <time>  how stale a cached attestation may be (default: 7d)
+      --block <who>     refuse it if this DID or handle has marked it bad; repeatable
       --json            print the result as JSON
+
+  with attesters, their attestations of this file are fetched first; if that
+  fails, what the cache holds is used. A signature is then optional — when
+  there is one it must verify, but its certificate only has to be trusted if
+  --identity or --issuer ask for a signer too.
+
+attest options:                     usage: attest [options] <archive>...
+      --as <handle | did>  the account to attest as
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --kind <kind>     what is being said: published, audited, reproduced —
+                        or, with --verdict bad, malware, vulnerable, …
+      --verdict <v>     good (the default) to vouch for it, bad to warn
+                        everyone who installs it against it
+      --note <text>     a short note kept with the attestation
+      --revoke          withdraw the attestations instead
+      --password-file <file>  use an app password from this file instead of
+                        signing in — for CI, where there is no browser
+                        (BUNDLE_ATPROTO_PASSWORD works too; never an argument)
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+
+  every archive named is checked first, and one that does not hold together
+  stops them all. Then one sign-in covers them: OAuth, in the browser, against
+  the account's own PDS, asking for write access to attestation records and
+  nothing else where the server supports that. Nothing is kept — the session is
+  revoked when the command is done, so every attest is approved by whoever it
+  speaks for.
+
+  writes com.pipobscure.bundle.attestation/<hash> to the account's repository, naming
+  the archive's whole-file hash — the hash a signature covers. The archive is
+  checked first: one whose bytes or signature do not hold together is refused.
 
 run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
-      --untrusted       run an archive whose signature is good but untrusted
+      --attester <[kind@]who>  require an attestation from this DID or handle;
+                        repeatable. Fetched before running, else the cache
+      --quorum <n>      how many of the attesters must have attested (default: all)
+      --max-age <time>  how stale a cached attestation may be (default: 7d)
+      --block <who>     refuse it if this DID or handle has marked it bad; repeatable
+      --untrusted       run an archive whose signature is good but unanchored —
+                        never one that misses what the flags above demand
 
   these options come before the archive; everything after it is the program's,
   flags included. A '--' is accepted there too, for the habit.
@@ -110,6 +156,11 @@ sea options:                        usage: sea [options] [archive]
   -r, --root <file>     trusted root the executable checks against; repeatable
       --identity <san>  identity the executable requires of a signature
       --issuer <url>    issuer the executable requires of a signature
+      --attester <[kind@]who>  attester the executable requires; repeatable.
+                        Handles are resolved now, and the DID is what is baked
+      --quorum <n>      how many of the attesters (default: all)
+      --max-age <time>  how stale a cached attestation may be (default: 7d)
+      --block <who>     refuse what this DID or handle has marked bad; repeatable
 
   with an archive, the result is that application: one file that verifies
   itself and runs what is inside it. without one, the result is a verifying
@@ -118,22 +169,44 @@ sea options:                        usage: sea [options] [archive]
       bundle sea -o node-verifying
       ./node-verifying ./my-app.zip --args --for --the --app
 
-  a runtime built with a policy (-r, --identity, --issuer) is sealed: it
-  accepts no policy from its command line, because a binary that demands a
-  signing identity is not one whose user can ask it to stop.
+  a runtime built with a policy (-r, --identity, --issuer, --attester) is
+  sealed: it accepts no policy from its command line, because a binary that
+  demands a signing identity is not one whose user can ask it to stop. It
+  checks attestations against the cache 'bundle trust' keeps current, and
+  never the network.
 
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
 
 install options:                    usage: install [options] [url | domain]
-  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+  -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
-      --untrusted       install one whose signature is good but untrusted
+      --attester <[kind@]who>  require an attestation from this DID or handle;
+                        repeatable
+      --quorum <n>      how many of the attesters must have attested (default: all)
+      --block <who>     refuse it if this DID or handle has marked it bad; repeatable
+      --no-discover     do not ask the backlink index who has attested it
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
   -n, --name <name>     install under this name, rather than the one the
                         server suggests (Content-Disposition, else the URL)
   -d, --dir <dir>       where to install (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
+
+  everything that vouches for the archive is found and shown: its signature,
+  and every attestation of it — from attesters this machine knows, and from
+  anyone a backlink index says has attested it (each one fetched from the
+  attester's own PDS and verified). Bad verdicts are shown as warnings.
+
+  what is accepted without asking: a signer or attester accepted for this
+  install before, one the policy trusts ('bundle policy'), one a flag demands,
+  or a certificate anchored in the trust store. Anything else is a question —
+  on a terminal you are asked which to accept; elsewhere it stops with exit 4
+  unless --yes. What you accept is remembered for later updates.
+
+  what refuses: an archive whose bytes or signature do not verify; a missing
+  --identity, --issuer or --attester; a policy requirement not met; a bad
+  verdict from someone --block or the policy blocks on.
 
   a domain instead of a url is looked up in DNS: a TXT record of the form
   'nzip:<url>' says what to fetch, with <url> either https or resolved
@@ -144,32 +217,65 @@ install options:                    usage: install [options] [url | domain]
   verified exactly as a url's would be.
 
   with neither, this package installs itself from its own published release,
-  requiring the identity its publish workflow signs with — so
+  whose publish workflow's signature is accepted without asking — so
   'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
   'bundle update' keeps current. The archive is named '.nzip', and the name it
   installs under drops that everywhere but Windows, where the extension is what
   makes it runnable.
 
-  nothing is written until the signature verifies. Whoever signed the first
-  install is recorded, and every later 'update' of that name must match — so
-  pass --identity if you know who you expect, rather than trusting the first
-  answer a server gives you.
-
 update options:                     usage: update [options] [name]
-  -r, --root <file>     extra trusted root certificate (PEM); repeatable
-      --untrusted       accept a good signature from an unanchored chain
+  -y, --yes             accept everything found for a new version, rather than asking
+      --identity, --issuer, --attester, --quorum, --block, --no-discover, --root
+                        as for install, demanded of every new version this run
 
   with no name, every install is checked. Each is a conditional request with
-  the recorded ETag, so nothing is downloaded twice.
+  the recorded ETag, so nothing is downloaded twice. A new version is reviewed
+  like an install, against what has been accepted for it so far: a new signer,
+  or different attestations, is a question rather than a failure — publishers
+  move, and auditors do not review every release. Only flags and the policy
+  make anything mandatory.
 
 installed options:                  usage: installed [options]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --json            print the results as JSON
 
-  says what is installed, where it came from and who signed it — and checks
-  each one: the file is there, its bytes are still the bytes that were
-  installed, and it still verifies as the identity it was installed as. Exits
-  non-zero if any of that is no longer true.
+  says what is installed, where it came from and who vouched for it — and
+  checks each one: the file is there, its bytes are still the bytes that were
+  installed, someone accepted for it still vouches for it, the policy still
+  holds, and nobody it blocks on has marked it bad since. Attestations are
+  fetched fresh first. Exits non-zero if any of that is no longer true.
+
+policy options:                     usage: policy [show | init | check <file>] [options]
+  -a, --app <name>      the rules for this installed name, apps section included
+      --json            print the rules in force as JSON (merged — not a policy file)
+      --system          the machine's file: the one init writes, or the one shown
+      --user            the user's file (what init writes by default)
+  -f, --force           init over a file that is already there
+
+  with no subcommand, says what rules are in force and which files they come
+  from. 'show' prints the policy files themselves; 'init' writes a starter file;
+  'check' validates a file the way an install will read it.
+
+  the policy is read from a file for the machine (/etc/bundle/policy.json, or
+  BUNDLE_SYSTEM_POLICY) and one for the user (~/.config/bundle/policy.json, or
+  BUNDLE_POLICY). Both are JSON, described by a JSON Schema published with each
+  release; files written or shown here start with a "$schema" pointing at the
+  one for this version, so an editor can complete and check them.
+
+lexicon options:                    usage: lexicon [check | publish] [options]
+      --as <handle | did>  the account to publish from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --dry-run         say what publish would write, and stop before signing in
+      --force           publish even though DNS does not name that account yet
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  with no subcommand, lists the lexicons this package carries and the DNS
+  record each needs: a TXT record '_lexicon.<authority>' saying 'did=<DID>',
+  naming the account whose repository publishes them. 'check' resolves that
+  and compares what is published — verified — with what is here. 'publish'
+  writes each as a com.atproto.lexicon.schema record from --as, signing in
+  with access to that collection only, and reads it back.
 
 uninstall options:                  usage: uninstall [name | url | domain]
 
@@ -179,6 +285,14 @@ uninstall options:                  usage: uninstall [name | url | domain]
 
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
+      --attester <who>  also keep this DID's or handle's attestations; repeatable
+      --no-sigstore     refresh only the attestations
+
+  attestations are kept for every attester named here, in BUNDLE_ATTESTERS,
+  in an install record, or already in the cache: each one's attestations are
+  listed, new ones fetched and verified, and withdrawn ones dropped. That is
+  what a verifying runtime — which never reaches for the network — checks
+  against, and what decides how stale its answer can be.
 
 skill options:                      usage: skill [options] [name]
   -d, --dir <dir>       where to install (default: .claude/skills)
@@ -191,19 +305,40 @@ skill options:                      usage: skill [options] [name]
 export interface Console {
     out(line: string): void;
     err(line: string): void;
+    /**
+     * Ask a person something and return the answer — present only when there
+     * is a person to ask. Without it, a decision that needs one is not made.
+     */
+    ask?: ((question: string) => Promise<string>) | undefined;
+    /** Open a URL for a person to sign in at (default: the system browser). */
+    open?: ((url: string) => void) | undefined;
 }
 
 const CONSOLE: Console = {
     out: (line) => { process.stdout.write(`${line}\n`); },
     err: (line) => { process.stderr.write(`${line}\n`); },
+    ask: process.stdin.isTTY && process.stderr.isTTY
+        ? async (question) => {
+            const READLINE = await import('node:readline/promises');
+            const rl = READLINE.createInterface({ input: process.stdin, output: process.stderr });
+            try {
+                return await rl.question(question);
+            } finally {
+                rl.close();
+            }
+        }
+        : undefined,
 };
+
+/** The exit code for an install or update that needs a decision nobody made, or that was declined. */
+export const UNDECIDED = 4;
 
 /**
  * The commands, in the order the usage text lists them. Keeping the dispatch
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, run, install, update, installed, uninstall, sea, trust, skill,
+    create, sign, audit, verify: check, attest, run, install, update, installed, uninstall, sea, trust, policy: policyCommand, lexicon, skill,
 };
 
 /**
@@ -240,8 +375,7 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
 // which inside the bundled CLI is the archive's own member, so it answers for
 // the archive and not for some other copy of this package on the machine.
 function version(): string {
-    const pkg = JSON.parse(FS.readFileSync(PATH.join(packageRoot(), 'package.json'), 'utf-8')) as { version: string };
-    return pkg.version;
+    return packageVersion();
 }
 
 async function create(args: string[], io: Console): Promise<number> {
@@ -334,19 +468,150 @@ async function check(args: string[], io: Console): Promise<number> {
             issuer:   { type: 'string' },
             'sigstore-root': { type: 'string' },
             json:     { type: 'boolean' },
+            ...POLICY_OPTIONS,
         },
     });
     const archive = values.archive ?? positionals[0];
     if (!archive) throw new Error('verify: an archive path is required');
 
+    const { attesters, quorum, maxAge, block } = await policy(values);
+    await fetchAttestations(archive, [...attesters, ...block], io);
     const res = await verifyBundle(archive, {
         roots: values.root ?? [],
         identity: values.identity,
         issuer: values.issuer,
         trustedRoot: values['sigstore-root'],
+        attesters, quorum, maxAge, block,
     });
     report(res, Boolean(values.json), io);
     return STATES[res.state].code;
+}
+
+// Vouch for an archive from an atproto account: a record in that account's own
+// repository naming the archive's whole-file hash. Or withdraw it again.
+async function attest(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            as:              { type: 'string' },
+            kind:            { type: 'string' },
+            note:            { type: 'string' },
+            verdict:         { type: 'string', default: 'good' },
+            'password-file': { type: 'string' },
+            revoke:          { type: 'boolean' },
+            root:            { type: 'string', short: 'r', multiple: true },
+        },
+    });
+    const archives = [...new Set(positionals)];
+    if (!archives.length) throw new Error('attest: at least one archive path is required');
+    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
+    if (!identifier) throw new Error('attest: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER');
+    if (values.kind !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.kind)) throw new Error(`attest: '${values.kind}' is not a valid kind`);
+    if (values.verdict !== 'good' && values.verdict !== 'bad') throw new Error(`attest: --verdict is good or bad, not '${values.verdict}'`);
+    const verdict: 'good' | 'bad' = values.verdict;
+
+    // Every archive is checked before anyone signs in, and one that does not
+    // hold together stops the lot: a release is attested whole or not at all.
+    // Vouching for bytes that do not hold together is never what anyone means
+    // — and a warning about them is a warning about a file nobody is offered.
+    const checked: { archive: string; hashAlg: string; hash: string }[] = [];
+    for (const archive of archives) {
+        const hashed = wholeFileHash(archive);
+        if (!hashed) throw new Error(`attest: ${archive} carries no manifest, so it is not an archive this tool can vouch for`);
+        if (!values.revoke) {
+            const res = await verifyBundle(archive, { roots: values.root ?? [], deep: true, integrity: true });
+            if (res.state === 'invalid') {
+                io.err(`error: refusing to attest ${archive}: ${res.reason}`);
+                return STATES.invalid.code;
+            }
+            if (res.hash !== hashed.hash) throw new Error(`attest: ${archive} changed while it was being checked`);
+            io.err(`* ${archive}: ${res.signed ? 'signed' : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
+        }
+        checked.push({ archive, ...hashed });
+    }
+
+    // Never from an argument: a command line is visible to every process on
+    // the machine, and ends up in shell history.
+    const password = values['password-file']
+        ? FS.readFileSync(values['password-file'], 'utf-8').trim()
+        : process.env['BUNDLE_ATPROTO_PASSWORD'];
+    const ATPROTO = await import('./atproto.ts');
+    const OAUTH = await import('./oauth.ts');
+    // One sign-in for everything named, and nothing kept afterwards.
+    const session = password
+        ? await ATPROTO.login(identifier, password)
+        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open });
+    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+    try {
+        for (const { archive, hashAlg, hash } of checked) {
+            if (values.revoke) {
+                await ATPROTO.revoke(session, hash);
+                io.out(`withdrew ${session.did}'s attestation of ${archive} (${hashAlg}:${hash})`);
+                continue;
+            }
+            const written = await ATPROTO.attest(session, { hashAlg, hex: hash, kind: values.kind, verdict, note: values.note });
+            io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
+            io.out(`  ${written.uri}`);
+        }
+    } finally {
+        await session.end?.();
+    }
+    return 0;
+}
+
+/** The flags every command that takes an attestation policy accepts. */
+const POLICY_OPTIONS = {
+    attester:  { type: 'string', multiple: true },
+    quorum:    { type: 'string' },
+    'max-age': { type: 'string' },
+    block:     { type: 'string', multiple: true },
+} as const;
+
+interface PolicyValues {
+    attester?: string[] | undefined;
+    quorum?: string | undefined;
+    'max-age'?: string | undefined;
+    block?: string[] | undefined;
+}
+
+// Turn the policy flags into a policy: handles into DIDs — which takes the
+// network, and is why it happens here rather than in the verifier — the quorum
+// into a count, and the age into milliseconds.
+async function policy(values: PolicyValues): Promise<{
+    attesters: Attester[]; quorum?: number | undefined; maxAge?: number | undefined; block: Attester[];
+}> {
+    const specs = values.attester ?? [];
+    let attesters: Attester[] = [];
+    let block: Attester[] = [];
+    if (specs.length || values.block?.length) {
+        const ATPROTO = await import('./atproto.ts');
+        attesters = await Promise.all(specs.map((spec) => ATPROTO.resolveAttester(spec)));
+        block = await Promise.all((values.block ?? []).map(async (spec) => ({ did: (await ATPROTO.resolveAttester(spec)).did })));
+    }
+    let quorum: number | undefined;
+    if (values.quorum !== undefined) {
+        quorum = Number(values.quorum);
+        if (!attesters.length) throw new Error('--quorum needs --attester');
+        if (!Number.isInteger(quorum) || quorum < 1 || quorum > attesters.length) {
+            throw new Error(`--quorum must be between 1 and the number of attesters (${attesters.length})`);
+        }
+    }
+    const maxAge = values['max-age'] !== undefined ? parseDuration(values['max-age']) : undefined;
+    return { attesters, quorum, maxAge, block };
+}
+
+// Fetch the attesters' proofs for this one archive, so the verification that
+// follows sees the current answer. If that fails, the cache is what there is,
+// and the policy's freshness window decides whether it is good enough.
+async function fetchAttestations(archive: string, attesters: Attester[], io: Console): Promise<void> {
+    if (!attesters.length) return;
+    const hashed = wholeFileHash(archive);
+    if (!hashed) return;
+    const { refreshFor } = await import('./atproto.ts');
+    for (const problem of await refreshFor(attesters, hashed.hashAlg, hashed.hash)) {
+        io.err(`! could not fetch an attestation, using the cache: ${problem}`);
+    }
 }
 
 /** Print a verification result, as text or as the JSON `--json` produces. */
@@ -358,6 +623,12 @@ export function report(res: VerificationResult, json: boolean, io: Console): voi
             signed: res.signed, trusted: res.trusted, sigstore: Boolean(res.sigstore),
             identity: res.identity, issuer: res.issuer,
             signedAt: res.signedAt ? res.signedAt.toISOString() : undefined,
+            hash: res.hash ? `${res.hashAlg}:${res.hash}` : undefined,
+            attestations: res.attestations?.map((each) => ({
+                did: each.did, handle: each.handle, required: each.kind, kind: each.attested,
+                ok: each.ok, reason: each.reason, uri: each.uri, createdAt: each.createdAt,
+                checkedAt: each.checkedAt?.toISOString(),
+            })),
             members: res.digests ? [...res.digests.keys()] : undefined,
             code: state.code,
         }, null, 2));
@@ -371,6 +642,16 @@ export function report(res: VerificationResult, json: boolean, io: Console): voi
     if (res.issuer) io.out(`  issuer: ${res.issuer}`);
     if (res.signedAt) io.out(`  signed: ${res.signedAt.toISOString()}`);
     if (res.subject && !res.identity) io.out(`  certificate: ${res.subject.replace(/\n/g, ', ')}`);
+    if (res.attestations) {
+        if (res.hash) io.out(`  hash: ${res.hashAlg}:${res.hash}`);
+        for (const each of res.attestations) {
+            const who = each.handle ? `${each.handle} (${each.did})` : each.did;
+            const kind = each.attested ?? each.kind;
+            io.out(each.ok
+                ? `  attested: ${who}${kind ? ` as ${kind}` : ''}${each.createdAt ? `, ${each.createdAt}` : ''}`
+                : `  missing:  ${who}${each.kind ? ` as ${each.kind}` : ''} — ${each.reason}`);
+        }
+    }
 }
 
 const RUN_OPTIONS = {
@@ -378,6 +659,10 @@ const RUN_OPTIONS = {
     identity:  { type: 'string' },
     issuer:    { type: 'string' },
     untrusted: { type: 'boolean' },
+    attester:  { type: 'string', multiple: true },
+    quorum:    { type: 'string' },
+    'max-age': { type: 'string' },
+    block:     { type: 'string', multiple: true },
 } as const;
 
 /**
@@ -395,7 +680,7 @@ const RUN_OPTIONS = {
  * it is only no longer required.
  */
 export function splitRunArgs(args: string[]): { mine: string[]; archive?: string | undefined; theirs: string[] } {
-    const takesValue = new Set(['--root', '-r', '--identity', '--issuer']);
+    const takesValue = new Set(['--root', '-r', '--identity', '--issuer', '--attester', '--quorum', '--max-age', '--block']);
     const mine: string[] = [];
 
     for (let i = 0; i < args.length; i++) {
@@ -427,10 +712,13 @@ async function run(args: string[], io: Console): Promise<number> {
     const { mine, archive, theirs } = splitRunArgs(args);
     const { values } = parseArgs({ args: mine, allowPositionals: false, options: RUN_OPTIONS });
     if (!archive) throw new Error('run: an archive path is required');
+    const { attesters, quorum, maxAge, block } = await policy(values);
+    await fetchAttestations(archive, [...attesters, ...block], io);
 
     try {
         return await runBundle(archive, {
             roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
+            attesters: attesters.map(formatAttester), quorum, maxAge, block: block.map(({ did }) => did),
             allowUntrusted: values.untrusted, args: theirs,
         });
     } catch (err) {
@@ -442,79 +730,157 @@ async function run(args: string[], io: Console): Promise<number> {
 }
 
 // Fetch a signed archive and put it on the PATH — `curl | sh` with the parts
-// that make that dangerous taken out: nothing runs to install it, and nothing
-// lands anywhere until it verifies.
+// that make that dangerous taken out: nothing runs to install it, nothing lands
+// anywhere until it verifies, and whoever vouches for it is shown to the person
+// installing it, who decides.
 async function install(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
+        allowNegative: true,
         options: {
-            root:      { type: 'string', short: 'r', multiple: true },
-            identity:  { type: 'string' },
-            issuer:    { type: 'string' },
-            untrusted: { type: 'boolean' },
+            ...INSTALL_OPTIONS,
             name:      { type: 'string', short: 'n' },
             dir:       { type: 'string', short: 'd' },
         },
     });
     const INSTALL = await import('./install.ts');
+    const demands = await policy(values);
 
     // With no URL, this package installs itself: the published release, signed
     // by the workflow that publishes it. `npx @pipobscure/bundle install` is
     // then the whole bootstrap — npm fetches it once, and what stays behind is
     // a signed archive that updates itself from its own releases.
-    const itself = !positionals[0] ? INSTALL.self() : undefined;
-    const target = positionals[0] ?? itself!.url;
-    if (itself) io.err(`* installing this package itself from ${target}`);
+    const target = positionals[0] ?? INSTALL.self().url;
+    if (!positionals[0]) io.err(`* installing this package itself from ${target}`);
 
     try {
         const record = await INSTALL.install(target, {
             roots: values.root ?? [], name: values.name, dir: values.dir,
-            identity: values.identity ?? itself?.identity,
-            issuer: values.issuer ?? itself?.issuer,
-            allowUntrusted: values.untrusted,
+            identity: values.identity, issuer: values.issuer,
+            attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
+            discover: values.discover,
+            onReview: (review, about) => showReview(review, about, io),
+            decide: decider(Boolean(values.yes), io),
             log: (line) => io.err(line),
         });
         io.out(`${record.name} installed in ${record.dir}`);
         return 0;
     } catch (err) {
-        if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
-        const state = (err as { state?: VerificationState }).state;
-        io.err(`error: ${message(err)}`);
-        return state ? STATES[state].code : 2;
+        return refused(err, io);
     }
 }
 
+/** What `install` and `update` both take. */
+const INSTALL_OPTIONS = {
+    root:      { type: 'string', short: 'r', multiple: true },
+    identity:  { type: 'string' },
+    issuer:    { type: 'string' },
+    attester:  { type: 'string', multiple: true },
+    quorum:    { type: 'string' },
+    block:     { type: 'string', multiple: true },
+    discover:  { type: 'boolean', default: true },
+    yes:       { type: 'boolean', short: 'y' },
+} as const;
+
+// The exit code for an install that did not happen, and the line that says why.
+function refused(err: unknown, io: Console): number {
+    const code = (err as { code?: string }).code;
+    if (code === 'ERR_BUNDLE_UNCONFIRMED') {
+        io.err(`error: ${message(err)}`);
+        io.err('  nobody accepted for it before vouches for it, so it is up to you: run this on a terminal to choose, or pass --yes to accept what is shown above');
+        return UNDECIDED;
+    }
+    if (code === 'ERR_BUNDLE_DECLINED') {
+        io.err(message(err));
+        return UNDECIDED;
+    }
+    if (code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
+    const state = (err as { state?: VerificationState }).state;
+    io.err(`error: ${message(err)}`);
+    return state ? STATES[state].code : 2;
+}
+
+/** Show everything a review found, numbered where it can be chosen. */
+export function showReview(review: REVIEW.Review, about: { name: string; url: string }, io: Console): void {
+    io.err(`* ${about.name}: ${review.hashAlg}:${review.hash} (${review.signed ? 'signed' : 'unsigned'})`);
+    let n = 0;
+    for (const item of review.items) {
+        const label = item.evidence.type === 'signature' ? 'signed by'
+            : item.evidence.type === 'certificate' ? 'certificate'
+            : item.evidence.verdict === 'bad' ? 'WARNING' : 'attested by';
+        const when = item.evidence.type === 'attestation' && item.evidence.createdAt ? `, ${item.evidence.createdAt}` : '';
+        const what = `${label.padEnd(11)} ${REVIEW.describe(item.evidence)}${when}`;
+        if (item.excluded) {
+            const why = item.evidence.type === 'attestation' && item.evidence.verdict === 'bad' ? 'marked it bad' : item.excluded;
+            io.err(`     ${what} — ${why}`);
+        } else {
+            io.err(`  ${String(++n).padStart(2)} ${what} — ${item.known ?? 'new'}`);
+        }
+    }
+    if (!review.items.length) io.err('     nothing vouches for it');
+    for (const note of review.notes) io.err(`  ! ${note}`);
+}
+
+// How an install that needs a decision gets one: everything, with --yes; the
+// person at the terminal, if there is one; otherwise nobody, and it stops.
+function decider(yes: boolean, io: Console) {
+    if (yes) return async (review: REVIEW.Review) => REVIEW.selectable(review);
+    const ask = io.ask;
+    if (!ask) return undefined;
+    return async (review: REVIEW.Review, about: { name: string }) => {
+        const choices = REVIEW.selectable(review);
+        io.err(`* ${about.name}: ${review.reason}`);
+        for (;;) {
+            const answer = (await ask(`  accept which? numbers (${choices.length > 1 ? '1,2' : '1'}), 'all', or Enter to decline: `)).trim().toLowerCase();
+            if (!answer || answer === 'n' || answer === 'no' || answer === 'none') return [];
+            if (answer === 'all' || answer === 'a' || answer === 'y' || answer === 'yes') return choices;
+            const picked = answer.split(/[\s,]+/).map(Number);
+            if (picked.every((index) => Number.isInteger(index) && index >= 1 && index <= choices.length)) {
+                return [...new Set(picked)].map((index) => choices[index - 1]!);
+            }
+            io.err(`  '${answer}' is not one of 1–${choices.length}`);
+        }
+    };
+}
+
 // Re-ask the URL an install came from, and replace what is there if the answer
-// changed — provided it is still signed by whoever signed the first one.
+// changed and is accepted — by what was accepted before, or by the person.
 async function update(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
-        options: {
-            root:      { type: 'string', short: 'r', multiple: true },
-            untrusted: { type: 'boolean' },
-        },
+        allowNegative: true,
+        options: INSTALL_OPTIONS,
     });
 
     const INSTALL = await import('./install.ts');
+    const demands = await policy(values);
+    const results = await INSTALL.update(positionals[0], {
+        roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
+        attesters: demands.attesters.length ? demands.attesters : undefined,
+        quorum: demands.quorum, block: demands.block,
+        discover: values.discover,
+        onReview: (review, about) => showReview(review, about, io),
+        decide: decider(Boolean(values.yes), io),
+        log: (line) => io.err(line),
+    });
 
-    try {
-        const results = await INSTALL.update(positionals[0], {
-            roots: values.root ?? [], allowUntrusted: values.untrusted,
-            log: (line) => io.err(line),
-        });
-        const changed = results.filter((result) => result.state === 'updated');
-        io.out(changed.length
-            ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
-            : `${results.length} checked, nothing changed`);
-        return 0;
-    } catch (err) {
-        if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
-        const state = (err as { state?: VerificationState }).state;
-        io.err(`error: ${message(err)}`);
-        return state ? STATES[state].code : 2;
+    const changed = results.filter((result) => result.state === 'updated');
+    const stuck = results.filter((result) => result.state !== 'updated' && result.state !== 'unchanged');
+    io.out(changed.length
+        ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
+        : `${results.length} checked, nothing changed`);
+    for (const result of stuck) io.out(`  ${result.record.name}: ${result.state} — ${result.reason ?? ''}`);
+    if (stuck.some((result) => result.state === 'unconfirmed')) {
+        io.err('  run on a terminal to decide, or pass --yes to accept what was shown');
     }
+
+    // The worst outcome decides the exit code.
+    return stuck.reduce((code, result) => Math.max(code,
+        result.state === 'refused' ? STATES[result.review?.state ?? 'invalid'].code
+        : result.state === 'failed' ? 70
+        : UNDECIDED), 0);
 }
 
 // What is installed, and whether it is still what was installed. The record
@@ -527,25 +893,32 @@ async function installed(args: string[], io: Console): Promise<number> {
     });
 
     const INSTALL = await import('./install.ts');
+    // Withdrawn attestations and new warnings only show up if they are asked
+    // about; asking is cheap, and a failure leaves the cache to answer.
+    for (const problem of await INSTALL.refreshInstalled()) io.err(`! could not fetch an attestation, using the cache: ${problem}`);
     const checks = INSTALL.installed({ roots: values.root ?? [] });
 
     if (values.json) {
-        io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason }) => ({
+        io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
             name: record.name, path, state, sha256, reason,
-            url: record.url, identity: record.identity, issuer: record.issuer, at: record.at,
+            url: record.url, identity: record.identity, issuer: record.issuer,
+            attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record),
+            warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
         })), null, 2));
     } else if (!checks.length) {
         io.out('nothing installed');
     } else {
-        for (const { record, path, state, reason } of checks) {
+        for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
             io.out(`  at:     ${path}`);
             io.out(`  from:   ${record.url}`);
             if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
             else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
+            if (record.attestedBy?.length) io.out(`  attested by: ${record.attestedBy.join(', ')}`);
             io.out(`  sha256: ${record.sha256}`);
             io.out(`  since:  ${record.at}`);
             if (state !== 'ok') io.out(`  ${reason}`);
+            for (const warning of review ? INSTALL.warningsOf(review) : []) io.out(`  ${warning}`);
         }
     }
 
@@ -555,6 +928,170 @@ async function installed(args: string[], io: Console): Promise<number> {
         : state === 'missing' || state === 'changed' ? 2
         : STATES[state].code), 0);
     return worst;
+}
+
+// The lexicons attestations are written in: which there are, where each should
+// be published, whether it is, and publishing them.
+async function lexicon(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            as:              { type: 'string' },
+            'dry-run':       { type: 'boolean' },
+            force:           { type: 'boolean' },
+            'password-file': { type: 'string' },
+        },
+    });
+    const LEXICON = await import('./lexicon.ts');
+    const docs = LEXICON.lexicons();
+    const [sub] = positionals;
+
+    if (sub === undefined) {
+        for (const doc of docs) {
+            io.out(doc.id);
+            io.out(`  dns:    TXT _lexicon.${LEXICON.authorityOf(doc.id)}  "did=<the publishing account's DID>"`);
+            io.out(`  record: at://<that DID>/${LEXICON.SCHEMA_COLLECTION}/${doc.id}`);
+        }
+        return 0;
+    }
+
+    if (sub === 'check') {
+        let worst = 0;
+        for (const status of await LEXICON.checkLexicons()) {
+            const what = status.state === 'current' ? 'published, and current'
+                : status.state === 'different' ? 'published, but not this version'
+                : status.state === 'unpublished' ? `not published by ${status.authority}`
+                : `no authority — ${status.dns} has no 'did=' TXT record`;
+            io.out(`${status.nsid}: ${what}`);
+            if (status.uri) io.out(`  ${status.uri}`);
+            if (status.state !== 'current') worst = 1;
+        }
+        return worst;
+    }
+
+    if (sub !== 'publish') throw new Error(`lexicon: unknown subcommand '${sub}' (check or publish)`);
+    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
+    if (!identifier) throw new Error('lexicon: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER');
+
+    if (values['dry-run']) {
+        const ATPROTO = await import('./atproto.ts');
+        const { did } = await ATPROTO.resolveAttester(identifier);
+        for (const doc of docs) {
+            const authority = await LEXICON.authorityDid(doc.id);
+            const dns = `_lexicon.${LEXICON.authorityOf(doc.id)}`;
+            io.out(`${doc.id}`);
+            io.out(`  would write at://${did}/${LEXICON.SCHEMA_COLLECTION}/${doc.id}`);
+            io.out(authority === did ? `  ${dns} names ${did}: good`
+                : authority ? `  ${dns} names ${authority}, not ${did}: publish would refuse`
+                : `  ${dns} has no 'did=' record: add TXT "did=${did}" first`);
+        }
+        return 0;
+    }
+
+    const password = values['password-file']
+        ? FS.readFileSync(values['password-file'], 'utf-8').trim()
+        : process.env['BUNDLE_ATPROTO_PASSWORD'];
+    const ATPROTO = await import('./atproto.ts');
+    const OAUTH = await import('./oauth.ts');
+    const session = password
+        ? await ATPROTO.login(identifier, password)
+        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open, scope: `atproto repo:${LEXICON.SCHEMA_COLLECTION}` });
+    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+    try {
+        for (const each of await LEXICON.publishLexicons(session, { force: values.force })) {
+            io.out(`published ${each.nsid}`);
+            io.out(`  ${each.uri}`);
+            if (each.authority !== session.did) io.err(`  ! ${each.dns} does not name ${session.did} yet, so nothing can resolve it until it does`);
+        }
+    } finally {
+        await session.end?.();
+    }
+    return 0;
+}
+
+// The rules this machine installs by: what is in force, the files themselves,
+// a file to start from, and a check of one.
+async function policyCommand(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({
+        args,
+        allowPositionals: true,
+        options: {
+            app:    { type: 'string', short: 'a' },
+            json:   { type: 'boolean' },
+            system: { type: 'boolean' },
+            user:   { type: 'boolean' },
+            force:  { type: 'boolean', short: 'f' },
+        },
+    });
+    const POLICY = await import('./policy.ts');
+    const [sub, file] = positionals;
+    const which = values.system ? POLICY.systemPolicyPath() : POLICY.userPolicyPath();
+
+    if (sub === 'init') {
+        if (FS.existsSync(which) && !values.force) throw new Error(`policy: ${which} is already there (--force to replace it)`);
+        FS.mkdirSync(PATH.dirname(which), { recursive: true });
+        FS.writeFileSync(which, POLICY.formatPolicyFile(POLICY.starterPolicy(), version()));
+        io.out(`wrote ${which}`);
+        io.err(`  its "$schema" is ${POLICY.schemaUrl(version())}`);
+        return 0;
+    }
+    if (sub === 'check') {
+        if (!file) throw new Error('policy: check needs a file');
+        // `readPolicyFile` is what installs read policies with; null is a file
+        // that is not there, which is worth saying differently from a bad one.
+        if (!POLICY.readPolicyFile(PATH.resolve(file))) throw new Error(`policy: ${file} does not exist`);
+        io.out(`${file}: a valid policy file`);
+        return 0;
+    }
+    if (sub === 'show') {
+        const paths = [
+            ...(values.system || !values.user ? [POLICY.systemPolicyPath()] : []),
+            ...(values.user || !values.system ? [POLICY.userPolicyPath()] : []),
+        ];
+        let shown = 0;
+        for (const path of paths) {
+            const read = POLICY.readPolicyFile(path);
+            if (!read) {
+                io.err(`* ${path}: none`);
+                continue;
+            }
+            io.err(`* ${path}`);
+            io.out(POLICY.formatPolicyFile(read, version()).trimEnd());
+            shown++;
+        }
+        if (!shown) io.err("  no policy files — 'bundle policy init' writes one");
+        return 0;
+    }
+    if (sub !== undefined) throw new Error(`policy: unknown subcommand '${sub}' (show, init or check)`);
+
+    const effective = POLICY.loadPolicy(values.app);
+    if (values.json) {
+        io.out(JSON.stringify({
+            ...effective,
+            systemFile: POLICY.systemPolicyPath(), userFile: POLICY.userPolicyPath(),
+        }, null, 2));
+        return 0;
+    }
+    io.out(`machine policy: ${POLICY.systemPolicyPath()}${effective.files.includes(POLICY.systemPolicyPath()) ? '' : ' (none)'}`);
+    io.out(`user policy:    ${POLICY.userPolicyPath()}${effective.files.includes(POLICY.userPolicyPath()) ? '' : ' (none)'}`);
+    io.out(`schema:         ${POLICY.schemaUrl(version())}`);
+    const list = (items: string[]) => (items.length ? items.join(', ') : 'none');
+    io.out(`required:`);
+    io.out(`  signature:   ${effective.signature.length ? `yes (${list(effective.signature)})` : 'no'}`);
+    io.out(`  same issuer: ${effective.sameIssuer.length ? `yes (${list(effective.sameIssuer)})` : 'no'}`);
+    for (const { attesters, quorum, source } of effective.attesters) {
+        io.out(`  attesters:   ${quorum ? `${quorum} of ` : ''}${attesters.map(formatAttester).join(', ')} (${source})`);
+    }
+    for (const { list: issuers, source } of effective.issuers) io.out(`issuers:       ${issuers.join(', ')} (${source})`);
+    io.out(`trusted signers:   ${list(effective.trust.signers.map((signer) => `${signer.identity} via ${signer.issuer}`))}`);
+    io.out(`trusted attesters: ${list(effective.trust.attesters.map(formatAttester))}`);
+    if (effective.trust.certificates.length) io.out(`trusted roots:     ${list(effective.trust.certificates)}`);
+    io.out(`blocks on:         ${list(effective.block.map(({ did }) => did))}`);
+    io.out(`ignores:           ${list(effective.ignore)}`);
+    io.out(`discovery:         ${effective.discovery || 'off'}`);
+    if (effective.maxAge !== undefined) io.out(`max age:           ${Math.round(effective.maxAge / 1000)}s`);
+    return 0;
 }
 
 // Remove an install: the file, and the record of where it came from. With no
@@ -663,6 +1200,7 @@ async function sea(args: string[], io: Console): Promise<number> {
             fulcio:    { type: 'string' },
             rekor:     { type: 'string' },
             tsa:       { type: 'string' },
+            ...POLICY_OPTIONS,
         },
     });
     const app = positionals[0];
@@ -674,12 +1212,17 @@ async function sea(args: string[], io: Console): Promise<number> {
     // all if the command line could drop it. Nothing baked, nothing to seal —
     // that runtime takes its policy from flags and the environment, the way
     // `bundle run` does.
+    const { attesters, quorum, maxAge, block } = await policy(values);
     const bootstrap = {
         roots: values.root,
         identity: values.identity,
         issuer: values.issuer,
+        attesters: attesters.length ? attesters.map(formatAttester) : undefined,
+        quorum,
+        maxAge,
+        block: block.length ? block.map(({ did }) => did) : undefined,
         allowUntrusted: values.untrusted,
-        sealed: Boolean(values.root?.length || values.identity || values.issuer),
+        sealed: Boolean(values.root?.length || values.identity || values.issuer || attesters.length),
     };
 
     if (!app) {
@@ -716,17 +1259,60 @@ async function sea(args: string[], io: Console): Promise<number> {
     return 0;
 }
 
-// Refresh the sigstore trust root. Verification is deliberately offline — it
-// will not reach for the network to decide whether to mount something — so the
-// trust material has to be fetched by an explicit step like this one. It comes
-// over TUF, which is signed metadata with its own root of trust rather than a
-// plain download.
+// Refresh the trust material. Verification is deliberately offline — it will
+// not reach for the network to decide whether to mount something — so what it
+// checks against has to be fetched by an explicit step like this one: the
+// sigstore trust root, over TUF, which is signed metadata with its own root of
+// trust rather than a plain download; and the attestations of every attester
+// this machine knows about, each proof verified before it is kept.
 async function trust(args: string[], io: Console): Promise<number> {
-    const { values } = parseArgs({ args, options: { mirror: { type: 'string' } } });
-    const SIGSTORE = await import('./sigstore.ts');
-    const path = await SIGSTORE.refreshTrustedRoot(values.mirror ? { mirror: values.mirror } : {});
-    io.out(`sigstore trust root refreshed: ${path}`);
-    return 0;
+    const { values } = parseArgs({
+        args,
+        allowNegative: true,
+        options: {
+            mirror:   { type: 'string' },
+            attester: { type: 'string', multiple: true },
+            sigstore: { type: 'boolean', default: true },
+        },
+    });
+    let failed = false;
+
+    if (values.sigstore) {
+        const SIGSTORE = await import('./sigstore.ts');
+        const path = await SIGSTORE.refreshTrustedRoot(values.mirror ? { mirror: values.mirror } : {});
+        io.out(`sigstore trust root refreshed: ${path}`);
+    }
+
+    // Everyone whose attestations something on this machine may ask about:
+    // named here, named in the environment the preload reads, pinned by an
+    // install, or already cached because a verification once needed them.
+    const ATPROTO = await import('./atproto.ts');
+    const INSTALL = await import('./install.ts');
+    const dids = new Set<string>();
+    for (const spec of values.attester ?? []) dids.add((await ATPROTO.resolveAttester(spec)).did);
+    const POLICY = await import('./policy.ts');
+    const environment = policyFromEnvironment();
+    for (const { did } of [...environment.attesters, ...(environment.block ?? [])]) dids.add(did);
+    const policies = [POLICY.loadPolicy(), ...Object.keys(INSTALL.records()).map((name) => POLICY.loadPolicy(name))];
+    for (const each of policies) {
+        for (const { attesters } of each.attesters) for (const { did } of attesters) dids.add(did);
+        for (const { did } of [...each.trust.attesters, ...each.block]) dids.add(did);
+    }
+    for (const record of Object.values(INSTALL.records())) for (const did of INSTALL.acceptedOf(record).attesters) dids.add(did);
+    for (const did of cachedDids()) dids.add(did);
+    for (const each of policies) for (const did of each.ignore) dids.delete(did);
+
+    for (const did of [...dids].sort()) {
+        try {
+            const { present, fetched, removed } = await ATPROTO.refreshAttester(did);
+            io.out(`${did}: ${present} attestation${present === 1 ? '' : 's'}` +
+                `${fetched ? `, ${fetched} new` : ''}${removed ? `, ${removed} withdrawn` : ''}`);
+        } catch (err) {
+            io.err(`error: ${did}: ${message(err)}`);
+            failed = true;
+        }
+    }
+    return failed ? 1 : 0;
 }
 
 // Install the auditing skill into a project, so whoever is about to run an
