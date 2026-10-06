@@ -1,15 +1,18 @@
 import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { COMMANDS, OPTIONS, USAGE } from './cli.ts';
 
-// Tab completion, for bash, zsh and fish.
+// Tab completion, for bash, zsh, fish and PowerShell.
 //
 // A shell does not know a program's options; it asks. Each has its own way of
 // asking — bash runs a command with the line in COMP_LINE/COMP_POINT and reads
 // candidates back one per line (`complete -C`), zsh can do the same through
-// `bashcompinit`, and fish calls a function whose output may carry
-// descriptions — and every one of them can be pointed at the program itself.
+// `bashcompinit`, fish calls a function whose output may carry descriptions,
+// and PowerShell calls a script block registered for the command with
+// `Register-ArgumentCompleter -Native` — and every one of them can be pointed
+// at the program itself.
 // So `bundle __complete` answers, and `bundle shell <shell>` prints the few
 // lines that wire a shell to it — along with a quiet `bundle validate`, so a
 // new terminal is also where news about installed bundles arrives.
@@ -45,7 +48,7 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
     skill: 'skills',
     policy: (positionals) => (positionals.length === 0 ? ['show', 'init', 'check'] : positionals[0] === 'check' ? 'files' : null),
     lexicon: (positionals) => (positionals.length === 0 ? ['check', 'publish'] : null),
-    shell: (positionals) => (positionals.length === 0 ? ['bash', 'zsh', 'fish'] : null),
+    shell: (positionals) => (positionals.length === 0 ? ['bash', 'zsh', 'fish', 'powershell'] : null),
 };
 
 // What an option's value is, where that is something worth offering. Keyed by
@@ -220,6 +223,7 @@ function optionDescriptions(command: string): Map<string, string> {
  *   --shell bash  [<program> <current> <previous>]
  *                                         bash's `complete -C`, whose real
  *                                         input is COMP_LINE and COMP_POINT
+ *   --shell zsh, --shell powershell       COMP_LINE and COMP_POINT too
  */
 export async function respond(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
     const shellAt = argv.indexOf('--shell');
@@ -234,13 +238,17 @@ export async function respond(argv: string[], env: NodeJS.ProcessEnv = process.e
         words = given.slice(0, -1);
     } else {
         const line = (env['COMP_LINE'] ?? '').slice(0, Number(env['COMP_POINT'] ?? env['COMP_LINE']?.length ?? 0));
-        const split = splitLine(line);
+        // PowerShell's escape character is the backtick; a backslash there is
+        // a path separator, and must survive.
+        const split = splitLine(line, { backslash: shell !== 'powershell' });
         words = split.words.slice(1);
         current = split.current;
     }
 
     const { candidates, files } = await complete(words, current);
-    if (shell === 'fish') {
+    // fish and PowerShell take whole words, and show descriptions; both are
+    // told to complete files themselves.
+    if (shell === 'fish' || shell === 'powershell') {
         if (files) return [':files'];
         return candidates.map(({ value, description }) => (description ? `${value}\t${description}` : value));
     }
@@ -257,7 +265,7 @@ export async function respond(argv: string[], env: NodeJS.ProcessEnv = process.e
 }
 
 /** Split a command line the way a shell would, enough for completion: words, and the one being typed. */
-export function splitLine(line: string): { words: string[]; current: string } {
+export function splitLine(line: string, { backslash = true }: { backslash?: boolean } = {}): { words: string[]; current: string } {
     const words: string[] = [];
     let word = '';
     let quote: string | null = null;
@@ -266,12 +274,12 @@ export function splitLine(line: string): { words: string[]; current: string } {
         const char = line[i]!;
         if (quote) {
             if (char === quote) quote = null;
-            else if (char === '\\' && quote === '"' && i + 1 < line.length) word += line[++i];
+            else if (backslash && char === '\\' && quote === '"' && i + 1 < line.length) word += line[++i];
             else word += char;
         } else if (char === '"' || char === "'") {
             quote = char;
             started = true;
-        } else if (char === '\\' && i + 1 < line.length) {
+        } else if (backslash && char === '\\' && i + 1 < line.length) {
             word += line[++i];
             started = true;
         } else if (/\s/.test(char)) {
@@ -284,6 +292,48 @@ export function splitLine(line: string): { words: string[]; current: string } {
         }
     }
     return { words, current: word };
+}
+
+/** The shells this sets up. */
+export type Shell = 'bash' | 'zsh' | 'fish' | 'powershell';
+export const SHELLS: readonly Shell[] = ['bash', 'zsh', 'fish', 'powershell'];
+
+/**
+ * How a shell runs this package: by name, for bash, zsh, fish — and for
+ * PowerShell a call expression, with a test that it is there. By name is not
+ * always right in PowerShell: on Windows a `.nzip` runs through its file
+ * association, and output from that cannot be captured, so there it is node
+ * itself, with the archive mounted — what the association runs anyway.
+ */
+export interface Program {
+    name: string;
+    /** A PowerShell expression that runs it; arguments follow. */
+    invoke: string;
+    /** A PowerShell condition that is true when it is there to run. */
+    present: string;
+}
+
+/** A program run by its name. */
+export function programNamed(name: string): Program {
+    return { name, invoke: `& ${quote(name)}`, present: `Get-Command ${quote(name)} -ErrorAction SilentlyContinue` };
+}
+
+/** A program run as node with the archive at `archive` mounted, under the name `name`. */
+export function programAt(name: string, node: string, archive: string): Program {
+    return {
+        name,
+        invoke: `& ${quote(node)} --no-warnings --experimental-vfs ${quote(`--vfs-load=${archive}`)} --`,
+        present: `Test-Path -LiteralPath ${quote(archive)}`,
+    };
+}
+
+// A PowerShell single-quoted string: nothing inside is special but the quote.
+function quote(text: string): string {
+    return `'${text.replace(/'/g, "''")}'`;
+}
+
+function asProgram(program: string | Program): Program {
+    return typeof program === 'string' ? programNamed(program) : program;
 }
 
 /** What `bundle shell` puts in a shell's startup. */
@@ -304,52 +354,91 @@ export interface ShellOptions {
  * only — a quiet `bundle validate`, so a new warning about something installed
  * is the first thing a new terminal says.
  */
-export function script(shell: string, { complete = true, validate = true, every = '1d', timeout = '5s' }: ShellOptions = {}, program = 'bundle'): string {
-    const check = `${program} validate --quiet --every ${every} --timeout ${timeout}`;
-    const fn = `__${program.replace(/\W/g, '_')}_complete`;
+export function script(shell: string, { complete = true, validate = true, every = '1d', timeout = '5s' }: ShellOptions = {},
+    run: string | Program = 'bundle'): string {
+    const program = asProgram(run);
+    const name = program.name;
+    const check = `validate --quiet --every ${every} --timeout ${timeout}`;
+    const fn = `__${name.replace(/\W/g, '_')}_complete`;
     const lines = (...parts: (string | false)[]) => `${parts.filter(Boolean).join('\n')}\n`;
     switch (shell) {
         case 'bash':
             return lines(
-                `# ${program}, for bash. In ~/.bashrc:  eval "$(${program} shell bash)"`,
-                complete && `complete -o default -C '${program} __complete --shell bash' ${program}`,
-                validate && `if [[ $- == *i* ]]; then ${check}; fi`,
+                `# ${name}, for bash. In ~/.bashrc:  eval "$(${name} shell bash)"`,
+                complete && `complete -o default -C '${name} __complete --shell bash' ${name}`,
+                validate && `if [[ $- == *i* ]]; then ${name} ${check}; fi`,
             );
         case 'zsh':
             return lines(
-                `# ${program}, for zsh. In ~/.zshrc:  eval "$(${program} shell zsh)"`,
+                `# ${name}, for zsh. In ~/.zshrc:  eval "$(${name} shell zsh)"`,
                 // Completion through zsh's bash compatibility; compinit only if
                 // nothing has set it up yet, since most configurations do.
                 complete && `(( $+functions[compdef] )) || { autoload -Uz compinit && compinit; }`,
                 complete && `autoload -U +X bashcompinit && bashcompinit`,
-                complete && `complete -o default -C '${program} __complete --shell zsh' ${program}`,
-                validate && `if [[ -o interactive ]]; then ${check}; fi`,
+                complete && `complete -o default -C '${name} __complete --shell zsh' ${name}`,
+                validate && `if [[ -o interactive ]]; then ${name} ${check}; fi`,
             );
         case 'fish':
             return lines(
-                `# ${program}, for fish. In ~/.config/fish/config.fish:  ${program} shell fish | source`,
+                `# ${name}, for fish. In ~/.config/fish/config.fish:  ${name} shell fish | source`,
                 // fish ships completions for Ruby's Bundler, also called
                 // `bundle`; these replace them rather than mix with them.
-                complete && `complete -c ${program} -e`,
+                complete && `complete -c ${name} -e`,
                 complete && `function ${fn}`,
                 complete && `    set -l tokens (commandline -opc)`,
                 complete && `    set -l current (commandline -ct)`,
-                complete && `    set -l out (${program} __complete --shell fish -- $tokens[2..-1] "$current" 2>/dev/null)`,
+                complete && `    set -l out (${name} __complete --shell fish -- $tokens[2..-1] "$current" 2>/dev/null)`,
                 complete && `    if test "$out[1]" = ':files'`,
                 complete && `        __fish_complete_path "$current"`,
                 complete && `    else`,
                 complete && `        printf '%s\\n' $out`,
                 complete && `    end`,
                 complete && `end`,
-                complete && `complete -c ${program} -f -a '(${fn})'`,
-                validate && `if status is-interactive\n    ${check}\nend`,
+                complete && `complete -c ${name} -f -a '(${fn})'`,
+                validate && `if status is-interactive\n    ${name} ${check}\nend`,
             );
+        case 'powershell': case 'pwsh': {
+            // Typed with or without `.nzip`, which PATHEXT lets one leave off.
+            const names = [...new Set([name, name.replace(/\.nzip$/i, ''), `${name.replace(/\.nzip$/i, '')}.nzip`])].map(quote).join(', ');
+            return lines(
+                `# ${name}, for PowerShell. In $PROFILE:  ${program.invoke} shell powershell | Out-String | Invoke-Expression`,
+                complete && `Register-ArgumentCompleter -Native -CommandName ${names} -ScriptBlock {`,
+                complete && `    param($wordToComplete, $commandAst, $cursorPosition)`,
+                // The line up to the cursor, padded when the cursor is past the
+                // end of the command — after a space, starting a new word.
+                complete && `    $at = $cursorPosition - $commandAst.Extent.StartOffset`,
+                complete && `    $line = $commandAst.Extent.Text.PadRight($at).Substring(0, $at)`,
+                complete && `    $encoding = [Console]::OutputEncoding`,
+                complete && `    try {`,
+                complete && `        [Console]::OutputEncoding = [Text.Encoding]::UTF8`,
+                complete && `        $env:COMP_LINE = $line`,
+                complete && `        $env:COMP_POINT = $line.Length`,
+                complete && `        $out = @(${program.invoke} __complete --shell powershell 2>$null)`,
+                complete && `    } finally {`,
+                complete && `        [Console]::OutputEncoding = $encoding`,
+                complete && `        Remove-Item Env:COMP_LINE, Env:COMP_POINT -ErrorAction SilentlyContinue`,
+                complete && `    }`,
+                // Nothing returned: PowerShell completes file names itself.
+                complete && `    if ($out.Count -gt 0 -and $out[0] -eq ':files') { return }`,
+                complete && `    foreach ($candidate in $out) {`,
+                complete && "        $value, $description = $candidate -split \"`t\", 2",
+                complete && `        $type = if ($value.StartsWith('-')) { 'ParameterName' } else { 'ParameterValue' }`,
+                complete && `        [System.Management.Automation.CompletionResult]::new($value, $value, $type, $(if ($description) { $description } else { $value }))`,
+                complete && `    }`,
+                complete && `}`,
+                // A profile also loads for \`pwsh -Command\` and scripts; only a
+                // session somebody is sitting at re-validates.
+                validate && `if (-not ([Environment]::GetCommandLineArgs() -match '^-(c|command|f|file|e|ec|encodedcommand|noni|noninteractive)$')) {`,
+                validate && `    ${program.invoke} ${check}`,
+                validate && `}`,
+            );
+        }
         default:
-            throw new Error(`shell: no support for '${shell}' — bash, zsh or fish`);
+            throw new Error(`shell: no support for '${shell}' — bash, zsh, fish or powershell`);
     }
 }
 
-/** The shell this is probably being run from, by its `SHELL` (bash when it cannot tell). */
+/** The shell this is probably being run from (bash when it cannot tell). */
 export function currentShell(env: NodeJS.ProcessEnv = process.env): string {
     return detectShell(env) ?? 'bash';
 }
@@ -358,34 +447,116 @@ export function currentShell(env: NodeJS.ProcessEnv = process.env): string {
 
 // The block `bundle install` adds to a shell's startup file, between markers,
 // so it can be found again: to leave alone when it is there, and to take out
-// on uninstall. It loads `bundle shell` only when `bundle` is on the PATH, so
-// a shell never fails to start for want of it.
+// on uninstall. It loads `bundle shell` only when bundle is there to run, so a
+// shell never fails to start for want of it.
 const BEGIN = '# >>> bundle: Tab completion, and a quiet re-check of installs >>>';
 const END = '# <<< bundle <<<';
 
 /**
- * The shell `SHELL` names, if it is one this knows how to set up — by what the
- * shell is, not what platform it runs on: Git Bash on Windows names
- * `/usr/bin/bash`, or `C:\\Program Files\\Git\\usr\\bin\\bash.exe`, and is bash.
+ * The shell this is being run from, if it is one this knows how to set up —
+ * by what the shell is, not what platform it runs on.
+ *
+ *   0. BUNDLE_SHELL, when somebody says which.
+ *   1. The nearest ancestor process that is a shell, where the process tree
+ *      can be read (/proc on Linux, `ps` elsewhere off Windows). That is the
+ *      honest answer, and the only one that is right for pwsh on Linux, which
+ *      inherits SHELL from the login shell.
+ *   2. SHELL: Git Bash on Windows names `/usr/bin/bash`, or a `bash.exe`.
+ *   3. PowerShell on Windows sets no SHELL; it is recognised by the module
+ *      directory under the user's home it adds to `PSModulePath`, which a
+ *      plain cmd.exe lacks.
  */
-export function detectShell(env: NodeJS.ProcessEnv = process.env): 'bash' | 'zsh' | 'fish' | null {
-    const name = (env['SHELL'] ?? '').split(/[\\/]/).pop()?.replace(/\.exe$/i, '').toLowerCase() ?? '';
-    return name === 'bash' || name === 'zsh' || name === 'fish' ? name : null;
+export function detectShell(env: NodeJS.ProcessEnv = process.env, ancestors?: string[]): Shell | null {
+    if (env['BUNDLE_SHELL']) {
+        const chosen = shellNamed(env['BUNDLE_SHELL']);
+        if (!chosen) throw new Error(`BUNDLE_SHELL is '${env['BUNDLE_SHELL']}' — bash, zsh, fish or powershell`);
+        return chosen;
+    }
+    for (const name of ancestors ?? ancestry()) {
+        const shell = shellNamed(name);
+        if (shell) return shell;
+    }
+    const named = shellNamed(env['SHELL'] ?? '');
+    if (named) return named;
+    return powershellModules(env) ? 'powershell' : null;
 }
 
-/** The file an interactive `shell` reads at start. */
-export function startupFile(shell: 'bash' | 'zsh' | 'fish', env: NodeJS.ProcessEnv = process.env): string {
-    const home = env['HOME'] || OS.homedir();
+function shellNamed(path: string): Shell | null {
+    const name = path.split(/[\\/]/).pop()?.replace(/\.exe$/i, '').replace(/^-/, '').toLowerCase() ?? '';
+    if (name === 'bash' || name === 'zsh' || name === 'fish') return name;
+    if (name === 'pwsh' || name === 'powershell') return 'powershell';
+    return null;
+}
+
+/**
+ * The names of this process's ancestors, nearest first, as far as they can be
+ * read cheaply — /proc on Linux, `ps` on macOS and the BSDs. Empty on Windows,
+ * and wherever neither answers.
+ */
+export function ancestry(limit = 8): string[] {
+    if (process.platform === 'win32') return [];
+    const names: string[] = [];
+    let pid = process.ppid;
+    for (let depth = 0; depth < limit && pid > 1; depth++) {
+        let name: string | undefined;
+        let parent: number | undefined;
+        try {
+            name = FS.readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
+            parent = Number(/^PPid:\s*(\d+)/m.exec(FS.readFileSync(`/proc/${pid}/status`, 'utf-8'))?.[1]);
+        } catch {
+            const res = spawnSync('ps', ['-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], { encoding: 'utf-8', timeout: 2000 });
+            const m = /^\s*(\d+)\s+(.+)$/.exec(res.stdout?.trim() ?? '');
+            if (!m) break;
+            parent = Number(m[1]);
+            name = m[2]!.trim();
+        }
+        if (!name || !parent) break;
+        names.push(name);
+        pid = parent;
+    }
+    return names;
+}
+
+// The module directory a PowerShell session adds under the user's home, and
+// which PowerShell it is: `WindowsPowerShell` is 5.1, anything else is 7.
+function powershellModules(env: NodeJS.ProcessEnv): { dir: string; edition: 'pwsh' | 'powershell' } | null {
+    const value = env['PSModulePath'] ?? '';
+    const home = (env['USERPROFILE'] || env['HOME'] || OS.homedir()).toLowerCase();
+    const dir = value.split(value.includes(';') ? ';' : ':')
+        .find((entry) => home && entry.toLowerCase().startsWith(home) && /powershell/i.test(entry));
+    if (!dir) return null;
+    return { dir, edition: /windowspowershell/i.test(dir) ? 'powershell' : 'pwsh' };
+}
+
+/**
+ * The file an interactive `shell` reads at start. PowerShell's is asked of
+ * PowerShell itself — `$PROFILE`, wherever Documents has been moved to — with
+ * the conventional place as the fallback; `BUNDLE_POWERSHELL_PROFILE` overrides.
+ */
+export function startupFile(shell: Shell, env: NodeJS.ProcessEnv = process.env): string {
+    const home = env['HOME'] || env['USERPROFILE'] || OS.homedir();
     if (shell === 'zsh') return PATH.join(env['ZDOTDIR'] || home, '.zshrc');
     if (shell === 'fish') return PATH.join(env['XDG_CONFIG_HOME'] || PATH.join(home, '.config'), 'fish', 'config.fish');
+    if (shell === 'powershell') {
+        if (env['BUNDLE_POWERSHELL_PROFILE']) return env['BUNDLE_POWERSHELL_PROFILE'];
+        const modules = powershellModules(env);
+        const edition = modules?.edition ?? (process.platform === 'win32' ? 'powershell' : 'pwsh');
+        const asked = spawnSync(edition, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$PROFILE.CurrentUserCurrentHost'],
+            { encoding: 'utf-8', timeout: 15_000, windowsHide: true });
+        const answer = asked.status === 0 ? asked.stdout.trim() : '';
+        if (answer) return answer;
+        if (modules) return PATH.join(PATH.dirname(modules.dir), 'Microsoft.PowerShell_profile.ps1');
+        return PATH.join(env['XDG_CONFIG_HOME'] || PATH.join(home, '.config'), 'powershell', 'Microsoft.PowerShell_profile.ps1');
+    }
     return PATH.join(home, '.bashrc');
 }
 
-/** The one line that loads `bundle shell` — only when `bundle` is there to run. */
-export function hookLine(shell: 'bash' | 'zsh' | 'fish', program = 'bundle'): string {
-    return shell === 'fish'
-        ? `command -q ${program}; and ${program} shell fish | source`
-        : `command -v ${program} >/dev/null 2>&1 && eval "$(${program} shell ${shell})"`;
+/** The one line that loads `bundle shell` — only when bundle is there to run. */
+export function hookLine(shell: Shell, run: string | Program = 'bundle'): string {
+    const program = asProgram(run);
+    if (shell === 'powershell') return `if (${program.present}) { ${program.invoke} shell powershell | Out-String | Invoke-Expression }`;
+    if (shell === 'fish') return `command -q ${program.name}; and ${program.name} shell fish | source`;
+    return `command -v ${program.name} >/dev/null 2>&1 && eval "$(${program.name} shell ${shell})"`;
 }
 
 /** Whether `file` already carries the block. */
@@ -398,7 +569,7 @@ export function hasHook(file: string): boolean {
 }
 
 /** Add the block to `shell`'s startup file, unless it is there already. Returns the file. */
-export function addHook(shell: 'bash' | 'zsh' | 'fish', env: NodeJS.ProcessEnv = process.env, program = 'bundle'): { file: string; added: boolean } {
+export function addHook(shell: Shell, env: NodeJS.ProcessEnv = process.env, run: string | Program = 'bundle'): { file: string; added: boolean } {
     const file = startupFile(shell, env);
     if (hasHook(file)) return { file, added: false };
     let before = '';
@@ -409,21 +580,21 @@ export function addHook(shell: 'bash' | 'zsh' | 'fish', env: NodeJS.ProcessEnv =
     }
     FS.mkdirSync(PATH.dirname(file), { recursive: true });
     const gap = !before ? '' : before.endsWith('\n') ? '\n' : '\n\n';
-    FS.writeFileSync(file, `${before}${gap}${BEGIN}\n${hookLine(shell, program)}\n${END}\n`);
+    FS.writeFileSync(file, `${before}${gap}${BEGIN}\n${hookLine(shell, run)}\n${END}\n`);
     return { file, added: true };
 }
 
 /** Take the block out of every shell's startup file that carries it. Returns the files changed. */
 export function removeHooks(env: NodeJS.ProcessEnv = process.env): string[] {
     const changed: string[] = [];
-    for (const shell of ['bash', 'zsh', 'fish'] as const) {
+    for (const shell of SHELLS) {
         const file = startupFile(shell, env);
         if (!hasHook(file)) continue;
         const text = FS.readFileSync(file, 'utf-8');
         const start = text.indexOf(BEGIN);
         const end = text.indexOf(END, start);
         if (end < 0) continue; // a block somebody edited apart: leave it to them
-        const after = text.slice(end + END.length).replace(/^\n/, '');
+        const after = text.slice(end + END.length).replace(/^\r?\n/, '');
         FS.writeFileSync(file, `${text.slice(0, start).replace(/\n\n$/, '\n')}${after}`);
         changed.push(file);
     }

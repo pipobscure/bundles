@@ -46,8 +46,10 @@ process.env['LOCALAPPDATA'] = PATH.join(HOME, 'AppData');
 // Installing itself offers to edit the shell's startup file: never the real one.
 process.env['HOME'] = HOME;
 process.env['XDG_CONFIG_HOME'] = PATH.join(HOME, '.config');
-process.env['SHELL'] = '/bin/bash';
+process.env['BUNDLE_SHELL'] = 'bash';
 delete process.env['ZDOTDIR'];
+// ...and PowerShell's profile is never the real one either, not even asked about.
+process.env['BUNDLE_POWERSHELL_PROFILE'] = PATH.join(HOME, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
 // No machine policy, and a user policy that keeps discovery off: nothing here
 // may ask the public backlink index about a test archive.
 FS.mkdirSync(HOME, { recursive: true });
@@ -447,12 +449,18 @@ test('install with no url means this package, from its own release', async () =>
         assert.match(again.stderr.join('\n'), /already loads bundle's shell setup/);
 
         // Switched to fish: installing again sets up fish, and only that.
-        process.env['SHELL'] = '/usr/bin/fish';
+        process.env['BUNDLE_SHELL'] = 'fish';
         const fish = { ...collector(), ask: async () => 'y' };
         assert.equal(await main(['install'], fish), 0);
         assert.equal(hits, before, 'still nothing fetched');
         assert.match(FS.readFileSync(PATH.join(HOME, '.config', 'fish', 'config.fish'), 'utf-8'), /command -q self\.nzip; and self\.nzip shell fish \| source/);
-        process.env['SHELL'] = '/bin/bash';
+
+        // And PowerShell (how it is recognised is completion.test.ts's business).
+        process.env['BUNDLE_SHELL'] = 'powershell';
+        const pwsh = { ...collector(), ask: async () => 'y' };
+        assert.equal(await main(['install'], pwsh), 0);
+        assert.match(FS.readFileSync(process.env['BUNDLE_POWERSHELL_PROFILE']!, 'utf-8'), /shell powershell \| Out-String \| Invoke-Expression/);
+        process.env['BUNDLE_SHELL'] = 'bash';
         // Uninstalling itself takes it out, and leaves the rest of the file as it was.
         const all = records();
         all['self.nzip'] = { ...all['self.nzip']!, url: self().url };
@@ -461,6 +469,8 @@ test('install with no url means this package, from its own release', async () =>
         assert.equal(await main(['uninstall'], removed), 0);
         assert.match(removed.stderr.join('\n'), /took bundle's shell setup out of .*\.bashrc/);
         assert.match(removed.stderr.join('\n'), /took bundle's shell setup out of .*config\.fish/);
+        assert.match(removed.stderr.join('\n'), /took bundle's shell setup out of .*Microsoft\.PowerShell_profile\.ps1/);
+        assert.equal(FS.readFileSync(process.env['BUNDLE_POWERSHELL_PROFILE']!, 'utf-8'), '');
         assert.equal(FS.readFileSync(PATH.join(HOME, '.config', 'fish', 'config.fish'), 'utf-8'), '');
         assert.equal(FS.readFileSync(PATH.join(HOME, '.bashrc'), 'utf-8'), 'export EDITOR=vi\n');
     } finally {

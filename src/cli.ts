@@ -319,7 +319,7 @@ trust options:
   what a verifying runtime — which never reaches for the network — checks
   against, and what decides how stale its answer can be.
 
-shell options:                      usage: shell [bash | zsh | fish] [options]
+shell options:                      usage: shell [bash | zsh | fish | powershell] [options]
       --every <time>    how often a new shell re-validates installs (default: 1d)
       --timeout <time>  how long it may wait for the network (default: 5s)
       --no-validate     leave out the re-validation
@@ -328,13 +328,16 @@ shell options:                      usage: shell [bash | zsh | fish] [options]
   prints what to load when a shell starts, for the shell named or the one
   $SHELL names:
 
-      bash   eval "$(bundle shell bash)"       in ~/.bashrc
-      zsh    eval "$(bundle shell zsh)"        in ~/.zshrc
-      fish   bundle shell fish | source        in ~/.config/fish/config.fish
+      bash        eval "$(bundle shell bash)"       in ~/.bashrc
+      zsh         eval "$(bundle shell zsh)"        in ~/.zshrc
+      fish        bundle shell fish | source        in ~/.config/fish/config.fish
+      powershell  bundle shell powershell | Out-String | Invoke-Expression
+                                                    in $PROFILE
 
   'bundle install', installing itself, offers to add exactly that line, for
-  the shell $SHELL names — Git Bash on Windows included, where bundle is run
-  as 'bundle.nzip' and the setup uses that name.
+  the shell it is run from — Git Bash on Windows included, where bundle is
+  run as 'bundle.nzip' and the setup uses that name, and PowerShell, whose
+  profile is asked of PowerShell itself.
 
   Tab completion: commands, their options, the values those take, installed
   names, and file names where a file goes. And, in interactive shells,
@@ -774,7 +777,7 @@ async function install(args: string[], io: Console): Promise<number> {
         const existing = Object.values(INSTALL.records()).find((record) => record.url === target);
         if (existing && FS.existsSync(PATH.join(existing.dir, existing.name))) {
             io.out(`${existing.name} is already installed in ${existing.dir} ('bundle update' fetches a newer one)`);
-            if (values.shell) await offerShellHook(io, existing.name);
+            if (values.shell) await offerShellHook(io);
             return 0;
         }
         io.err(`* installing this package itself from ${target}`);
@@ -793,7 +796,7 @@ async function install(args: string[], io: Console): Promise<number> {
         io.out(`${record.name} installed in ${record.dir}`);
         // Installing itself is setting up a machine, so it offers the rest of
         // the setup too: the shell hook, for the shell this is being run from.
-        if (!positionals[0] && values.shell) await offerShellHook(io, record.name);
+        if (!positionals[0] && values.shell) await offerShellHook(io);
         return 0;
     } catch (err) {
         return refused(err, io);
@@ -803,14 +806,14 @@ async function install(args: string[], io: Console): Promise<number> {
 // Add `bundle shell` to the startup file of the shell `bundle install` was run
 // from — asked first, never assumed: it is somebody's own file. With nobody to
 // ask, say what to add instead. What decides is the shell, not the platform:
-// Git Bash on Windows is bash. `program` is the name it was installed under —
-// `bundle.nzip` on Windows, where Git Bash runs it by its `#!` line.
-async function offerShellHook(io: Console, program: string): Promise<void> {
+// Git Bash on Windows is bash, and PowerShell is PowerShell wherever it runs.
+async function offerShellHook(io: Console): Promise<void> {
     const COMPLETION = await import('./completion.ts');
+    const program = await selfProgram();
     const shell = COMPLETION.detectShell();
     if (!shell) {
-        // No SHELL at all is cmd.exe or PowerShell, which this cannot set up;
-        // a SHELL that names something else gets a pointer.
+        // Neither SHELL nor PowerShell is cmd.exe, which has no programmable
+        // completion; a SHELL that names something else gets a pointer.
         if (process.env['SHELL']) io.err("* for Tab completion and a daily re-check of installs at shell start, see 'bundle shell --help'");
         return;
     }
@@ -1071,17 +1074,28 @@ async function lexicon(args: string[], io: Console): Promise<number> {
 async function shell(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, allowNegative: true, options: OPTIONS.shell });
     const COMPLETION = await import('./completion.ts');
-    const INSTALL = await import('./install.ts');
     parseDuration(values.every);
     parseDuration(values.timeout);
-    // Whatever this package is called on the PATH — `bundle`, or `bundle.nzip`
-    // where the extension stays — is what gets completed and what is run.
-    const urls = [INSTALL.self().url, INSTALL.SELF.url];
-    const program = Object.values(INSTALL.records()).find((record) => urls.includes(record.url))?.name ?? 'bundle';
-    io.out(COMPLETION.script(positionals[0] ?? COMPLETION.currentShell(), {
+    const shell = positionals[0] ?? COMPLETION.currentShell();
+    io.out(COMPLETION.script(shell, {
         complete: values.complete, validate: values.validate, every: values.every, timeout: values.timeout,
-    }, program).trimEnd());
+    }, await selfProgram()).trimEnd());
     return 0;
+}
+
+// How a shell runs this package: by whatever name it is installed under —
+// `bundle`, or `bundle.nzip` where the extension stays — and, for PowerShell on
+// Windows, as node with the installed archive mounted, which is what its file
+// association runs, but with output PowerShell can capture.
+async function selfProgram(): Promise<import('./completion.ts').Program> {
+    const COMPLETION = await import('./completion.ts');
+    const INSTALL = await import('./install.ts');
+    const urls = [INSTALL.self().url, INSTALL.SELF.url];
+    const record = Object.values(INSTALL.records()).find((each) => urls.includes(each.url));
+    const name = record?.name ?? 'bundle';
+    return process.platform === 'win32' && record
+        ? COMPLETION.programAt(name, process.execPath, PATH.join(record.dir, record.name))
+        : COMPLETION.programNamed(name);
 }
 
 // The rules this machine installs by: what is in force, the files themselves,

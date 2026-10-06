@@ -499,6 +499,7 @@ on a missing network.
 eval "$(bundle shell bash)"      # in ~/.bashrc
 eval "$(bundle shell zsh)"       # in ~/.zshrc
 bundle shell fish | source       # in ~/.config/fish/config.fish
+bundle shell powershell | Out-String | Invoke-Expression    # in $PROFILE
 ```
 
 Prints what to load when a shell starts:
@@ -506,19 +507,29 @@ Prints what to load when a shell starts:
 - **Tab completion** for commands, their options, the values those take
   (`--verdict good|bad`, `--flow`, …), installed names for `update`, `uninstall` and
   `validate`, and file names wherever a file goes. Options come from the same table
-  the commands parse with, so what Tab offers is what a command accepts. fish shows
-  each option's description. fish also ships completions for Ruby's Bundler, which
-  is called `bundle` too; this replaces them.
+  the commands parse with, so what Tab offers is what a command accepts. fish and
+  PowerShell show each option's description. fish also ships completions for Ruby's
+  Bundler, which is called `bundle` too; this replaces them.
 - **`bundle validate --quiet --every 1d --timeout 5s`** in interactive shells, so a
   warning about something you installed is the first thing a new terminal says.
 
 `--no-validate` and `--no-complete` leave either half out.
 
-What decides is the shell, not the platform: Git Bash on Windows is bash, and gets the
-bash setup. There, bundle is installed as `bundle.nzip` (Windows needs the extension)
-and Git Bash runs it by its `#!` line, so the setup completes and runs it under that
-name. In general it uses whatever name bundle was installed under. cmd.exe has no
-programmable completion; PowerShell is not supported yet.
+What decides is the shell you are in, not the platform. Where the process tree can be
+read (Linux, macOS), the nearest shell in it is the answer, so pwsh started from zsh is
+pwsh, whatever `$SHELL` says. Otherwise `$SHELL` decides: Git Bash on Windows is bash.
+PowerShell on Windows sets no `$SHELL`, and is recognised by the module directory it
+adds to `PSModulePath`.
+
+- **Git Bash:** bundle is installed as `bundle.nzip` (Windows needs the extension), and
+  Git Bash runs it by its `#!` line, so the setup completes and runs it under that name.
+- **PowerShell on Windows:** a `.nzip` runs through its file association, whose output
+  PowerShell cannot capture. So the completer runs node with the installed archive
+  mounted, which is what the association runs anyway. The profile is the one
+  PowerShell itself reports as `$PROFILE`, so a Documents folder moved to OneDrive is
+  found. Only sessions someone is sitting at re-validate; a profile loaded for
+  `pwsh -Command` or a script does not.
+- **cmd.exe** has no programmable completion, so it gets nothing.
 
 **`bundle install` sets this up for you.** When it installs bundle itself, it offers to
 add the line to the startup file of the shell it is run from, asking first. The line
@@ -695,6 +706,8 @@ A preload takes no arguments, so the mount is configured through the environment
 | `BUNDLE_BLOCK` | refuse at mount time what any of these DIDs has marked bad |
 | `BUNDLE_ATTESTATIONS` | where the attestation cache is, instead of the state directory |
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file, instead of the defaults |
+| `BUNDLE_SHELL` | the shell `bundle install` sets up and `bundle shell` prints for, instead of detecting it |
+| `BUNDLE_POWERSHELL_PROFILE` | the PowerShell profile `bundle install` adds its setup to, instead of asking PowerShell |
 | `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` resolves against |
 | `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest` signs in as |
 | `BUNDLE_ATPROTO_PASSWORD` | an app password, for CI: `attest` uses it instead of signing in through the browser |
