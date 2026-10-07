@@ -1,0 +1,53 @@
+{
+  "lexicon": 1,
+  "id": "com.pipobscure.bundle.listing",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A bundle the repository's owner makes available under a name: the record key, which is also what it installs as. The record says only where the bundle is fetched from — a url, or a domain whose 'nzip:' TXT record names one, exactly one of the two. It vouches for nothing, and whatever is fetched is verified like any other download.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "subject",
+          "createdAt"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "const": "sha256:aa2e2af5c7e057ae771b9c28543044546b9107216418fbb511d1353fd55c1169",
+            "description": "The sha256 of this lexicon's NSID, the same in every listing, so that a backlink index can enumerate every listing on the network."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the bundle is fetched from: an https URL, expected to stay the same across releases. Exactly one of url and domain.",
+            "maxLength": 2048
+          },
+          "domain": {
+            "type": "string",
+            "description": "A domain whose 'nzip:<url>' TXT record says where the bundle is fetched from, so the publisher manages the URL in DNS: lowercase, no trailing dot. Exactly one of url and domain.",
+            "maxLength": 253
+          },
+          "title": {
+            "type": "string",
+            "description": "A display name; the record key stands in when it is absent.",
+            "maxLength": 640,
+            "maxGraphemes": 64
+          },
+          "description": {
+            "type": "string",
+            "description": "What the bundle is, in a sentence or two.",
+            "maxLength": 3000,
+            "maxGraphemes": 300
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the bundle was first listed, by the publisher's clock."
+          }
+        }
+      }
+    }
+  }
+}

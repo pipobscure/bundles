@@ -20,7 +20,8 @@ import { COMMANDS, OPTIONS, USAGE } from './cli.ts';
 // What it offers comes from the same places the commands do: the commands are
 // `COMMANDS`, their options are `OPTIONS` — what `parseArgs` is handed — and
 // the descriptions are the usage text's own. Values are offered where there is
-// something to offer: installed names for update/uninstall/validate, the two
+// something to offer: installed names for update/uninstall/validate, listings
+// for install, once an '@' is typed, from the local index; the two
 // verdicts, the sign-in flows, subcommands; files where a file goes, which the
 // shell completes itself.
 
@@ -37,7 +38,7 @@ export interface Completion {
     files: boolean;
 }
 
-type Hint = 'files' | 'installed' | 'skills' | readonly string[];
+type Hint = 'files' | 'installed' | 'skills' | 'listed' | readonly string[];
 
 // What a command's positional arguments are.
 const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null)> = {
@@ -45,6 +46,8 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
     // Everything after the archive belongs to the program being run.
     run: (positionals) => (positionals.length === 0 ? 'files' : null),
     update: 'installed', uninstall: 'installed', validate: 'installed',
+    // A URL or a domain is anyone's guess; a listing is in the index.
+    install: (positionals) => (positionals.length === 0 ? 'listed' : null),
     skill: 'skills',
     policy: (positionals) => (positionals.length === 0 ? ['show', 'init', 'check'] : positionals[0] === 'check' ? 'files' : null),
     lexicon: (positionals) => (positionals.length === 0 ? ['check', 'publish'] : null),
@@ -125,6 +128,8 @@ export async function complete(words: string[], current: string): Promise<Comple
     const rule = POSITIONALS[command];
     const hint = typeof rule === 'function' ? rule(positionalsOf(rest, options)) : rule;
     if (!hint) return none;
+    // Listings only once an '@' says one is meant: there may be thousands.
+    if (hint === 'listed' && !current.startsWith('@')) return none;
     return await offer(hint, '', filter);
 }
 
@@ -140,6 +145,11 @@ async function offer(hint: Hint, prefix: string, filter: (candidates: Candidate[
     if (hint === 'installed') {
         const { records } = await import('./install.ts');
         return filter(Object.values(records()).map((record) => ({ value: record.name, description: record.url })), prefix);
+    }
+    if (hint === 'listed') {
+        // The index as it is: completing never waits on the network.
+        const { listings } = await import('./listing.ts');
+        return filter(listings().map((listing) => ({ value: listing.install, description: listing.description ?? listing.title })), prefix);
     }
     if (hint === 'skills') {
         const { skills } = await import('./skill.ts');

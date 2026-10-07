@@ -18,6 +18,8 @@ import { selectable, type Review } from '../src/review.ts';
 import { loadPolicy } from '../src/policy.ts';
 import { oauthLogin } from '../src/oauth.ts';
 import { lexicons, authorityOf, checkLexicons, publishLexicons, SCHEMA_COLLECTION } from '../src/lexicon.ts';
+import * as LISTINGS from '../src/listing.ts';
+import { LISTING, SUBJECT } from '../src/listing.ts';
 import { APP, ROOT, build, collector, mount, scratch, tree } from './helpers.ts';
 
 // Attestations: proofs checked with nothing but node:crypto, a policy checked
@@ -119,6 +121,8 @@ class Account {
 const network: Account[] = [];
 const requests: string[] = [];
 let offline = false;
+/** PDS origins that are not answering. */
+const DOWN = new Set<string>();
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -262,14 +266,17 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         const bytes = DOWNLOADS.get(url.pathname);
         return bytes ? new Response(bytes) : new Response('not found', { status: 404 });
     }
-    // Constellation, as far as attestations go: who has a record at the
-    // canonical key whose `hash` field names the subject.
+    // Constellation: who has a record in `<collection>` whose `<field>` names
+    // the subject — a hundred at a time, as the real one pages.
     if (url.origin === 'https://index.test' && url.pathname === '/xrpc/blue.microcosm.links.getBacklinks') {
         const subject = url.searchParams.get('subject')!;
+        const [collection, field] = url.searchParams.get('source')!.split(':') as [string, string];
         const records = network.flatMap((each) => [...each.records.entries()]
-            .filter(([key, value]) => key.startsWith(`${COLLECTION}/`) && (value as { hash?: string }).hash === subject)
-            .map(([key]) => ({ did: each.did, collection: COLLECTION, rkey: key.slice(COLLECTION.length + 1) })));
-        return json({ total: records.length, records, cursor: null });
+            .filter(([key, value]) => key.startsWith(`${collection}/`) && (value as Record<string, unknown>)[field] === subject)
+            .map(([key]) => ({ did: each.did, collection, rkey: key.slice(collection.length + 1) })));
+        const from = Number(url.searchParams.get('cursor') ?? 0);
+        const page = records.slice(from, from + Number(url.searchParams.get('limit') ?? 100));
+        return json({ total: records.length, records: page, cursor: from + page.length < records.length ? String(from + page.length) : null });
     }
     if (url.origin === AUTH.origin) return authorizationServer(url, init);
     if (url.origin === 'https://plc.test') {
@@ -277,7 +284,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         return account ? json(account.doc()) : json({ message: 'DID not registered' }, 404);
     }
     const account = network.find((each) => each.pds === url.origin);
-    if (!account) return new Response('no such host', { status: 502 });
+    if (!account || DOWN.has(url.origin)) return new Response('no such host', { status: 502 });
     const params = url.searchParams;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
     const headers = init?.headers as Record<string, string> | undefined;
@@ -306,6 +313,9 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         case '/xrpc/com.atproto.sync.getRecord':
             return new Response(account.proof(params.get('collection')!, params.get('rkey')!),
                 { headers: { 'content-type': 'application/vnd.ipld.car' } });
+        case '/xrpc/com.atproto.sync.getLatestCommit':
+            // A revision that moves whenever anything in the repository does.
+            return json({ cid: 'bafy', rev: CRYPTO.createHash('sha256').update(JSON.stringify([...account.records.entries()].sort())).digest('hex').slice(0, 13) });
         case '/xrpc/com.atproto.repo.listRecords': {
             const prefix = `${params.get('collection')}/`;
             return json({
@@ -987,7 +997,7 @@ test('bundle attest takes several archives under one sign-in, and checks them al
 
 test('the lexicons this package carries are where their NSIDs say, under the authority DNS needs', () => {
     const docs = lexicons();
-    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION]);
+    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION, LISTING]);
     assert.equal(authorityOf(COLLECTION), 'bundle.pipobscure.com');
     assert.equal(docs[0]!.defs['main'] && (docs[0]!.defs['main'] as { type: string }).type, 'record');
 });
@@ -1007,24 +1017,24 @@ test('lexicon publish needs DNS to name the account, writes with lexicon-only ac
     assert.equal(session.how, `OAuth (repo:${SCHEMA_COLLECTION})`);
 
     // Nothing resolves to this account yet: refused, unless forced.
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority', 'no-authority']);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /_lexicon\.bundle\.pipobscure\.com has no 'did=' TXT record yet/);
     dns.set('_lexicon.bundle.pipobscure.com', account().did);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /names did:plc:.*, not did:plc:.* — publish from that account/);
 
     // Pointed at this account: unpublished, then published and current.
     dns.set('_lexicon.bundle.pipobscure.com', dana.did);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished', 'unpublished']);
     const [written] = await publishLexicons(session, { resolveTxt });
     assert.equal(written!.uri, `at://${dana.did}/${SCHEMA_COLLECTION}/${COLLECTION}`);
     const record = dana.records.get(`${SCHEMA_COLLECTION}/${COLLECTION}`) as Record<string, unknown>;
     assert.equal(record['$type'], SCHEMA_COLLECTION);
     assert.equal(record['id'], COLLECTION);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current']);
 
     // Changed since: check says so.
     dana.records.set(`${SCHEMA_COLLECTION}/${COLLECTION}`, { ...record, description: 'an older version' });
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current']);
 });
 
 // ---------------------------------------------------------------- validate ---
@@ -1090,5 +1100,289 @@ test('validate reports what was attested since the last look — once — and is
         assert.equal(entry!.state, 'invalid');
     } finally {
         writePolicy({});
+    }
+});
+
+// ---------------------------------------------------------------- listings ---
+
+const INDEX = 'https://index.test';
+
+/** A listing as a record, written straight into an account's repository. */
+function listed(url: string, extra: Record<string, unknown> = {}): Value {
+    return { $type: LISTING, subject: SUBJECT, url, createdAt: '2026-10-07T00:00:00.000Z', ...extra } as Value;
+}
+
+test('the concept hash is the sha256 of the NSID, and the lexicon pins it', () => {
+    assert.equal(SUBJECT, `sha256:${CRYPTO.createHash('sha256').update('com.pipobscure.bundle.listing').digest('hex')}`);
+    const doc = lexicons().find((each) => each.id === LISTING)!;
+    const subject = ((doc.defs['main'] as { record: { properties: Record<string, { const?: string }> } }).record.properties['subject'])!;
+    assert.equal(subject.const, SUBJECT);
+});
+
+test('a listing is read only when it is one: the subject, an https URL, a usable name, limits kept', () => {
+    assert.ok(LISTINGS.readListing(listed('https://x.test/a.nzip'), 'tool').ok);
+    const refused = (value: Value, name = 'tool') => {
+        const read = LISTINGS.readListing(value, name);
+        return read.ok ? 'ok' : read.reason;
+    };
+    assert.match(refused(listed('http://x.test/a.nzip')), /not https/);
+    // A domain in place of the URL — one or the other, never both or neither.
+    const { url: _, ...bare } = listed('https://x.test/a.nzip') as Record<string, Value>;
+    assert.ok(LISTINGS.readListing({ ...bare, domain: 'bled.pip.fyi' } as Value, 'tool').ok);
+    assert.match(refused({ ...bare } as Value), /a url or a domain, and not both/);
+    assert.match(refused(listed('https://x.test/a.nzip', { domain: 'bled.pip.fyi' })), /a url or a domain, and not both/);
+    assert.match(refused({ ...bare, domain: 'Bled.pip.fyi' } as Value), /not a domain name/);
+    assert.match(refused({ ...bare, domain: 'localhost' } as Value), /not a domain name/);
+    assert.match(refused(listed('https://x.test/a.nzip', { subject: 'sha256:00' })), /subject/);
+    assert.match(refused(listed('https://x.test/a.nzip'), 'Tool'), /not a usable name/);
+    assert.match(refused(listed('https://x.test/a.nzip'), '-tool'), /not a usable name/);
+    assert.match(refused(listed('https://x.test/a.nzip', { description: 'x'.repeat(301) })), /longer than 300/);
+    assert.match(refused({ ...(listed('https://x.test/a.nzip') as Record<string, Value>), $type: COLLECTION } as Value), /not a com\.pipobscure\.bundle\.listing/);
+
+    assert.deepEqual(LISTINGS.parseListingTarget('@alice.test/tool'), { who: 'alice.test', name: 'tool' });
+    assert.deepEqual(LISTINGS.parseListingTarget('@did:web:alice.test/tool'), { who: 'did:web:alice.test', name: 'tool' });
+    assert.equal(LISTINGS.parseListingTarget('https://alice.test/tool'), null);
+    assert.throws(() => LISTINGS.parseListingTarget('@alice.test'), /not of the form/);
+    assert.throws(() => LISTINGS.parseListingTarget('@alice.test/Tool'), /not a listing name/);
+
+    // What a person types never reaches FTS5 as syntax.
+    assert.equal(LISTINGS.matchQuery('led  "blink'), '"led"* """blink"*');
+    assert.equal(LISTINGS.matchQuery(' - * '), null);
+});
+
+test('publish writes a listing, reads it back, keeps when it was first listed; unpublish takes it down', async () => {
+    const pia = account();
+    const session = await ATPROTO.login(pia.did, pia.password);
+    const first = await LISTINGS.publish(session, { name: 'bled', url: 'https://dl.test/bled.nzip', description: 'blink an LED' },
+        { now: () => new Date('2026-01-01T00:00:00Z') });
+    assert.equal(first.uri, `at://${pia.did}/${LISTING}/bled`);
+    assert.equal(first.replaced, false);
+    assert.deepEqual(pia.records.get(`${LISTING}/bled`), {
+        $type: LISTING, subject: SUBJECT, url: 'https://dl.test/bled.nzip', description: 'blink an LED', createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const again = await LISTINGS.publish(session, { name: 'bled', url: 'https://dl.test/v2/bled.nzip', title: 'Bled' });
+    assert.equal(again.replaced, true);
+    assert.equal(again.record.createdAt, '2026-01-01T00:00:00.000Z', 'first listed then');
+    assert.equal(again.record.description, undefined, 'what is not said again is gone');
+
+    await assert.rejects(LISTINGS.publish(session, { name: 'bled', url: 'http://dl.test/bled.nzip' }), /not https/);
+    await assert.rejects(LISTINGS.publish(session, { name: 'Bled', url: 'https://dl.test/bled.nzip' }), /not a listing name/);
+
+    assert.equal(await LISTINGS.unpublish(session, 'bled'), true);
+    assert.equal(pia.records.has(`${LISTING}/bled`), false);
+    assert.equal(await LISTINGS.unpublish(session, 'bled'), false);
+});
+
+test('the index is built from the backlink index, and a sync asks again only where a repository moved', async () => {
+    const path = PATH.join(tmp, 'listings.sqlite');
+    const sync = () => LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });
+    const lea = account();
+    const max = account();
+    lea.records.set(`${LISTING}/blinker`, listed('https://dl.test/blinker.nzip', { description: 'blink an LED' }));
+    lea.records.set(`${LISTING}/plain`, listed('http://dl.test/plain.nzip'));            // not https: left out
+    lea.records.set(`${LISTING}/Upper`, listed('https://dl.test/upper.nzip'));          // not a name: left out
+    max.records.set(`${LISTING}/ledger`, listed('https://dl.test/ledger.nzip', { title: 'Ledger', description: 'double-entry books' }));
+
+    const first = await sync();
+    assert.ok(first.publishers >= 2);
+    const mine = () => LISTINGS.listings(path).filter((each) => each.did === lea.did || each.did === max.did);
+    assert.deepEqual(mine().map((each) => each.install), [`@${lea.handle}/blinker`, `@${max.handle}/ledger`]);
+    assert.equal(LISTINGS.lastSync(path)?.index, INDEX);
+
+    // The name counts for more than the description; every word must match.
+    const found = (text: string) => LISTINGS.search(text, path).filter((each) => each.did === lea.did || each.did === max.did).map((each) => each.name);
+    assert.deepEqual(found('led'), ['ledger', 'blinker']);
+    assert.deepEqual(found('led blink'), ['blinker']);
+    assert.deepEqual(found(lea.handle.split('.')[0]!), ['blinker'], 'the publisher\'s handle is searched too');
+    assert.deepEqual(found('"OR NEAR('), [], 'query syntax is just text');
+
+    // Nothing moved: one cheap question per publisher, and no listing fetched.
+    requests.length = 0;
+    const quiet = await sync();
+    assert.equal(quiet.refreshed, 0);
+    assert.equal(requests.filter((line) => line.endsWith('/com.atproto.repo.listRecords')).length, 0);
+    assert.ok(requests.includes(`GET ${lea.pds}/xrpc/com.atproto.sync.getLatestCommit`));
+
+    // An edit leaves the backlink as it was; the revision is what notices.
+    max.records.set(`${LISTING}/ledger`, listed('https://dl.test/ledger.nzip', { description: 'accounts, kept straight' }));
+    requests.length = 0;
+    const edited = await sync();
+    assert.equal(edited.refreshed, 1);
+    assert.deepEqual(requests.filter((line) => line.endsWith('/com.atproto.repo.listRecords')), [`GET ${max.pds}/xrpc/com.atproto.repo.listRecords`]);
+    assert.deepEqual(found('accounts'), ['ledger']);
+    assert.deepEqual(found('books'), []);
+
+    // A PDS that does not answer keeps what the index had for it.
+    DOWN.add(max.pds);
+    max.records.set(`${LISTING}/ledger`, listed('https://dl.test/ledger.nzip'));
+    try {
+        const failing = await sync();
+        assert.deepEqual(failing.failed.map((each) => each.did), [max.did]);
+        assert.deepEqual(found('accounts'), ['ledger']);
+    } finally {
+        DOWN.delete(max.pds);
+    }
+
+    // Everything taken down: the backlink index stops naming lea, and she goes.
+    lea.records.clear();
+    const gone = await sync();
+    assert.ok(gone.removed >= 1);
+    assert.deepEqual(mine().map((each) => each.name), ['ledger']);
+
+    // A handle that no longer checks out is shown as the DID, once it is checked again.
+    const liar = async (name: string) => (name === `_atproto.${max.handle}` ? [['did=did:plc:zzzzzzzzzzzzzzzzzzzzzzzz']] : resolveTxt(name));
+    await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt: liar, handleAge: 0 });
+    assert.deepEqual(mine().map((each) => each.install), [`@${max.did}/ledger`]);
+
+    // A sync that cannot start leaves the index as it was.
+    offline = true;
+    try {
+        await assert.rejects(sync(), /fetch failed/);
+    } finally {
+        offline = false;
+    }
+    assert.deepEqual(mine().map((each) => each.name), ['ledger']);
+});
+
+test('install @account/name follows the listing, verified, and update follows it when it moves', async () => {
+    const ned = account();
+    const session = await ATPROTO.login(ned.did, ned.password);
+    const v1 = await version();
+    await attestAs(ned, v1, 'published');
+    DOWNLOADS.set('/listed/one.nzip', FS.readFileSync(v1));
+    await LISTINGS.publish(session, { name: 'listed', url: 'https://dl.test/listed/one.nzip' });
+
+    const record = await install(`@${ned.handle}/listed`, { network: { resolveTxt }, decide: async (review) => selectable(review) });
+    assert.equal(record.name, named('listed'), 'the listing names it, not the URL');
+    assert.equal(record.source, `at://${ned.did}/${LISTING}/listed`, 'remembered by DID, not by handle');
+    assert.equal(record.url, 'https://dl.test/listed/one.nzip');
+
+    // The publisher moves releases: the listing says so, and update follows.
+    const v2 = await version();
+    await attestAs(ned, v2, 'published');
+    DOWNLOADS.set('/listed/two.nzip', FS.readFileSync(v2));
+    await LISTINGS.publish(session, { name: 'listed', url: 'https://dl.test/listed/two.nzip' });
+    const [moved] = await update(named('listed'));
+    assert.equal(moved!.state, 'updated');
+    assert.equal(moved!.record.url, 'https://dl.test/listed/two.nzip');
+    assert.equal(moved!.record.sha256, CRYPTO.createHash('sha256').update(FS.readFileSync(v2)).digest('hex'));
+
+    // Taken down: the install keeps checking the URL it last named, and says why.
+    await LISTINGS.unpublish(session, 'listed');
+    const logged: string[] = [];
+    const [kept] = await update(named('listed'), { log: (line) => logged.push(line) });
+    assert.equal(kept!.state, 'unchanged');
+    assert.ok(logged.some((line) => /no longer listed — checking the URL it last named/.test(line)), logged.join('\n'));
+
+    // A listing that is not there, or not https, is refused before anything is fetched.
+    await assert.rejects(install(`@${ned.did}/nothing`), /has no listing called 'nothing'/);
+    ned.records.set(`${LISTING}/plain`, listed('http://dl.test/listed/one.nzip'));
+    await assert.rejects(install(`@${ned.did}/plain`), /not https/);
+
+    (await import('../src/install.ts')).uninstall(`@${ned.did}/listed`);
+    assert.equal(records()[named('listed')], undefined);
+});
+
+test('a listing can name a domain, whose TXT record names the URL — and an install follows both', async () => {
+    const dot = account();
+    const session = await ATPROTO.login(dot.did, dot.password);
+    const v1 = await version();
+    await attestAs(dot, v1, 'published');
+    DOWNLOADS.set('/dns/one.nzip', FS.readFileSync(v1));
+
+    const written = await LISTINGS.publish(session, { name: 'viadns', domain: 'viadns.example', description: 'managed in DNS' });
+    assert.equal(written.record.domain, 'viadns.example');
+    assert.equal(written.record.url, undefined);
+    await assert.rejects(LISTINGS.publish(session, { name: 'viadns', domain: 'Not A Domain' }), /not a domain name/);
+
+    // The URL is the TXT record's to say, so moving it is a DNS change only.
+    let txt = 'nzip:https://dl.test/dns/one.nzip';
+    const alias = async (name: string) => {
+        assert.equal(name, 'viadns.example');
+        return [[txt]];
+    };
+    const record = await install(`@${dot.did}/viadns`, { resolveTxt: alias, decide: async (review) => selectable(review) });
+    assert.equal(record.name, named('viadns'), 'the listing names it, not the domain');
+    assert.equal(record.source, `at://${dot.did}/${LISTING}/viadns`);
+    assert.equal(record.url, 'https://dl.test/dns/one.nzip');
+
+    const v2 = await version();
+    await attestAs(dot, v2, 'published');
+    DOWNLOADS.set('/dns/two.nzip', FS.readFileSync(v2));
+    txt = 'nzip:https://dl.test/dns/two.nzip';
+    const [moved] = await update(named('viadns'), { resolveTxt: alias });
+    assert.equal(moved!.state, 'updated');
+    assert.equal(moved!.record.url, 'https://dl.test/dns/two.nzip');
+    assert.equal(moved!.record.source, `at://${dot.did}/${LISTING}/viadns`, 'still remembered as the listing');
+
+    // The index carries the domain, for search to show.
+    const path = PATH.join(tmp, 'domains.sqlite');
+    await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });
+    const shown = LISTINGS.listings(path).find((each) => each.did === dot.did)!;
+    assert.deepEqual({ domain: shown.domain, url: shown.url }, { domain: 'viadns.example', url: undefined });
+
+    (await import('../src/install.ts')).uninstall(named('viadns'));
+});
+
+test('bundle publish, search, listings and unpublish, end to end', async () => {
+    const ola = account();
+    const archive = await version();
+    DOWNLOADS.set('/cli/searchable.nzip', FS.readFileSync(archive));
+    DOWNLOADS.set('/cli/junk.nzip', Buffer.from('not an archive'));
+    process.env['BUNDLE_ATPROTO_PASSWORD'] = ola.password;
+    try {
+        const junk = collector();
+        assert.equal(await main(['publish', '--as', ola.did, 'junk', 'https://dl.test/cli/junk.nzip'], junk), 70);
+        assert.match(junk.stderr.join('\n'), /not an archive/);
+        assert.equal(await main(['publish', '--as', ola.did, 'plain', 'http://dl.test/cli/searchable.nzip'], collector()), 70);
+
+        const published = collector();
+        assert.equal(await main(['publish', '--as', ola.did, '--description', 'a quite searchable thing', 'searchable',
+            'https://dl.test/cli/searchable.nzip'], published), 0, published.stderr.join('\n'));
+        assert.match(published.stdout.join('\n'), new RegExp(`published searchable as ${ola.did}`));
+        assert.match(published.stderr.join('\n'), /it is unsigned/);
+
+        const searched = collector();
+        assert.equal(await main(['search', '--refresh', 'quite', 'search'], searched), 0, searched.stderr.join('\n'));
+        assert.match(searched.stderr.join('\n'), /syncing the listing index from https:\/\/index\.test/);
+        assert.match(searched.stdout.join('\n'), new RegExp(`^@[^ ]+/searchable +a quite searchable thing$`, 'm'));
+
+        // Fresh enough: no sync. Offline: none either, and the same answer.
+        const again = collector();
+        assert.equal(await main(['search', '--json', 'searchable'], again), 0);
+        assert.doesNotMatch(again.stderr.join('\n'), /syncing/);
+        const json = JSON.parse(again.stdout.join('\n')) as { name: string; did: string; url: string }[];
+        assert.deepEqual(json.filter((each) => each.did === ola.did).map(({ name, url }) => ({ name, url })),
+            [{ name: 'searchable', url: 'https://dl.test/cli/searchable.nzip' }]);
+        offline = true;
+        try {
+            const cached = collector();
+            assert.equal(await main(['listings', '--offline'], cached), 0);
+            assert.match(cached.stdout.join('\n'), /\/searchable /);
+            // A sync that fails answers from the index, and says how old it is.
+            const stale = collector();
+            assert.equal(await main(['listings', '--refresh'], stale), 0);
+            assert.match(stale.stderr.join('\n'), /could not sync .* the index is from/);
+        } finally {
+            offline = false;
+        }
+
+        // Tab offers listings from the index once an '@' says one is meant.
+        const { complete } = await import('../src/completion.ts');
+        const offered = (await complete(['install'], '@')).candidates;
+        assert.ok(offered.some((each) => /\/searchable$/.test(each.value) && each.description === 'a quite searchable thing'), JSON.stringify(offered));
+        assert.deepEqual((await complete(['install'], '')).candidates, []);
+
+        assert.equal(await main(['unpublish', '--as', ola.did, 'searchable'], collector()), 0);
+        assert.equal(await main(['unpublish', '--as', ola.did, 'searchable'], collector()), 1);
+        const after = collector();
+        assert.equal(await main(['search', '--refresh', 'searchable'], after), 0);
+        assert.doesNotMatch(after.stdout.join('\n'), /\/searchable/);
+        assert.match(after.stderr.join('\n'), /nothing listed matches/);
+        assert.equal(await main(['search', '--refresh', '--offline', 'x'], collector()), 70);
+    } finally {
+        offline = false;
+        delete process.env['BUNDLE_ATPROTO_PASSWORD'];
     }
 });

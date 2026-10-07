@@ -46,6 +46,7 @@
     "./oidc": "./dist/oidc.js",
     "./oauth": "./dist/oauth.js",
     "./lexicon": "./dist/lexicon.js",
+    "./listing": "./dist/listing.js",
     "./package.json": "./package.json"
   },
   "files": [

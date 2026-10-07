@@ -30,8 +30,12 @@ commands:
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   attest    vouch for an archive from an atproto account, or withdraw that
+  publish   list an archive's URL under a name, so others can find and install it
+  unpublish take a listing down again
   run       mount a signed archive and run it
-  install   fetch a signed archive from a URL or domain and put it on your PATH
+  search    search the listed archives by name, description and publisher
+  listings  every listed archive, from a local index kept in step with the network
+  install   fetch a signed archive from a URL, domain or listing and put it on your PATH
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   validate  re-check installs, and say what has been attested since — at startup
@@ -39,7 +43,7 @@ commands:
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root and the cached attestations
   policy    show the rules this machine installs by, and where they come from
-  lexicon   show, check or publish the atproto lexicons attestations are written in
+  lexicon   show, check or publish the atproto lexicons for attestations and listings
   skill     install this package's bundle-auditing skill into a project
   shell     print what to load at shell start: Tab completion, and validate
 
@@ -134,6 +138,36 @@ attest options:                     usage: attest [options] <archive>...
   the archive's whole-file hash — the hash a signature covers. The archive is
   checked first: one whose bytes or signature do not hold together is refused.
 
+publish options:                    usage: publish [options] <name> <url | domain>
+      --as <handle | did>  the account to publish from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --title <text>    a display name (default: the name)
+      --description <text>  what it is, in a sentence or two
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+
+  writes com.pipobscure.bundle.listing/<name> to the account's repository,
+  naming <url>, so 'bundle install @<handle>/<name>' fetches it and 'bundle
+  search' finds it. The listing says where and nothing else: point it at a URL
+  that stays the same across releases (a GitHub 'releases/latest/download/…'
+  URL does), and a release is just whatever the URL serves next. Or name a
+  domain instead, whose 'nzip:' TXT record names the URL (see 'install'): the
+  listing then follows whatever that record says, so the URL stays yours to
+  manage in DNS. Either way the archive is fetched first, and refused unless
+  it is https and an archive whose bytes hold together. <name> is lowercase
+  letters, digits and '-', and is what it installs as. Publishing it again
+  replaces it.
+
+unpublish options:                  usage: unpublish [options] <name>
+      --as <handle | did>  the account the listing is in
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  deletes the listing. Installs made from it keep checking the URL it last
+  named.
+
 run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
@@ -181,7 +215,27 @@ sea options:                        usage: sea [options] [archive]
   the signing options are the same as 'sign': sigstore by default, or --key
   with --chain against a certificate authority of your own
 
-install options:                    usage: install [options] [url | domain]
+search options:                     usage: search [options] <words>...
+      --refresh         sync the index first, however recent it is
+      --offline         answer from the index as it is, without the network
+      --json            print the results as JSON
+
+  every word must match, as the start of a word in the name, title,
+  description or publisher's handle; the best matches come first. The first
+  column is what 'bundle install' takes. Searching is local, against an index
+  in the state directory: it is synced first when it is more than an hour
+  old — every listing found through the backlink index the policy names
+  ('discovery'), and only publishers whose repository changed asked again.
+  If that fails, the index answers as it is.
+
+listings options:                   usage: listings [options]
+      --refresh         sync the index first, however recent it is
+      --offline         answer from the index as it is, without the network
+      --json            print the listings as JSON
+
+  every listing in the index, synced first as for 'search'.
+
+install options:                    usage: install [options] [url | domain | @account/name]
   -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -220,6 +274,15 @@ install options:                    usage: install [options] [url | domain]
   and install it as 'npm'. The record only says where; the archive is
   verified exactly as a url's would be.
 
+  '@<handle or did>/<name>' installs a listing (see 'publish' and 'search'):
+  the record is fetched from the publisher's own PDS and verified, the archive
+  is fetched from the URL it names — or that its domain's TXT record names —
+  and installed as <name>. Like an alias, it
+  says only where; the archive is verified exactly as a url's would be.
+
+  how it was installed — url, domain or listing — is remembered, and 'update'
+  asks it again, so a listing or TXT record that moves moves the install too.
+
   with neither, this package installs itself from its own published release,
   whose publish workflow's signature is accepted without asking — so
   'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
@@ -243,8 +306,9 @@ update options:                     usage: update [options] [name]
       --no-discover     do not ask the backlink index who has attested it
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
 
-  with no name, every install is checked. Each is a conditional request with
-  the recorded ETag, so nothing is downloaded twice. A new version is reviewed
+  with no name, every install is checked. A domain or listing it was installed
+  from is asked again where the archive is now; then each is a conditional
+  request with the recorded ETag, so nothing is downloaded twice. A new version is reviewed
   like an install, against what has been accepted for it so far: a new signer,
   or different attestations, is a question rather than a failure — publishers
   move, and auditors do not review every release. Only flags and the policy
@@ -309,7 +373,7 @@ lexicon options:                    usage: lexicon [check | publish] [options]
   writes each as a com.atproto.lexicon.schema record from --as, signing in
   with access to that collection only, and reads it back.
 
-uninstall options:                  usage: uninstall [name | url | domain]
+uninstall options:                  usage: uninstall [name | url | domain | @did/name]
 
   deletes the file and forgets the record. With no argument it removes this
   package's own install — what 'bundle install' left behind. The .nzip
@@ -397,7 +461,8 @@ export const UNDECIDED = 4;
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, attest, run, install, update, installed, validate, uninstall, sea, trust, policy: policyCommand, lexicon, skill, shell,
+    create, sign, audit, verify: check, attest, publish, unpublish, run, search, listings, install, update, installed, validate, uninstall,
+    sea, trust, policy: policyCommand, lexicon, skill, shell,
 };
 
 /**
@@ -972,7 +1037,7 @@ async function installed(args: string[], io: Console): Promise<number> {
     if (values.json) {
         io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
             name: record.name, path, state, sha256, reason,
-            url: record.url, identity: record.identity, issuer: record.issuer,
+            source: INSTALL.sourceOf(record), url: record.url, identity: record.identity, issuer: record.issuer,
             attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record),
             warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
         })), null, 2));
@@ -982,6 +1047,8 @@ async function installed(args: string[], io: Console): Promise<number> {
         for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
             io.out(`  at:     ${path}`);
+            const source = INSTALL.sourceOf(record);
+            if (source !== record.url) io.out(`  source: ${source}`);
             io.out(`  from:   ${record.url}`);
             if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
             else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
@@ -1001,7 +1068,167 @@ async function installed(args: string[], io: Console): Promise<number> {
     return worst;
 }
 
-// The lexicons attestations are written in: which there are, where each should
+// List an archive under a name, from an atproto account: a record naming its
+// URL, which is how others find it and what `install @<account>/<name>` fetches.
+async function publish(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.publish });
+    const [name, where] = positionals;
+    if (!name || !where || positionals.length > 2) throw new Error('publish: a name, and a URL or a domain, are required');
+    const LISTING = await import('./listing.ts');
+    if (!LISTING.isName(name)) throw new Error(`publish: '${name}' is not a listing name (lowercase letters, digits and '-', at most 64)`);
+
+    // A URL is listed as it is. A domain is listed instead of the URL its
+    // `nzip:` record names, so the publisher keeps managing that in DNS.
+    let url: string;
+    let domain: string | undefined;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(where)) {
+        if (!/^https:\/\//i.test(where)) throw new Error(`publish: '${where}' is not an https URL`);
+        url = where;
+    } else {
+        domain = where.replace(/\.$/, '').toLowerCase();
+        if (!LISTING.isListedDomain(domain)) throw new Error(`publish: '${where}' is neither an https URL nor a domain name`);
+        const INSTALL = await import('./install.ts');
+        url = (await INSTALL.resolveAlias(domain)).url;
+        io.err(`* ${domain} names ${url}`);
+    }
+
+    // Before anyone signs in: a listing that points at nothing, or at
+    // something that is not an archive, is a typo nobody should publish.
+    io.err(`* fetching ${url}`);
+    const response = await fetch(url, { redirect: 'follow' });
+    if (!response.ok) throw new Error(`publish: ${url}: ${response.status} ${response.statusText}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!wholeFileHash(bytes)) throw new Error(`publish: ${url} is not an archive this tool can install`);
+    const res = await verifyBundle(bytes, { roots: values.root ?? [], deep: true, integrity: true });
+    if (res.state === 'invalid') {
+        io.err(`error: refusing to publish ${url}: ${res.reason}`);
+        return STATES.invalid.code;
+    }
+    io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
+    if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
+
+    const session = await signIn('publish', values, io, `atproto repo:${LISTING.LISTING}`);
+    try {
+        const written = await LISTING.publish(session, {
+            name, ...(domain ? { domain } : { url }), title: values.title, description: values.description,
+        });
+        io.out(`${written.replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
+        io.out(`  ${written.uri}`);
+        io.err(`  install it with: bundle install @${session.handle ?? session.did}/${name}`);
+    } finally {
+        await session.end?.();
+    }
+    return 0;
+}
+
+// Take a listing down.
+async function unpublish(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.unpublish });
+    const [name] = positionals;
+    if (!name || positionals.length > 1) throw new Error('unpublish: a name is required');
+    const LISTING = await import('./listing.ts');
+    const session = await signIn('unpublish', values, io, `atproto repo:${LISTING.LISTING}`);
+    try {
+        if (!await LISTING.unpublish(session, name)) {
+            io.err(`error: ${session.did} has no listing called '${name}'`);
+            return 1;
+        }
+        io.out(`unpublished ${name} from ${session.did}`);
+    } finally {
+        await session.end?.();
+    }
+    return 0;
+}
+
+// Sign in to write to an account's repository, with access to `scope` only
+// where the server supports that: an app password for CI, OAuth otherwise.
+async function signIn(command: string, values: { as?: string | undefined; 'password-file'?: string | undefined }, io: Console, scope: string) {
+    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
+    if (!identifier) throw new Error(`${command}: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER`);
+    // Never from an argument: a command line is visible to every process on
+    // the machine, and ends up in shell history.
+    const password = values['password-file']
+        ? FS.readFileSync(values['password-file'], 'utf-8').trim()
+        : process.env['BUNDLE_ATPROTO_PASSWORD'];
+    const ATPROTO = await import('./atproto.ts');
+    const OAUTH = await import('./oauth.ts');
+    const session = password
+        ? await ATPROTO.login(identifier, password)
+        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open, scope });
+    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+    return Object.assign(session, { handle: identifier.startsWith('did:') ? undefined : identifier.replace(/^@/, '').toLowerCase() });
+}
+
+// Search the listings: the local index, synced first when it is stale.
+async function search(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.search });
+    const text = positionals.join(' ');
+    const LISTING = await import('./listing.ts');
+    if (!LISTING.matchQuery(text)) throw new Error('search: say what to search for');
+    await freshIndex(values, io);
+    const found = LISTING.search(text);
+    printListings(found, Boolean(values.json), io);
+    if (!found.length && !values.json) io.err(`nothing listed matches '${text}'`);
+    return 0;
+}
+
+// Every listing in the local index, synced first when it is stale.
+async function listings(args: string[], io: Console): Promise<number> {
+    const { values } = parseArgs({ args, options: OPTIONS.listings });
+    const LISTING = await import('./listing.ts');
+    await freshIndex(values, io);
+    const found = LISTING.listings();
+    printListings(found, Boolean(values.json), io);
+    if (!found.length && !values.json) io.err('nothing listed');
+    return 0;
+}
+
+// Sync the listing index if it is older than an hour, or built from some other
+// backlink index, or --refresh says so. A sync that fails leaves the index to
+// answer as it is, and says how old that is; only no index at all is an error.
+async function freshIndex(values: { refresh?: boolean | undefined; offline?: boolean | undefined }, io: Console): Promise<void> {
+    const LISTING = await import('./listing.ts');
+    const POLICY = await import('./policy.ts');
+    if (values.refresh && values.offline) throw new Error('--refresh and --offline are alternatives');
+    const last = LISTING.lastSync();
+    if (values.offline) {
+        if (!last) throw new Error('there is no listing index yet — run this without --offline once');
+        return;
+    }
+    const index = POLICY.loadPolicy().discovery;
+    const stale = (why: string) => {
+        if (!last) throw new Error(`no listing index, and ${why}`);
+        io.err(`! ${why} — the index is from ${last.at.toISOString()}`);
+    };
+    if (!index) return stale("discovery is turned off by the policy ('bundle policy')");
+    if (!values.refresh && last && last.index === index && Date.now() - last.at.getTime() < LISTING.INDEX_AGE) return;
+
+    io.err(`* syncing the listing index from ${index}`);
+    try {
+        const report = await LISTING.syncIndex({ index });
+        io.err(`  ${report.listings} listing${report.listings === 1 ? '' : 's'} from ${report.publishers} publisher${report.publishers === 1 ? '' : 's'}` +
+            `${report.refreshed ? `, ${report.refreshed} refreshed` : ''}${report.removed ? `, ${report.removed} gone` : ''}`);
+        for (const { did, error } of report.failed) io.err(`  ! ${did}: ${error} — kept what the index had`);
+    } catch (err) {
+        stale(`could not sync (${message(err)})`);
+    }
+}
+
+function printListings(found: import('./listing.ts').Listing[], json: boolean, io: Console): void {
+    if (json) {
+        io.out(JSON.stringify(found.map(({ install, did, handle, name, title, description, url, domain, createdAt }) => ({
+            install, did, handle, name, title, description, url, domain, createdAt,
+        })), null, 2));
+        return;
+    }
+    const width = Math.max(0, ...found.map((each) => each.install.length));
+    for (const each of found) {
+        const about = [each.title && each.title !== each.name ? each.title : undefined, each.description].filter(Boolean).join(' — ');
+        io.out(about ? `${each.install.padEnd(width)}  ${about}` : each.install);
+    }
+}
+
+// The lexicons attestations and listings are written in: which there are, where each should
 // be published, whether it is, and publishing them.
 async function lexicon(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
@@ -1571,7 +1798,28 @@ export const OPTIONS = {
         revoke:          { type: 'boolean' },
         root:            { type: 'string', short: 'r', multiple: true },
     },
+    publish: {
+        as:              { type: 'string' },
+        title:           { type: 'string' },
+        description:     { type: 'string' },
+        'password-file': { type: 'string' },
+        root:            { type: 'string', short: 'r', multiple: true },
+    },
+    unpublish: {
+        as:              { type: 'string' },
+        'password-file': { type: 'string' },
+    },
     run: RUN_OPTIONS,
+    search: {
+        refresh: { type: 'boolean' },
+        offline: { type: 'boolean' },
+        json:    { type: 'boolean' },
+    },
+    listings: {
+        refresh: { type: 'boolean' },
+        offline: { type: 'boolean' },
+        json:    { type: 'boolean' },
+    },
     install: {
         ...INSTALL_OPTIONS,
         name:      { type: 'string', short: 'n' },

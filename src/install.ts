@@ -79,9 +79,15 @@ export function self(): { url: string; identity: string; issuer: string } {
 export interface InstallRecord {
     /** The file name it was installed as, which is the key in the record. */
     name: string;
-    /** Where it was fetched from, and where an update refetches. */
+    /**
+     * How it was installed, which is what an update asks again: a URL; a
+     * domain, whose `nzip:` TXT record names the URL; or the `at://` address of
+     * a listing, which does. Absent in older records — see `sourceOf()`.
+     */
+    source?: string | undefined;
+    /** Where it was last fetched from — what the source named then. */
     url: string;
-    /** The domain whose `nzip:` TXT record named the URL, when it was installed by one. */
+    /** Older records: the domain whose `nzip:` record named the URL. Read as the source. */
     alias?: string | undefined;
     /** The server's ETag, for the conditional request an update makes. */
     etag?: string | undefined;
@@ -225,8 +231,11 @@ export function records(): Record<string, InstallRecord> {
  * Fetch `target`, verify what comes back, and put it on the PATH under the name
  * the server suggests — `Content-Disposition`, or the last segment of the URL.
  *
- * `target` is a URL, or a bare domain whose `nzip:` TXT record names one — see
- * `resolveAlias()`. The record's name is used then, rather than the server's.
+ * `target` is a URL; a bare domain whose `nzip:` TXT record names one — see
+ * `resolveAlias()`; or a listing, `@<handle or did>/<name>` — see listing.ts.
+ * The alias's or the listing's name is used then, rather than the server's.
+ * Which of these it was is remembered, and an update asks it again, so a
+ * publisher who moves their releases moves every install with them.
  *
  * Nothing is written outside a temporary file until the signature checks out,
  * and the temporary file is removed if it does not.
@@ -235,23 +244,14 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const log = options.log ?? (() => {});
     const dir = options.dir ? PATH.resolve(options.dir) : installDir();
 
-    let url = target;
-    let alias: { domain: string; name: string } | undefined;
-    if (!hasScheme(target)) {
-        if (!isDomain(target)) throw new Error(`'${target}' is neither a URL nor a domain name`);
-        const resolved = await resolveAlias(target, options.resolveTxt);
-        log(`* ${resolved.domain} names ${resolved.name} at ${resolved.url}`);
-        url = resolved.url;
-        alias = resolved;
-    }
-
+    const { source, url, name: named } = await locate(target, options, log);
     log(`* fetching ${url}`);
     const response = await fetch(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
 
-    const name = options.name ?? (alias ? alias.name : fileName(response, url));
+    const name = options.name ?? named ?? fileName(response, url);
     const bytes = Buffer.from(await response.arrayBuffer());
-    const record = await place(bytes, { name, dir, url, alias: alias?.domain, response, options, log });
+    const record = await place(bytes, { name, dir, source, url, response, options, log });
 
     log(`* installed ${PATH.join(dir, name)}`);
     if (!onPath(dir)) {
@@ -294,35 +294,51 @@ export async function update(name: string | undefined, options: InstallOptions =
     return results;
 }
 
-// One install's update: a conditional fetch, and — if something new came back —
-// the same review an install gets, against what this install has accepted.
+// One install's update: ask the source where it is now, make a conditional
+// fetch, and — if something new came back — give it the same review an install
+// gets, against what this install has accepted.
 async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult> {
-    log(`* ${previous.name}: checking ${previous.url}`);
+    const source = sourceOf(previous);
+    let url = previous.url;
+    if (source !== previous.url) {
+        // A source that cannot be asked, or a listing taken down, is not the
+        // end of the install: the URL it last named is checked instead. The
+        // bytes are verified either way, so falling back trusts nothing new.
+        try {
+            const located = await locate(source, options, () => {});
+            if (located.url !== previous.url) log(`* ${previous.name}: ${source} now names ${located.url}`);
+            url = located.url;
+        } catch (err) {
+            log(`* ${previous.name}: ! ${message(err)} — checking the URL it last named`);
+        }
+    }
+    log(`* ${previous.name}: checking ${url}`);
 
+    // The validators belong to the URL they came from.
     const headers: Record<string, string> = {};
-    if (previous.etag) headers['if-none-match'] = previous.etag;
-    else if (previous.lastModified) headers['if-modified-since'] = previous.lastModified;
+    if (url === previous.url && previous.etag) headers['if-none-match'] = previous.etag;
+    else if (url === previous.url && previous.lastModified) headers['if-modified-since'] = previous.lastModified;
 
-    const response = await fetch(previous.url, { headers, redirect: 'follow' });
+    const response = await fetch(url, { headers, redirect: 'follow' });
     if (response.status === 304) {
         log(`  unchanged`);
         return { record: previous, state: 'unchanged' };
     }
-    if (!response.ok) throw new Error(`${previous.url}: ${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
 
     const bytes = Buffer.from(await response.arrayBuffer());
     // A server with no caching headers answers 200 to everything; compare
     // the bytes rather than reinstalling an identical archive.
     if (digest(bytes) === previous.sha256) {
         log(`  unchanged`);
-        return { record: remember({ ...previous, ...validators(response), at: previous.at }), state: 'unchanged' };
+        return { record: remember({ ...previous, source, url, ...validators(response), at: previous.at }), state: 'unchanged' };
     }
 
     const record = await place(bytes, {
         name: previous.name,
         dir: previous.dir,
-        url: previous.url,
-        alias: previous.alias,
+        source,
+        url,
         response,
         log,
         options,
@@ -387,6 +403,39 @@ export async function resolveAlias(
     // The first label is the name: `npm.npmjs.org` installs `npm`. A hostname
     // label is letters, digits and hyphens, so it is a file name by construction.
     return { domain: host, name: commandName(host.split('.')[0]!), url: url.href };
+}
+
+/** How an install was made — what an update asks again. Older records said less. */
+export function sourceOf(record: InstallRecord): string {
+    return record.source ?? record.alias ?? record.url;
+}
+
+/**
+ * Where a source says to fetch from now: a URL is itself; a domain is what its
+ * `nzip:` record names; a listing — `@<handle or did>/<name>` as typed, or the
+ * `at://` address it is remembered by — is what the record, fetched from the
+ * publisher's PDS and verified, names: a URL, or a domain whose `nzip:` record
+ * names one. `source` is what is remembered: a
+ * listing by its address, with the DID in it rather than a handle, since
+ * handles change hands. `name` is what it installs as, when the source says.
+ */
+async function locate(target: string, options: InstallOptions, log: (line: string) => void): Promise<{ source: string; url: string; name?: string | undefined }> {
+    if (target.startsWith('@') || target.startsWith('at://')) {
+        const LISTING = await import('./listing.ts');
+        const found = target.startsWith('@')
+            ? await LISTING.resolveListing(target, options.network)
+            : await LISTING.followListing(target, options.network);
+        // A listing that names a domain leaves the URL to the domain's TXT
+        // record — two hops, both asked again on every update.
+        const url = found.record.domain ? (await resolveAlias(found.record.domain, options.resolveTxt)).url : found.record.url!;
+        log(`* ${target} is ${found.uri}, ${found.record.domain ? `whose domain ${found.record.domain} names ` : 'at '}${url}`);
+        return { source: found.uri, url, name: commandName(found.name) };
+    }
+    if (hasScheme(target)) return { source: target, url: target };
+    if (!isDomain(target)) throw new Error(`'${target}' is neither a URL, a domain name, nor a listing (@<handle>/<name>)`);
+    const resolved = await resolveAlias(target, options.resolveTxt);
+    log(`* ${resolved.domain} names ${resolved.name} at ${resolved.url}`);
+    return { source: resolved.domain, url: resolved.url, name: resolved.name };
 }
 
 function hasScheme(target: string): boolean {
@@ -644,8 +693,10 @@ export function selfName(): string {
     return commandName('bundle.nzip');
 }
 
-// Which install is meant: the one named, the one fetched from that URL, the one
-// installed by that domain's alias, or — when nothing is said — this package's own.
+// Which install is meant: the one named, the one installed from that URL,
+// domain or listing, or — when nothing is said — this package's own. A listing
+// is matched by its address, or as `@<did>/<name>`; a handle would need the
+// network to mean anything.
 function resolve(all: Record<string, InstallRecord>, which: string | undefined): string {
     const installed = Object.keys(all);
     const known = installed.length ? `installed: ${installed.sort().join(', ')}` : 'nothing is installed';
@@ -655,14 +706,21 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
         if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
         return mine;
     }
+    if (which.startsWith('@')) {
+        const slash = which.lastIndexOf('/');
+        const uri = `at://${which.slice(1, slash)}/com.pipobscure.bundle.listing/${which.slice(slash + 1)}`;
+        const found = installed.find((name) => sourceOf(all[name]!) === uri);
+        if (!found) throw new Error(`nothing installed from ${which} — ${known}`);
+        return found;
+    }
     if (hasScheme(which)) {
-        const found = installed.find((name) => all[name]!.url === which);
+        const found = installed.find((name) => all[name]!.url === which || sourceOf(all[name]!) === which);
         if (!found) throw new Error(`nothing installed from ${which} — ${known}`);
         return found;
     }
     if (all[which]) return which;
     const domain = which.replace(/\.$/, '').toLowerCase();
-    const aliased = installed.find((name) => all[name]!.alias === domain);
+    const aliased = installed.find((name) => sourceOf(all[name]!) === domain);
     if (aliased) return aliased;
     throw new Error(`nothing installed as '${which}' — ${known}`);
 }
@@ -671,11 +729,11 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
 
 // Review, decide, then move into place. The order is the whole point: an
 // archive nobody accepted never exists at its destination, not even briefly.
-async function place(bytes: Buffer, { name, dir, url, alias, response, options, log, previous }: {
+async function place(bytes: Buffer, { name, dir, source, url, response, options, log, previous }: {
     name: string;
     dir: string;
+    source: string;
     url: string;
-    alias?: string | undefined;
     response: Response;
     options: InstallOptions;
     log: (line: string) => void;
@@ -746,8 +804,8 @@ async function place(bytes: Buffer, { name, dir, url, alias, response, options, 
         .map((each) => { const e = each as { did: string; kind?: string | undefined }; return formatAttester({ did: e.did, kind: e.kind }); });
     return remember({
         name,
+        source,
         url,
-        alias,
         ...validators(response),
         identity: result.identity,
         issuer: result.issuer,

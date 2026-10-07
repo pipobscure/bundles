@@ -63,9 +63,12 @@ const served: { bytes: Buffer; etag: string; disposition?: string | undefined } 
     etag: '"one"',
 };
 let hits = 0;
+/** The paths asked for, in order. */
+const paths: string[] = [];
 
 const server: Server = createServer((req, res) => {
     hits += 1;
+    paths.push(req.url ?? '');
     if (req.headers['if-none-match'] === served.etag) {
         res.writeHead(304).end();
         return;
@@ -380,8 +383,37 @@ test('install takes a domain, and uninstall finds it again by that domain', asyn
         assert.deepEqual(looked, ['mytool.example']);
         assert.equal(record.name, installed('mytool'), 'the domain names it, not the server');
         assert.equal(record.url, 'https://mytool.example/dl/tool.nzip');
-        assert.equal(record.alias, 'mytool.example');
+        assert.equal(record.source, 'mytool.example', 'how it was installed, not only where from');
         assert.deepEqual(FS.readFileSync(PATH.join(BIN, record.name)), first);
+
+        // The domain moves its releases: update asks the TXT record again,
+        // and follows it, rather than refetching the URL it last named.
+        served.bytes = second;
+        served.etag = '"moved"';
+        paths.length = 0;
+        const [moved] = await update(record.name, {
+            ...options,
+            resolveTxt: async () => [['nzip:/elsewhere/tool.nzip']],
+        });
+        assert.equal(moved!.state, 'updated');
+        assert.deepEqual(paths, ['/elsewhere/tool.nzip']);
+        assert.equal(moved!.record.url, 'https://mytool.example/elsewhere/tool.nzip');
+        assert.equal(moved!.record.source, 'mytool.example');
+        assert.deepEqual(FS.readFileSync(PATH.join(BIN, record.name)), second);
+
+        // A source that cannot be asked is not the end of the install: the
+        // URL it last named is checked instead, and the record keeps its source.
+        paths.length = 0;
+        const logged: string[] = [];
+        const [stale] = await update(record.name, {
+            ...options,
+            resolveTxt: async () => { throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }); },
+            log: (line) => logged.push(line),
+        });
+        assert.equal(stale!.state, 'unchanged');
+        assert.deepEqual(paths, ['/elsewhere/tool.nzip']);
+        assert.ok(logged.some((line) => /checking the URL it last named/.test(line)), logged.join('\n'));
+        assert.equal(records()[record.name]!.source, 'mytool.example');
 
         assert.equal(uninstall('mytool.example').name, installed('mytool'));
         assert.equal(FS.existsSync(PATH.join(BIN, record.name)), false);
@@ -390,7 +422,7 @@ test('install takes a domain, and uninstall finds it again by that domain', asyn
         served.disposition = undefined;
     }
 
-    await assert.rejects(() => install('not a domain', options), /neither a URL nor a domain/);
+    await assert.rejects(() => install('not a domain', options), /neither a URL, a domain name, nor a listing/);
 });
 
 test('install with no url means this package, from its own release', async () => {

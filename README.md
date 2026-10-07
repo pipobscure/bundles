@@ -217,11 +217,18 @@ bundle --help          bundle -v, --version
 | Vouching | |
 |---|---|
 | [`attest`](#attest) | vouch for archives from an atproto account, warn against them, or withdraw that |
-| [`lexicon`](#lexicon) | show, check or publish the atproto lexicon attestations are written in |
+| [`lexicon`](#lexicon) | show, check or publish the atproto lexicons attestations and listings are written in |
+
+| Publishing and finding | |
+|---|---|
+| [`publish`](#publish) | list an archive's URL under a name, so others can find and install it |
+| [`unpublish`](#unpublish) | take a listing down again |
+| [`search`](#search) | search the listed archives by name, description and publisher |
+| [`listings`](#listings) | every listed archive, from a local index kept in step with the network |
 
 | Installing and keeping current | |
 |---|---|
-| [`install`](#install) | fetch an archive from a URL or a domain, review it, and put it on your PATH |
+| [`install`](#install) | fetch an archive from a URL, a domain or a listing, review it, and put it on your PATH |
 | [`update`](#update) | refetch what was installed, and replace it if a new version is accepted |
 | [`installed`](#installed) | list what is installed, and re-check each against its record |
 | [`validate`](#validate) | re-check installs, and say what has been attested since |
@@ -252,7 +259,8 @@ bundle --help          bundle -v, --version
   handle back. Only the DID is ever stored or baked into anything, because a handle can change
   hands. With a kind, only attestations of that kind count.
 - **Installs are named** by the name they were installed under (`tool`), by the URL they came
-  from, or by the domain whose `nzip:` record named them.
+  from, by the domain whose `nzip:` record named them, or by the listing they were installed
+  from, as `@<did>/<name>`.
 - **Errors go to stderr**, results to stdout. `--json`, where offered, prints a machine-readable
   result on stdout and nothing else there.
 - **Nothing is done without asking that is not yours to decide.** A signer or attester nobody
@@ -551,10 +559,11 @@ bundle lexicon publish --as pipobscure.com --dry-run
 bundle lexicon publish --as pipobscure.com
 ```
 
-Attestations are written in the lexicon `com.pipobscure.bundle.attestation`. For the network
-to resolve and validate it, it is published in two parts. The first is a DNS TXT record
-`_lexicon.bundle.pipobscure.com` saying `did=<DID>`. The second is a
-`com.atproto.lexicon.schema` record in that DID's repository, holding the lexicon document.
+Attestations are written in the lexicon `com.pipobscure.bundle.attestation`, and listings in
+`com.pipobscure.bundle.listing`. For the network to resolve and validate them, each is
+published in two parts. The first is a DNS TXT record `_lexicon.bundle.pipobscure.com` saying
+`did=<DID>`, which covers both. The second is a `com.atproto.lexicon.schema` record per
+lexicon in that DID's repository, holding the lexicon document.
 
 - With no subcommand, `lexicon` lists the lexicons this package carries and the record each
   needs.
@@ -565,7 +574,7 @@ to resolve and validate it, it is published in two parts. The first is a DNS TXT
   `com.atproto.lexicon.schema` and nothing else, refuses an account the DNS record does not
   name (unless `--force`), and reads each record back to confirm it.
 
-This is for whoever owns the lexicon's domain; using attestations needs none of it.
+This is for whoever owns the lexicons' domain; using attestations or listings needs none of it.
 
 | Option | |
 |---|---|
@@ -574,14 +583,142 @@ This is for whoever owns the lexicon's domain; using attestations needs none of 
 | `--force` | publish even though DNS does not name that account yet |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 
+### Publishing and finding
+
+A **listing** is an atproto record, in the publisher's own repository, that makes an archive
+findable and installable by name:
+
+```
+at://<your DID>/com.pipobscure.bundle.listing/bled
+{ "subject": "sha256:aa2e2af5…1169", "url": "https://github.com/…/releases/latest/download/bled.nzip",
+  "title": "bled", "description": "…", "createdAt": "…" }
+```
+
+It says where and nothing else: no hash, no version. Point it at a URL that stays the same
+across releases, and publishing a new version is still just making a release. Or, in place of
+the URL, name a domain whose `nzip:` TXT record names it (`"domain": "bled.pip.fyi"`), and
+keep managing the URL in DNS, as for [`install`](#install) by domain. A listing vouches
+for nothing. What `bundle install @<account>/<name>` fetches from that URL is reviewed exactly as
+any download is.
+
+Every listing's `subject` is the same value, the sha256 of the lexicon's NSID. That is what makes
+them findable with no service of our own: the backlink index (Constellation) indexes every field
+that parses as a URI, so asking it what links to that one value lists every listing on the network.
+`search` and `listings` keep a local index of them, and search that.
+
+#### `publish`
+
+```
+bundle publish [options] <name> <url | domain>
+bundle publish --as pipobscure.com --description 'blink an LED' bled https://github.com/pipobscure/bled/releases/latest/download/bled.nzip
+bundle publish --as pipobscure.com --description 'blink an LED' bled bled.pip.fyi     # the URL is the TXT record's to say
+```
+
+Writes `at://<your DID>/com.pipobscure.bundle.listing/<name>`, naming the URL, or the domain.
+A listing that names a domain follows its `nzip:` TXT record wherever it points, on every
+install and update. `<name>` is lowercase letters,
+digits and `-`, at most 64, and is what the archive installs as. Publishing the same name again
+replaces the listing, keeping when it was first listed.
+
+- **The URL is checked first**, before anyone signs in, and for a domain that is the URL its
+  TXT record names now. It must be `https:`, and it is fetched:
+  something that is not an archive, or whose bytes or signature do not hold together, is
+  refused. An unsigned archive is published with a warning, since installs will only accept it
+  on the strength of attestations.
+- **Signing in** works as it does for [`attest`](#attest): OAuth in the browser, asking for write
+  access to listing records only (`repo:com.pipobscure.bundle.listing`), and nothing kept
+  afterwards. In CI, an app password from `BUNDLE_ATPROTO_PASSWORD` or `--password-file`.
+- **The record is read back** to confirm what landed is what was sent.
+
+| Option | |
+|---|---|
+| `--as <handle or did>` | the account to publish from (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
+| `--title <text>` | a display name (default: the name) |
+| `--description <text>` | what it is, in a sentence or two (at most 300 characters) |
+| `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
+| `-r, --root <file>` | an extra trusted root, for checking the archive first; repeatable |
+
+#### `unpublish`
+
+```
+bundle unpublish [options] <name>
+bundle unpublish --as pipobscure.com bled
+```
+
+Deletes the listing. Exits `1` if there was none. Installs made from it keep working, and keep
+checking the URL it last named; [`update`](#update) says the listing is gone.
+
+| Option | |
+|---|---|
+| `--as <handle or did>` | the account the listing is in (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
+| `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
+
+#### `search`
+
+```
+bundle search [options] <words>...
+bundle search led
+bundle search --json bled
+```
+
+```
+@pipobscure.com/bled   blink an LED
+@alice.example/ledger  double-entry bookkeeping
+```
+
+Every word must match the start of a word in the listing's name, title, description or
+publisher's handle, and the best matches come first: a match in the name counts most, then the
+title, the handle, and the description least. The first column is exactly what
+[`install`](#install) takes. It is the publisher's handle when that checks out both ways, and
+their DID when it does not.
+
+**The search is local**, against `listings.sqlite` in the state directory. When that is more
+than an hour old, or was built from another backlink index, it is synced first:
+
+1. The backlink index the [policy](#policy) names (`discovery`) is asked for every listing. It
+   answers a hundred at a time, and this pass also notices publishers who have taken everything
+   down.
+2. Each publisher's PDS is asked for its repository's latest revision. If that has not moved
+   since the last sync, nothing more is asked of it.
+3. A publisher who is new, or whose repository moved, has their listings fetched again, usually
+   in one request.
+
+Handles are checked again once a day, since a handle can change without the repository
+changing. A PDS that cannot be reached keeps what the index had for it. A sync that cannot
+start at all leaves the index as it was, and the search answers from that, saying how old it is.
+
+Nothing is installed from the index. `install` fetches the listing again, from the publisher's
+own PDS, and verifies it.
+
+| Option | |
+|---|---|
+| `--refresh` | sync first, however recent the index is |
+| `--offline` | answer from the index as it is, without the network |
+| `--json` | print `[{ install, did, handle, name, title, description, url, domain, createdAt }]` |
+
+#### `listings`
+
+```
+bundle listings [options]
+```
+
+Every listing in the index, by name, synced first exactly as for [`search`](#search).
+
+| Option | |
+|---|---|
+| `--refresh` | sync first, however recent the index is |
+| `--offline` | answer from the index as it is, without the network |
+| `--json` | print the listings as JSON, as `search --json` does |
+
 ### Installing and keeping current
 
 #### `install`
 
 ```
-bundle install [options] [url | domain]
+bundle install [options] [url | domain | @account/name]
 bundle install https://example.com/tool.nzip     # fetch, review, put on PATH
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
+bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
 bundle install                                  # this package, from its own release
 ```
 
@@ -641,6 +778,20 @@ domain's first label (`tool`). DNS is not authenticated, so the record says only
 fetch from. The archive is reviewed exactly as a URL's would be, only `https:` is accepted,
 and two differing `nzip:` records are refused rather than guessed between.
 
+**So does a listing.** `bundle install @pipobscure.com/bled` resolves the handle, checked both
+ways, and fetches the listing `bled` from that account's own PDS with its proof, verified
+against the account's key. A DID works in place of the handle: `@did:plc:…/bled`. The archive
+is fetched from the URL the listing names, or that its domain's `nzip:` record names, installed
+as `bled`, and reviewed exactly as a URL's
+would be. See [`publish`](#publish) and [`search`](#search).
+
+**How it was installed is remembered**, and [`update`](#update) follows it. A URL is a URL. A
+domain's `nzip:` record, and a listing, are asked again on every update, so a publisher who
+moves their releases moves every install with them. A listing that names a domain is both
+asked again: the listing, then the domain's TXT record. A listing is remembered by its address,
+`at://<did>/com.pipobscure.bundle.listing/<name>`, never by the handle, because handles change
+hands.
+
 **With neither, it installs this package itself**, from its own GitHub release, accepting
 the identity its [publish workflow](.github/workflows/publish.yml) signs with. `npx
 @pipobscure/bundle install` is therefore the whole bootstrap. It then offers to set up the
@@ -670,8 +821,10 @@ bundle update            # everything installed
 bundle update tool       # one
 ```
 
-Refetches each install from where it came, as a conditional request with the ETag recorded
-last time. A server with nothing new answers `304` and nothing is downloaded. Identical bytes
+Asks each install's source where the archive is now: a domain's `nzip:` record, or the
+listing it was installed from, fetched and verified again. If the source cannot be asked, or a
+listing has been taken down, it says so and checks the URL it last named. Then it refetches,
+as a conditional request with the ETag recorded last time. A server with nothing new answers `304` and nothing is downloaded. Identical bytes
 are not an update either. Something new is reviewed exactly as an [`install`](#install) is,
 against what has been accepted for it so far:
 
@@ -763,10 +916,11 @@ run reports all their current attestations as new, once.
 #### `uninstall`
 
 ```
-bundle uninstall [name | url | domain]
+bundle uninstall [name | url | domain | @did/name]
 bundle uninstall tool                              # by name
 bundle uninstall https://example.com/tool.nzip     # by where it came from
 bundle uninstall tool.example.com                  # by the domain it was installed by
+bundle uninstall @did:plc:…/bled                   # by the listing it was installed from
 bundle uninstall                                   # this package's own install
 ```
 
@@ -971,6 +1125,7 @@ a file that is already there unless forced, so local edits survive.
 | Installed programs | `~/.local/bin`; `%LOCALAPPDATA%\bundle\bin` on Windows | `BUNDLE_INSTALL_DIR`, or `--dir` |
 | Install records | `installed.json` in the state directory | |
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
+| Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
 | The state directory | `$XDG_STATE_HOME/bundle` (`~/.local/state/bundle`); `~/Library/Application Support/bundle` on macOS; `%LOCALAPPDATA%\bundle\Data` on Windows | |
 | Policy | see [`policy`](#policy) | `BUNDLE_POLICY`, `BUNDLE_SYSTEM_POLICY` |
 | Sigstore trust root | `$XDG_DATA_HOME/sigstore-js` (`~/.local/share/sigstore-js`); `~/Library/Application Support/sigstore-js` on macOS; `%LOCALAPPDATA%\sigstore-js\Data` on Windows | `BUNDLE_SIGSTORE_ROOT`, `--sigstore-root` |
@@ -992,8 +1147,8 @@ session.
 | `BUNDLE_SIGSTORE_ROOT` | the sigstore trust root to check against, instead of the cache |
 | `BUNDLE_SHELL` | the shell `install` sets up and `shell` prints for, instead of detecting it |
 | `BUNDLE_POWERSHELL_PROFILE` | the PowerShell profile `install` adds its setup to, instead of asking PowerShell |
-| `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest` and `lexicon publish` act as, without `--as` |
-| `BUNDLE_ATPROTO_PASSWORD` | an app password: `attest` and `lexicon publish` use it instead of signing in, for CI |
+| `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest`, `publish`, `unpublish` and `lexicon publish` act as, without `--as` |
+| `BUNDLE_ATPROTO_PASSWORD` | an app password: `attest`, `publish`, `unpublish` and `lexicon publish` use it instead of signing in, for CI |
 | `BUNDLE_OAUTH_CLIENT_ID` | a hosted OAuth client metadata URL, instead of the loopback development client |
 | `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` is resolved against (default: `https://plc.directory`) |
 | `BUNDLE_NO_BROWSER` | never open a browser to sign in with sigstore; use a device code |
@@ -1112,6 +1267,7 @@ environment: `BUNDLE_ROOTS`, `BUNDLE_IDENTITY`, `BUNDLE_ATTESTERS` and the rest,
   "./atproto":  "resolving DIDs, fetching and writing attestations",
   "./oauth":    "signing in to a PDS: atproto OAuth with PAR, PKCE and DPoP",
   "./lexicon":  "this package's lexicons, and publishing them",
+  "./listing":  "listings: publishing, resolving, and the local search index",
   "./oidc":     "identity tokens: CI, browser, or device code"
 }
 ```

@@ -38,6 +38,17 @@ export interface NetworkOptions {
 
 /** Fetch and check a DID document, and cache it. */
 export async function resolveDid(did: string, options: NetworkOptions = {}): Promise<DidDocument> {
+    const doc = await fetchDidDocument(did, options);
+    writeDocument(options.cache ?? cacheDir(), doc);
+    return doc;
+}
+
+/**
+ * Fetch and check a DID document, without caching it. The attestation cache
+ * holds the documents of attesters, and `bundle trust` refreshes everyone it
+ * holds — so a lookup made for any other reason stays out of it.
+ */
+export async function fetchDidDocument(did: string, options: NetworkOptions = {}): Promise<DidDocument> {
     const fetch = options.fetch ?? globalThis.fetch;
     let url: string;
     if (did.startsWith('did:plc:')) {
@@ -57,10 +68,9 @@ export async function resolveDid(did: string, options: NetworkOptions = {}): Pro
     if (!response.ok) throw new Error(`${did}: resolving ${url} failed (${response.status})`);
     const doc = await response.json() as DidDocument;
     if (doc?.id !== did) throw new Error(`${did}: ${url} returned the document of ${String(doc?.id)}`);
-    // Both of these throw on a document that cannot be used, before it is cached.
+    // Both of these throw on a document that cannot be used.
     signingKey(doc);
     pdsEndpoint(doc);
-    writeDocument(options.cache ?? cacheDir(), doc);
     return doc;
 }
 
@@ -95,7 +105,7 @@ export async function resolveHandle(handle: string, options: NetworkOptions = {}
     }
     if (!did || !isDid(did)) throw new Error(`could not resolve the handle ${name} to a DID`);
 
-    const doc = await resolveDid(did, options);
+    const doc = await fetchDidDocument(did, options);
     if (claimedHandle(doc)?.toLowerCase() !== name) {
         throw new Error(`${name} points at ${did}, but that DID does not claim ${name} back`);
     }
@@ -243,26 +253,44 @@ export async function discover(hashAlg: string, hex: string, { index, limit = 50
     index: string;
     limit?: number | undefined;
 }): Promise<string[]> {
-    const fetch = options.fetch ?? globalThis.fetch;
     const found: string[] = [];
+    for await (const { did, collection, rkey } of backlinks(`${hashAlg}:${hex}`, `${COLLECTION}:hash`, { ...options, index })) {
+        // Only the record at the canonical key is an attestation of this
+        // hash; anything else merely mentions it.
+        if (collection !== COLLECTION || rkey !== hex || !isDid(did) || found.includes(did)) continue;
+        found.push(did);
+        if (found.length >= limit) break;
+    }
+    return found;
+}
+
+/** One record a backlink index says links to a subject. */
+export interface Backlink {
+    did: string;
+    collection: string;
+    rkey: string;
+}
+
+/**
+ * Every record whose `source` field (`<collection>:<path>`) links to
+ * `subject`, according to a backlink index, a page of 100 at a time. A
+ * generator, so a caller that has seen enough can stop asking.
+ */
+export async function* backlinks(subject: string, source: string, { index, ...options }: NetworkOptions & { index: string }): AsyncGenerator<Backlink> {
+    const fetch = options.fetch ?? globalThis.fetch;
     let cursor: string | null | undefined;
     do {
-        const params = new URLSearchParams({ subject: `${hashAlg}:${hex}`, source: `${COLLECTION}:hash`, limit: '100' });
+        const params = new URLSearchParams({ subject, source, limit: '100' });
         if (cursor) params.set('cursor', cursor);
         const response = await fetch(`${index.replace(/\/+$/, '')}/xrpc/blue.microcosm.links.getBacklinks?${params}`,
             { headers: { 'user-agent': USER_AGENT, accept: 'application/json' } });
         if (!response.ok) throw new Error(`${index}: ${response.status} ${response.statusText}`);
         const page = await response.json() as { records?: { did?: string; collection?: string; rkey?: string }[]; cursor?: string | null };
         for (const { did, collection, rkey } of page.records ?? []) {
-            // Only the record at the canonical key is an attestation of this
-            // hash; anything else merely mentions it.
-            if (collection !== COLLECTION || rkey !== hex || !did || !isDid(did) || found.includes(did)) continue;
-            found.push(did);
-            if (found.length >= limit) return found;
+            if (did && collection && rkey) yield { did, collection, rkey };
         }
         cursor = page.records?.length ? page.cursor : null;
     } while (cursor);
-    return found;
 }
 
 // ---------------------------------------------------------------- writing ---
@@ -342,7 +370,7 @@ export async function attest(session: Session, { hashAlg, hex, kind, verdict, no
  * and check it against the DID's key. Null when the proof shows there is none.
  */
 export async function getRecord(did: string, collection: string, rkey: string, options: NetworkOptions = {}): Promise<{ cid: string; value: Value } | null> {
-    const doc = await resolveDid(did, options);
+    const doc = await fetchDidDocument(did, options);
     const car = await xrpcBytes(pdsEndpoint(doc), 'com.atproto.sync.getRecord', { did, collection, rkey }, options);
     if (car === null) return null;
     const proof = verifyRecordProof(car, { did, key: signingKey(doc), collection, rkey });
@@ -356,9 +384,13 @@ export async function putRecord(session: Session, collection: string, rkey: stri
     return { uri: written.uri ?? `at://${session.did}/${collection}/${rkey}`, cid: written.cid ?? '' };
 }
 
+/** Delete a record from the session's own repository. */
+export async function deleteRecord(session: Session, collection: string, rkey: string, options: NetworkOptions = {}): Promise<void> {
+    await xrpcPost(session.pds, 'com.atproto.repo.deleteRecord', { repo: session.did, collection, rkey }, session, options);
+}
+
 export async function revoke(session: Session, hex: string, options: NetworkOptions = {}): Promise<void> {
-    await xrpcPost(session.pds, 'com.atproto.repo.deleteRecord',
-        { repo: session.did, collection: COLLECTION, rkey: hex }, session, options);
+    await deleteRecord(session, COLLECTION, hex, options);
     removeProof(options.cache ?? cacheDir(), session.did, hex);
 }
 
@@ -381,7 +413,8 @@ async function xrpcBytes(pds: string, method: string, params: Record<string, str
     return Buffer.from(await response.arrayBuffer());
 }
 
-async function xrpcJson(pds: string, method: string, params: Record<string, string>, options: NetworkOptions): Promise<unknown> {
+/** A query answered in JSON, from `pds` (or any XRPC host). */
+export async function xrpcJson(pds: string, method: string, params: Record<string, string>, options: NetworkOptions): Promise<unknown> {
     const response = await (options.fetch ?? globalThis.fetch)(xrpcUrl(pds, method, params), { redirect: 'follow' });
     if (!response.ok) throw new Error(`${method} at ${pds}: ${(await errorOf(response)).text}`);
     return await response.json();
