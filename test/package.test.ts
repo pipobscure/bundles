@@ -165,15 +165,16 @@ function bin(): Promise<void> {
                 filter: (name) => !name.endsWith('.map') && !name.endsWith('.d.ts') && !name.endsWith('.d.cts'),
             }),
             output: unsigned,
+            prefix: SHELL_BASE,
         });
-        await signBundle({ source: unsigned, output: BIN, prefix: SHELL_BASE, signer: testSigner() });
+        await signBundle({ source: unsigned, output: BIN, signer: testSigner() });
     })();
     return building;
 }
 
 test('the bin is the signed archive, and it runs itself', { skip: SHEBANG }, async () => {
     await bin();
-    // Executable, because `sign --prefix` made it so — npm links it directly
+    // Executable, because signing an archive with a prefix makes it so — npm links it directly
     // and the kernel runs the shebang.
     assert.ok(FS.statSync(BIN).mode & 0o111, 'the bin must be executable');
 
@@ -219,7 +220,7 @@ test('the CLI it runs comes out of the archive, not from the files beside it', {
     }
 });
 
-test('the bin signs behind the launcher out of its own archive', { skip: SHEBANG }, async () => {
+test('the bin builds behind the launcher out of its own archive', { skip: SHEBANG }, async () => {
     await bin();
     // `--launcher` reads `shell-base` beside the package root, and when the CLI
     // runs from the archive that root is the mount: the prefix has to be a
@@ -229,10 +230,10 @@ test('the bin signs behind the launcher out of its own archive', { skip: SHEBANG
     const unsigned = PATH.join(tmp, 'launched.run');
     const signed = PATH.join(tmp, 'launched.nzip');
     FS.writeFileSync(PATH.join(tmp, 'launched.files'), 'package.json\n');
-    const made = spawnSync(BIN, ['create', '--base', ROOT, '--files', PATH.join(tmp, 'launched.files'), '--output', unsigned], { encoding: 'utf-8' });
+    const made = spawnSync(BIN, ['create', '--base', ROOT, '--files', PATH.join(tmp, 'launched.files'), '--launcher', '--output', unsigned], { encoding: 'utf-8' });
     assert.equal(made.status, 0, made.stderr);
 
-    const res = spawnSync(BIN, ['sign', '--launcher', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], { encoding: 'utf-8' });
+    const res = spawnSync(BIN, ['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', signed, unsigned], { encoding: 'utf-8' });
     assert.equal(res.status, 0, res.stderr);
     assert.deepEqual(FS.readFileSync(signed).subarray(0, FS.statSync(SHELL_BASE).size), FS.readFileSync(SHELL_BASE));
     assert.equal(verifyBundleSync(signed, { roots: [ROOT_PEM] }).state, 'valid');

@@ -2,6 +2,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { verifyBundleSync, inspectBundle } from './api.ts';
+import { prefixLength } from './archive.ts';
 import { STATES, message } from './manifest.ts';
 
 // Step 3 of building a bundle: the audit gate.
@@ -70,6 +71,12 @@ export interface Preparation {
     state: string;
     members: string[];
     verdict: string;
+    /**
+     * What precedes the archive, when anything does: it runs, so it is part
+     * of the review. A `#!` launcher is text, shown in full; anything else
+     * (a SEA's runtime) is described.
+     */
+    prefix?: Prefix | undefined;
     /** Present when a baseline was supplied and exists. */
     baseline?: {
         path: string;
@@ -77,7 +84,35 @@ export interface Preparation {
         added: string[];
         removed: string[];
         carried: number;
+        /** Whether the prefix is byte for byte the baseline's. */
+        samePrefix: boolean;
     } | undefined;
+}
+
+/** The bytes in front of an archive. */
+export interface Prefix {
+    bytes: number;
+    sha256: string;
+    /** For a `#!` launcher, its text. */
+    script?: string | undefined;
+}
+
+/** What precedes the archive in `path`, if anything. */
+export function prefixOf(path: string): Prefix | undefined {
+    const length = prefixLength(path);
+    if (!length) return undefined;
+    const fd = FS.openSync(path, 'r');
+    try {
+        const bytes = Buffer.alloc(length);
+        FS.readSync(fd, bytes, 0, length, 0);
+        // Whatever padding keeps an archive inside the prefix out of a ZIP
+        // reader's sight is zeros, and not part of the script.
+        const text = bytes.toString('utf-8').replace(/\0+$/, '');
+        const script = text.startsWith('#!') && !text.includes('\0') ? text : undefined;
+        return { bytes: length, sha256: CRYPTO.createHash('sha256').update(bytes).digest('hex'), script };
+    } finally {
+        FS.closeSync(fd);
+    }
 }
 
 /** Where the verdict for `bundle` lives, unless the caller says otherwise. */
@@ -102,7 +137,9 @@ export function prepare({ bundle, verdict, baseline }: AuditOptions): Preparatio
     // rather than answering; that is still a refusal and should read as one.
     let state, members;
     try {
-        state = verifyBundleSync(bundle).state;
+        // An unsigned archive records its whole-file hash; check it, so that
+        // what is reviewed is what was created.
+        state = verifyBundleSync(bundle, { integrity: true }).state;
         ({ members } = inspectBundle(bundle));
     } catch (err) {
         throw new Error(`${bundle} could not be read as an archive: ${message(err)}`);
@@ -115,6 +152,7 @@ export function prepare({ bundle, verdict, baseline }: AuditOptions): Preparatio
     const found: Preparation = {
         bundle, sha256: sha256Of(bundle), state, members,
         verdict: verdictPath(bundle, verdict),
+        prefix: prefixOf(bundle),
     };
 
     if (baseline && FS.existsSync(baseline)) {
@@ -124,6 +162,7 @@ export function prepare({ bundle, verdict, baseline }: AuditOptions): Preparatio
         found.baseline = {
             path: baseline, sha256: sha256Of(baseline),
             added, removed, carried: members.length - added.length,
+            samePrefix: prefixOf(baseline)?.sha256 === found.prefix?.sha256,
         };
     }
     return found;

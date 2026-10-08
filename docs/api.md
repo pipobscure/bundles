@@ -15,12 +15,14 @@ import {
     createBundle, signBundle, verifyBundle, inspectBundle, runBundle, fileSigner,
 } from '@pipobscure/bundle';
 
-// Build unsigned — the single input to every shape you ship.
-await createBundle({ base: 'app/', files, output: 'app.run' });
+// Build it in its shape — here behind a launcher, so it runs by name. Unsigned,
+// it records its whole-file hash; this is what gets reviewed.
+await createBundle({ base: 'app/', files, output: 'app.unsigned.nzip', prefix: 'shell-base' });
 
-// Sign, once per shape.
+// Sign it as it is: the same members, behind the same prefix. `output` may be
+// the archive itself; the result replaces it only once it is complete.
 const signer = fileSigner({ key: 'leaf.key', chain: 'chain.pem' });
-await signBundle({ source: 'app.run', output: 'app.nzip', prefix: 'shell-base', signer });
+await signBundle({ source: 'app.unsigned.nzip', output: 'app.nzip', signer });
 
 // Ask what it claims, and then whether any of it is true.
 const { members, signed, hash } = inspectBundle('app.nzip');

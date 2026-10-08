@@ -16,7 +16,7 @@ import { ensureTestPki } from './testpki.ts';
 // Two passes, because neither is sufficient alone.
 //
 //   1. A computed closure — every compiled module, the skills, the launcher
-//      prefix `sign --launcher` reads, and the full dependency tree of the
+//      prefix `create --launcher` reads, and the full dependency tree of the
 //      runtime dependencies. Complete by construction,
 //      including code that only a path never taken in a test run would reach.
 //
@@ -38,7 +38,7 @@ const RUNTIME = ['@sigstore/bundle', '@sigstore/sign', '@sigstore/verify', '@sig
 
 const files = moduleFiles({
     base: ROOT,
-    // `shell-base` is read by `sign --launcher`, which resolves it beside the
+    // `shell-base` is read by `create --launcher`, which resolves it beside the
     // package root — and inside the archive, the archive is the package root.
     files: ['package.json', 'shell-base'],
     // `lexicons` is read by `bundle lexicon publish`, beside the package root.
@@ -78,7 +78,7 @@ function observe(): string[] {
         const entry = PATH.join(ROOT, 'tools', 'observe.ts');
         const list = PATH.join(scratch, 'members.txt');
         FS.writeFileSync(list, 'package.json\n');
-        const archive = PATH.join(scratch, 'observed.run');
+        const archive = PATH.join(scratch, 'observed.unsigned.nzip');
         const signed = PATH.join(scratch, 'observed.signed.nzip');
         // The observation has to take the signing and verifying paths to be worth
         // anything, and that needs a credential; a throwaway one, generated here.
@@ -86,10 +86,10 @@ function observe(): string[] {
 
         const runs: string[][] = [
             ['help'],
-            ['create', '--base', ROOT, '--files', list, '--output', archive],
             // --launcher, because that is the path that reads a file of this
             // package's own rather than one it was handed.
-            ['sign', '--launcher', '--key', pki.key, '--chain', pki.chain, '--output', signed, archive],
+            ['create', '--base', ROOT, '--files', list, '--launcher', '--output', archive],
+            ['sign', '--key', pki.key, '--chain', pki.chain, '--output', signed, archive],
             ['verify', '--root', pki.root, '--json', signed],
             ['skill', '--list'],
             ['skill', '--dir', PATH.join(scratch, 'skills')],

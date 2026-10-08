@@ -85,15 +85,14 @@ curl -s -o /dev/null localhost:8080/builtin.css  # the stylesheet that page link
 curl -s -o /dev/null localhost:8080/favicon.ico  # and the icon a browser would ask for
 kill %1
 
-# 2. create — archive exactly that
-npx bundle create --base . --files server.manifest --output static-server.run
+# 2. create — archive exactly that, behind the launcher so the result is a program
+npx bundle create --base . --files server.manifest --launcher --output static-server.unsigned.nzip
 
-# 3. audit — read it before standing behind it
-npx bundle audit --check static-server.run
+# 3. audit — read it, launcher included, before standing behind it
+npx bundle audit --check static-server.unsigned.nzip
 
-# 4. sign — behind the launcher prefix, so the result is a program
-npx bundle sign --launcher --output static-server.nzip static-server.run
-chmod +x static-server.nzip
+# 4. sign — as it is: writes static-server.nzip, executable
+npx bundle sign static-server.unsigned.nzip
 ```
 
 The result is about 17 kB. `unzip -l static-server.nzip` lists every file in it,

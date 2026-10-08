@@ -2,7 +2,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
 import type { Writable } from 'node:stream';
-import { bundle, rebundle, keySigner, members, type EmitResult, type Signer } from './archive.ts';
+import { bundle, rebundle, reprefix, keySigner, members, prefixLength, type EmitResult, type Signer } from './archive.ts';
 import {
     verify, verifySync, signatureOf, parseManifest, AUTHORITY,
     type VerificationResult, type VerifyOptions, type ArchiveSource, type ManifestFields,
@@ -41,7 +41,11 @@ export interface CreateOptions extends Destination {
     base?: string | undefined;
     /** Member names, relative to `base`. */
     files: string[];
-    /** A launcher or binary to prepend, making the result self-running. */
+    /**
+     * A launcher or binary to put in front of the archive, making the result
+     * self-running. This decides the archive's shape for good: signing keeps
+     * it, and an audit reviews it with everything else.
+     */
     prefix?: string | undefined;
     hashAlg?: string | undefined;
     signAlg?: string | undefined;
@@ -53,10 +57,9 @@ export interface CreateOptions extends Destination {
 }
 
 export interface SignOptions extends Destination {
-    /** Path to the archive whose members are re-emitted and signed. */
+    /** Path to the archive to sign. Its prefix, if it has one, is kept as it is. */
     source: string;
-    prefix?: string | undefined;
-    /** Make the output executable; implied by `prefix`. */
+    /** Make the output executable; implied when the archive has a prefix. */
     executable?: boolean | undefined;
     hashAlg?: string | undefined;
     signAlg?: string | undefined;
@@ -121,23 +124,46 @@ export async function createBundle(options: CreateOptions): Promise<BuildResult>
 }
 
 /**
- * Sign an existing archive into a new file. The input is never modified: its
- * members are read out, laid down again behind whatever prefix was asked for,
- * and the finished bytes are hashed and signed as a whole. One unsigned archive
- * therefore yields every shape — a `#!` launcher, a self-contained binary, or a
- * plain mountable archive — each correctly offset and each signed over itself.
+ * Sign an existing archive: its members are read out, laid down again behind
+ * the archive's own prefix, and the finished bytes are hashed and signed as a
+ * whole. `output` may be the archive itself — signing in place — since the
+ * result replaces it only once it is complete. The prefix — the shape
+ * of the result — is decided when the archive is created, so the archive an
+ * audit reviewed is the one that is signed.
  */
 export async function signBundle(options: SignOptions): Promise<BuildResult> {
-    const { source, output, prefix, executable, hashAlg, signAlg, key, chain, signer } = options;
+    const { source, executable, hashAlg, signAlg, key, chain, signer } = options;
+    if ((options as { prefix?: unknown }).prefix !== undefined) {
+        throw new Error('sign: the prefix is chosen when the archive is created — pass it to createBundle(), and sign what it made');
+    }
     if (!source) throw new Error('sign: an archive path is required');
     if (!signer && Boolean(key) !== Boolean(chain)) throw new Error('sign: key and chain must be given together');
-    if (output && PATH.resolve(output) === PATH.resolve(source)) {
-        throw new Error('sign: the output must differ from the input archive');
-    }
 
-    return await produce(options, Boolean(prefix || executable), (out) => rebundle({
-        source, prefix, hashAlg, signAlg, key, chain, signer, out,
+    return await produce(options, Boolean(executable) || prefixLength(source) > 0, (out) => rebundle({
+        source, hashAlg, signAlg, key, chain, signer, out,
     }));
+}
+
+/**
+ * Where signing `source` writes by default: the same name without its
+ * `.unsigned` — `app.unsigned.nzip` becomes `app.nzip`, an executable
+ * `app.unsigned` becomes `app`, `app.unsigned.exe` becomes `app.exe` — and,
+ * for a name that does not say it is unsigned, the archive itself, signed in
+ * place. Every bundle is an `.nzip`, signed or not; the `.unsigned` is only a
+ * convention for keeping the two apart while both are around.
+ */
+export function signedName(source: string): string {
+    return source.replace(/\.unsigned(?=\.[^./\\]+$|$)/i, '');
+}
+
+/**
+ * Put an existing archive behind a different prefix, unsigned — a node binary
+ * with the verifier in it, for an executable. Its result is a new archive to
+ * review and then sign; any signature the source had does not carry over.
+ */
+export async function prefixBundle(options: Destination & { source: string; prefix: string; hashAlg?: string | undefined }): Promise<BuildResult> {
+    const { source, prefix, hashAlg } = options;
+    return await produce(options, true, (out) => reprefix({ source, prefix, hashAlg, out }));
 }
 
 /** A signer backed by a private key and certificate chain read from disk. */
@@ -284,16 +310,33 @@ function withRoots(options: VerifyBundleOptions | undefined): VerifyOptions {
 // lifetime is theirs — while one opened here is closed and waited on. stdout is
 // ended (so a redirect sees EOF) but not awaited for 'finish', which never
 // fires for a TTY or a pipe.
+//
+// A file is written beside its destination and renamed over it only once it is
+// complete. So the destination can be the very archive being read — signing in
+// place, which is the usual way to sign — and a build that fails part way, or
+// is killed, leaves whatever was there before exactly as it was.
 async function produce(
     { output, stream }: Destination,
     executable: boolean,
     build: (out: Writable) => Promise<EmitResult>,
 ): Promise<BuildResult> {
-    const out = stream ?? (output ? FS.createWriteStream(output) : process.stdout);
-    const res = await build(out);
-    if (!stream) await close(out);
-
-    if (output && executable) FS.chmodSync(output, 0o755);
+    const temporary = !stream && output ? `${output}.incoming-${process.pid}` : undefined;
+    const out = stream ?? (temporary ? FS.createWriteStream(temporary, { mode: executable ? 0o755 : 0o644 }) : process.stdout);
+    let res: EmitResult;
+    try {
+        res = await build(out);
+        if (!stream) await close(out);
+        if (temporary) {
+            if (executable) FS.chmodSync(temporary, 0o755);
+            FS.renameSync(temporary, output!);
+        }
+    } catch (err) {
+        if (temporary) {
+            out.destroy();
+            FS.rmSync(temporary, { force: true });
+        }
+        throw err;
+    }
     return {
         ...res,
         output: output ?? null,

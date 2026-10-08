@@ -13,12 +13,12 @@ just the three lines it prints.
 
 ```sh
 printf 'package.json\nindex.ts\n' > echo-argv.manifest
-bundle create --base examples/echo-argv --files echo-argv.manifest --output echo-argv.run
-bundle sign --launcher --output echo-argv.nzip echo-argv.run
+bundle create --base examples/echo-argv --files echo-argv.manifest --launcher --output echo-argv.unsigned.nzip
+bundle sign echo-argv.unsigned.nzip        # -> echo-argv.nzip
 ```
 
-`--launcher` prepends the `#!/bin/sh` prefix this package ships, so the result
-runs by name. Signing through sigstore is the default; `--key`/`--chain` sign
+`--launcher` puts the `#!/bin/sh` prefix this package ships in front, so the
+result runs by name; signing keeps it. Signing through sigstore is the default; `--key`/`--chain` sign
 against a certificate authority of your own, which is what the repository's own
 test PKI (`node tools/testpki.ts`) is for.
 

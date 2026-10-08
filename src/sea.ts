@@ -3,29 +3,28 @@ import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mount, start, verify, type Baked, type Mounted } from './launch.ts';
-import { signBundle, createBundle, type BuildResult } from './api.ts';
+import { prefixBundle, createBundle, type BuildResult } from './api.ts';
 import type { VerificationResult } from './manifest.ts';
 import { moduleFiles, packageRoot, moduleDir } from './files.ts';
-import type { Signer } from './archive.ts';
 
 // Building the executables: a node runtime with this package inside it, which
 // verifies an archive before running anything out of it.
 //
 // One base binary, two things to do with it:
 //
-//   [ node runtime | SEA blob: stub + verifier.run ]
+//   [ node runtime | SEA blob: stub + verifier.nzip ]
 //     a *verifying node* — `node-verifying ./my-app.zip` checks that archive
 //     and runs it. Any archive, checked every time, none of them baked in.
 //
-//   [ node runtime | SEA blob: stub + verifier.run ] [ app.run ]
+//   [ node runtime | SEA blob: stub + verifier.nzip ] [ app.nzip ]
 //     \______________ the prefix, and part of the app archive's ______/
 //      \____________ signed region ____________________/
 //     a *self-validating executable* — the same base with an application
 //     appended and the whole file signed as one.
 //
 // The second is the first with an archive behind it, which is not a
-// coincidence: appending is `sign --prefix`, the same operation that puts a
-// shebang in front of an archive. What makes it self-validating is that the
+// coincidence: it is `bundle create --prefix`, the same operation that puts a
+// shebang in front of an archive, followed by `bundle sign`. What makes it self-validating is that the
 // whole-file hash covers the prefix too, so the runtime and the verifier are
 // signed by the same signature that covers the application. There is nothing to
 // check the checker against because the checker is inside what is checked.
@@ -33,7 +32,7 @@ import type { Signer } from './archive.ts';
 // Which shape a binary is, it decides at startup by looking at its own tail —
 // see `appended()` in `./launch.ts`. That is why one base serves both, and why
 // a verifying node built today can become a self-validating executable
-// tomorrow with nothing but `bundle sign --prefix`.
+// tomorrow with nothing but `bundle create --prefix` and `bundle sign`.
 //
 // ## The package rides in the blob as an archive
 //
@@ -123,14 +122,11 @@ export interface SeaBaseOptions extends VerifierOptions {
 }
 
 export interface SeaOptions extends SeaBaseOptions {
-    /** The application archive to append. Signed or not; it is re-signed here. */
+    /** The application archive to put behind the base. Any prefix or signature it had is left behind. */
     app: string;
     /** A base built earlier, instead of building one now. */
     base?: string | undefined;
-    /** Sign the finished container. Without one it is built but left unsigned. */
-    signer?: Signer | undefined;
     hashAlg?: string | undefined;
-    signAlg?: string | undefined;
     /** Progress, one line at a time. */
     log?: ((line: string) => void) | undefined;
 }
@@ -145,8 +141,8 @@ export interface SeaBaseResult {
 /**
  * Build the SEA base: a node runtime whose injected main mounts this package
  * out of its own blob and hands over to `bootstrap()`. The result is a binary
- * with no application in it yet — append one with `buildSea` or with
- * `sign --prefix`.
+ * with no application in it yet — put one behind it with `buildSea`, or
+ * with `bundle create --prefix`.
  */
 export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseResult> {
     const scratch = options.scratch ?? FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-sea-'));
@@ -158,7 +154,7 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
         if (verifier) {
             contents = [];
         } else {
-            verifier = PATH.join(scratch, 'verifier.run');
+            verifier = PATH.join(scratch, 'verifier.nzip');
             const files = verifierFiles(options);
             await createBundle({ base: packageRoot(), files, output: verifier });
             contents = files;
@@ -218,10 +214,11 @@ export async function createSeaBase(options: SeaBaseOptions): Promise<SeaBaseRes
 }
 
 /**
- * Build a self-validating executable: a SEA base with `app` appended and the
- * whole thing signed as one file. Everything the container will check — the
- * runtime, the verifier and the application — is inside what the signature
- * covers.
+ * Build a self-validating executable, unsigned: a SEA base with `app` behind
+ * it. Sign the result with `signBundle()` — the whole file, so the runtime,
+ * the verifier and the application are all inside what the signature covers.
+ * Until then it refuses to run. Building and signing are separate for the same
+ * reason as everywhere else: what is signed is what was reviewed.
  */
 export async function buildSea(options: SeaOptions): Promise<BuildResult> {
     const log = options.log ?? (() => {});
@@ -237,17 +234,9 @@ export async function buildSea(options: SeaOptions): Promise<BuildResult> {
             log(`  base: ${built.size} bytes, ${built.verifier.length} verifier members`);
         }
 
-        log(`* appending ${options.app} behind ${PATH.basename(base)}`);
-        const res = await signBundle({
-            source: options.app,
-            output: options.output,
-            prefix: base,
-            executable: true,
-            hashAlg: options.hashAlg,
-            signAlg: options.signAlg,
-            signer: options.signer,
-        });
-        log(res.signed ? `* signed: ${res.hash}` : '* built unsigned — it will refuse to run until it is signed');
+        log(`* putting ${options.app} behind ${PATH.basename(base)}`);
+        const res = await prefixBundle({ source: options.app, output: options.output, prefix: base, hashAlg: options.hashAlg });
+        log('* built unsigned: it refuses to run until it is signed');
         return res;
     } finally {
         if (owned) FS.rmSync(scratch, { recursive: true, force: true });

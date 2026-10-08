@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
-import { bundle, rebundle, keySigner, members, fromDirectory, createArchive } from '../src/archive.ts';
-import { AUTHORITY, parseSignature, verifySync } from '../src/manifest.ts';
+import { bundle, rebundle, reprefix, keySigner, members, prefixLength, fromDirectory, createArchive } from '../src/archive.ts';
+import { AUTHORITY, parseSignature, parseUnsigned, verifySync, wholeFileHash } from '../src/manifest.ts';
 import { APP, chain, comment, key, rootPem, scratch, tree } from './helpers.ts';
 
-// Signing as a separate step from building. The point of the split is that one
-// unsigned archive is the source for every shipped shape, so most of what is
-// checked here is that re-emitting behind a different prefix produces a
-// correctly offset archive that still verifies over its own finished bytes.
+// Building and signing as separate steps. Building decides the archive's
+// shape — the prefix in front of it — because the prefix runs, and so is part
+// of what gets reviewed; signing re-emits the archive behind that same prefix,
+// correctly offset, and signs its finished bytes.
 
 const tmp = scratch('archive');
 const source = tree(tmp);
@@ -35,68 +35,60 @@ function sign(output: string, options: Record<string, unknown> = {}) {
     })) as Promise<{ hash: string | null; signed: boolean }>;
 }
 
-test('the archive `sign` consumes is itself unsigned', () => {
+test('the archive `sign` consumes is unsigned, and records its whole-file hash', () => {
     assert.equal(verifySync(UNSIGNED, { extraRoots: roots }).state, 'unsigned');
+    assert.equal(parseUnsigned(comment(UNSIGNED)), wholeFileHash(UNSIGNED)!.hash);
+    assert.equal(verifySync(UNSIGNED, { extraRoots: roots, integrity: true }).state, 'unsigned');
+
+    // A changed byte shows, signed or not.
+    const damaged = PATH.join(tmp, 'damaged.run');
+    const bytes = FS.readFileSync(UNSIGNED);
+    bytes[40]! ^= 1;
+    FS.writeFileSync(damaged, bytes);
+    const res = verifySync(damaged, { extraRoots: roots, integrity: true });
+    assert.equal(res.state, 'invalid');
+    assert.match(res.reason, /does not match the recorded hash/);
 });
 
-test('signing an unsigned archive produces a valid one', async () => {
-    const output = PATH.join(tmp, 'plain.run');
-    const res = await sign(output);
-    assert.equal(res.signed, true);
-    assert.match(res.hash!, /^[0-9a-f]{64}$/);
-
-    const check = verifySync(output, { extraRoots: roots });
-    assert.equal(check.state, 'valid');
-    assert.match(check.subject!, /Bundle Test Signer/);
-    assert.equal(check.digests?.size, Object.keys(APP).length);
-});
-
-test('signing leaves the input archive untouched', async () => {
-    const before = FS.readFileSync(UNSIGNED);
-    await sign(PATH.join(tmp, 'untouched.run'));
-    assert.deepEqual(FS.readFileSync(UNSIGNED), before);
-    assert.equal(verifySync(UNSIGNED).state, 'unsigned');
-});
-
-test('one unsigned archive yields every prefixed shape, each valid', async () => {
+test('each shape is created with its prefix, and signing keeps it', async () => {
     // Two prefixes of different lengths: the central directory's offsets are
-    // absolute, so if they were not recomputed per prefix the longer one would
-    // produce an archive that does not parse at all.
+    // absolute, so if they were not computed for the prefix the longer one
+    // would produce an archive that does not parse at all.
     const short = PATH.join(tmp, 'short-prefix');
     const long = PATH.join(tmp, 'long-prefix');
     FS.writeFileSync(short, '#!/bin/false\n');
     FS.writeFileSync(long, `#!/bin/false\n${'/* padding */\n'.repeat(500)}`);
 
-    const bare = PATH.join(tmp, 'bare.run');
-    const withShort = PATH.join(tmp, 'short.nzip');
-    const withLong = PATH.join(tmp, 'long.nzip');
-    await sign(bare);
-    await sign(withShort, { prefix: short });
-    await sign(withLong, { prefix: long });
-
-    for (const [label, file] of [['bare', bare], ['short', withShort], ['long', withLong]] as const) {
-        assert.equal(verifySync(file, { extraRoots: roots }).state, 'valid', label);
-        assert.deepEqual(members(file).sort(), Object.keys(APP).sort(), label);
+    const shapes: [string, string | undefined][] = [['bare', undefined], ['short', short], ['long', long]];
+    const signed: string[] = [];
+    for (const [label, prefix] of shapes) {
+        const created = PATH.join(tmp, `${label}.run`);
+        await write(created, (out) => bundle({ base: source, files: Object.keys(APP), prefix, out }));
+        assert.equal(prefixLength(created), prefix ? FS.statSync(prefix).size : 0, label);
+        const output = PATH.join(tmp, `${label}.nzip`);
+        await write(output, (out) => rebundle({ source: created, signer: keySigner({ key, chain }), out }));
+        assert.equal(verifySync(output, { extraRoots: roots }).state, 'valid', label);
+        assert.deepEqual(members(output).sort(), Object.keys(APP).sort(), label);
+        if (prefix) assert.deepEqual(FS.readFileSync(output).subarray(0, FS.statSync(prefix).size), FS.readFileSync(prefix), label);
+        signed.push(output);
     }
 
     // Each is signed over its own bytes, so no two share a hash.
-    const hashes = [bare, withShort, withLong].map((f) => parseSignature(comment(f))!.hash);
-    assert.equal(new Set(hashes).size, 3);
-
-    // The prefix survives byte-for-byte, which is what makes it runnable.
-    assert.deepEqual(FS.readFileSync(withLong).subarray(0, FS.statSync(long).size), FS.readFileSync(long));
+    assert.equal(new Set(signed.map((f) => parseSignature(comment(f))!.hash)).size, 3);
 });
 
-test('a signed archive can be re-signed behind a new prefix', async () => {
-    const first = PATH.join(tmp, 'first.run');
-    const second = PATH.join(tmp, 'second.nzip');
-    const prefix = PATH.join(tmp, 'reprefix');
+test('a signed archive re-signs behind its own prefix, with one fresh manifest', async () => {
+    const prefix = PATH.join(tmp, 'kept-prefix');
     FS.writeFileSync(prefix, '#!/bin/false\n');
-    await sign(first);
-
-    await write(second, (out) => rebundle({ source: first, prefix, signer: keySigner({ key, chain }), out }));
+    const created = PATH.join(tmp, 'kept.run');
+    const first = PATH.join(tmp, 'kept.nzip');
+    const second = PATH.join(tmp, 'kept.again.nzip');
+    await write(created, (out) => bundle({ base: source, files: Object.keys(APP), prefix, out }));
+    await write(first, (out) => rebundle({ source: created, signer: keySigner({ key, chain }), out }));
+    await write(second, (out) => rebundle({ source: first, signer: keySigner({ key, chain }), out }));
 
     assert.equal(verifySync(second, { extraRoots: roots }).state, 'valid');
+    assert.deepEqual(FS.readFileSync(second).subarray(0, FS.statSync(prefix).size), FS.readFileSync(prefix));
     // The old AUTHORITY.PEM described the archive it came from; a re-emitted
     // archive gets exactly one, freshly built.
     const zip = ZLIB.ZipFile.openSync(second);
@@ -106,6 +98,23 @@ test('a signed archive can be re-signed behind a new prefix', async () => {
     } finally {
         zip.closeSync();
     }
+});
+
+test('a prefix is found whether its offsets are absolute or relative, and can be swapped for another', async () => {
+    // `cat prefix plain.zip` leaves offsets relative to the archive's start.
+    const prefix = Buffer.from('#!/bin/sh\necho hi\n');
+    const catted = PATH.join(tmp, 'catted.run');
+    FS.writeFileSync(catted, Buffer.concat([prefix, FS.readFileSync(UNSIGNED)]));
+    assert.equal(prefixLength(catted), prefix.length);
+    assert.equal(prefixLength(UNSIGNED), 0);
+
+    // Another prefix entirely: what building an executable does.
+    const other = PATH.join(tmp, 'other-prefix');
+    FS.writeFileSync(other, '#!/bin/false\n');
+    const swapped = PATH.join(tmp, 'swapped.run');
+    await write(swapped, (out) => reprefix({ source: catted, prefix: other, out }));
+    assert.equal(prefixLength(swapped), FS.statSync(other).size);
+    assert.equal(verifySync(swapped, { extraRoots: roots, integrity: true }).state, 'unsigned');
 });
 
 test('member digests are recorded in the entry comments, one per member', async () => {

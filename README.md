@@ -4,9 +4,9 @@
 you are getting.**
 
 ```sh
-bundle create --base ./app --files app.manifest --output app.run   # pack your app
-bundle sign --launcher --output app.nzip app.run                   # sign it
-./app.nzip                                                         # and it is a program
+bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip   # pack your app
+bundle sign app.unsigned.nzip                                                          # sign it: app.nzip
+./app.nzip                                                                             # and it is a program
 ```
 
 A bundle is your application, every module and dependency it uses, in one file, with a
@@ -43,19 +43,14 @@ Node runs the app straight out of the file.
 ## Install bundle
 
 ```sh
-npx @pipobscure/bundle install      # a signed `bundle` on your PATH
-bundle --help
-```
-
-That fetches the package once and leaves the signed tool itself on your PATH, where
-`bundle update` keeps it current. It also offers to add Tab completion and a quiet daily
-re-check of your installs to your shell. Without npm, take it from the release page:
-
-```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
-chmod +x bundle.nzip
-./bundle.nzip install                # the same: fetch, verify, put on PATH
+node --experimental-vfs --vfs-load ./bundle.nzip install
 ```
+
+The download runs once, to install the real thing: it fetches the latest release, checks its
+signature, and puts the signed `bundle` on your PATH, where `bundle update` keeps it current.
+It also offers to add Tab completion and a quiet daily re-check of your installs to your
+shell. Afterwards, `bundle --help`.
 
 The `bundle` command is itself a bundle: `unzip -l` lists everything in it, and
 `bundle verify` tells you who signed it. Releases are signed by this repository's
@@ -119,17 +114,22 @@ Four steps, in this order:
 # 1. observe: run your app once, writing down every file it reads
 BUNDLE_MANIFEST=app.manifest node --experimental-vfs -r @pipobscure/bundle/record --vfs-load=./app -- <args>
 
-# 2. create: archive exactly those files, unsigned
-bundle create --base ./app --files app.manifest --output app.run
+# 2. create: archive exactly those files, behind a launcher so it runs by name
+bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip
 
 # 3. audit: review it, against your last release if there is one
-bundle audit --baseline last-release.nzip app.run
+bundle audit --baseline last-release.nzip app.unsigned.nzip
 
 # 4. sign: only once the review came back clean
-bundle audit --check app.run && bundle sign --launcher --output app.nzip app.run
+bundle audit --check app.unsigned.nzip && bundle sign app.unsigned.nzip     # -> app.nzip
 ```
 
-- **`.run` is unsigned, `.nzip` is signed.** Hand people the `.nzip`.
+- **Every bundle is an `.nzip`, signed or not.** An unsigned one still records its own hash,
+  and others can vouch for it with attestations. Call it `app.unsigned.nzip` while you have
+  both: `bundle sign` writes `app.nzip` next to it. Any other name is signed in place.
+- **The shape is decided when you create it, so it gets reviewed.** `--launcher` makes a file
+  you run by name. The launcher is a little shell script that runs first, so the audit shows
+  it, and signing keeps it exactly as reviewed.
 - **Observing beats guessing.** Dynamic `require`, data files and conditional imports are
   exactly what static analysis misses, and exactly what a run reads.
 - **The audit is a gate you choose.** `bundle skill` installs a
@@ -139,12 +139,12 @@ bundle audit --check app.run && bundle sign --launcher --output app.nzip app.run
 - **Signing uses sigstore by default**: your CI's identity, or a browser sign-in. There is
   no key to keep or lose. Your own certificate authority works too (`--key`, `--chain`).
 
-One unsigned build serves every way you ship it:
+Each way of shipping is its own archive, created in its shape, reviewed, then signed:
 
 ```sh
-bundle sign --launcher --output app.nzip        app.run   # a file you run by name
-bundle sea             --output app             app.run   # a standalone executable
-bundle sign            --output app.signed.nzip app.run   # a plain archive, to mount
+bundle create … --launcher --output app.unsigned.nzip   # a file you run by name
+bundle create …            --output app.unsigned.nzip   # a plain archive, to mount
+bundle sea --output app.unsigned app.unsigned.nzip      # a standalone executable (see below)
 ```
 
 **Publish it.** Put the `.nzip` somewhere stable, such as a GitHub release's
@@ -162,16 +162,18 @@ records that.
 ## Standalone executables
 
 ```sh
-bundle sea --output tool \
+bundle sea --output tool.unsigned \
     --identity 'https://github.com/you/tool/.github/workflows/release.yml@refs/heads/main' \
     --issuer https://token.actions.githubusercontent.com \
-    tool.run
+    tool.unsigned.nzip
+bundle sign tool.unsigned          # -> tool
 ./tool --help
 ```
 
-`bundle sea` builds one file containing Node, the verifier and your app, signed as a whole.
-It checks its own signature before running anything, needs nothing installed, and can carry
-its own rules for whom it accepts. Worker threads work as usual. Built without an app, it is
+`bundle sea` builds one file containing Node, the verifier and your app. It is built
+unsigned, so you can review it as it will run, and refuses to run until `bundle sign` signs
+the whole thing. Then it checks its own signature before running anything, needs nothing
+installed, and can carry its own rules for whom it accepts. Worker threads work as usual. Built without an app, it is
 a **verifying node**: `./node-verifying app.nzip` checks any archive and runs it.
 
 ## Deciding whom you trust
@@ -224,7 +226,8 @@ modules when it imports them. Each worker thread calls `use()` itself. The full 
 [docs/api.md](docs/api.md#plugins-pipobscurebundleplugins).
 
 **Writing a plugin:** it is a package, and its `package.json` `name` is what apps import.
-Build and sign it like an app, without `--launcher`, and publish it for the app it extends:
+Build and sign it like an app, but as a plain archive, without `--launcher`, and publish it
+for the app it extends:
 `bundle publish --for @pipobscure.com/bled bled-gpio <url>`.
 
 ## Commands at a glance

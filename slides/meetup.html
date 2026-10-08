@@ -313,15 +313,17 @@ AUTHORITY.PEM</span>    <span class="c"># who signed it</span></div>
 <section class="slide" data-act="II · does it work?" data-t="30">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Getting the tool</div>
-  <h2>One command.</h2>
-  <div class="cmd" style="margin-top:28px;font-size:17px"><span class="p">$</span> npx @pipobscure/bundle install
-<span class="o">* installing this package itself from https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip</span>
+  <h2>Two commands.</h2>
+  <div class="cmd" style="margin-top:28px;font-size:16px"><span class="p">$</span> curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
+<span class="p">$</span> node --experimental-vfs --vfs-load ./bundle.nzip install
+<span class="o">* installing this package itself from https://github.com/pipobscure/bundles/releases/…</span>
 <span class="g">bundle installed in ~/.local/bin</span>
 <span class="o">* add Tab completion, and a quiet daily re-check of what you install, to ~/.zshrc? [Y/n]</span></div>
   <p class="sub" style="margin-top:24px;font-size:19px;color:var(--ink-dim)">And the thing it installed is itself a bundle: one signed file, checked before it lands on your PATH.</p>
-  <div class="kicker"><span class="mono">npx @pipobscure/bundle install</span><span></span></div>
+  <div class="kicker"><span class="mono">node --vfs-load ./bundle.nzip install</span><span></span></div>
   <div class="notes" hidden>
-    <p class="say">"Getting the tool is the tool demonstrating itself: npm fetches it once, it verifies its own release, and puts one signed file on your PATH."</p>
+    <p class="say">"Getting the tool is the tool demonstrating itself: plain Node runs the downloaded file straight out of the zip, and that run fetches the latest release, checks its signature, and puts one signed file on your PATH."</p>
+    <p>Point at the second line: no npm, no install script. <em>--vfs-load</em> is Node mounting the zip and running what's inside. That's the whole trick of the talk, in one command.</p>
     <p><b>30 seconds.</b> Have it installed already; don't run this live unless the network is good.</p>
   </div>
 </section>
@@ -341,13 +343,14 @@ AUTHORITY.PEM</span>    <span class="c"># who signed it</span></div>
 <span class="o">package.json
 index.js
 lib/hello.js</span>        <span class="c"># lib/never-used.js? not read, not in</span></div>
-      <div class="cmd sm"><span class="c"># 2. pack exactly that</span>
-<span class="p">$</span> bundle create --base ./app -f app.manifest -o greet.run
+      <div class="cmd sm"><span class="c"># 2. pack exactly that, as a program</span>
+<span class="p">$</span> bundle create --base ./app -f app.manifest \
+    <span class="y">--launcher</span> -o greet.unsigned.nzip
 <span class="o">* unsigned archive (3 members, sha256 digests)</span></div>
     </div>
     <div class="stack">
-      <div class="cmd sm"><span class="c"># 3. sign it</span>
-<span class="p">$</span> bundle sign <span class="y">--launcher</span> -o greet.nzip greet.run
+      <div class="cmd sm"><span class="c"># 3. sign it, as it is</span>
+<span class="p">$</span> bundle sign greet.unsigned.nzip
 <span class="g">* signed: 5e8e6ade4ec94378ead2…</span>
 <span class="o">* wrote greet.nzip (1904 bytes)</span></div>
       <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program</span>
@@ -362,7 +365,7 @@ exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"</span></div>
   <div class="kicker"><span class="mono">observe → create → sign → run</span><span></span></div>
   <div class="notes" hidden>
     <p><b>Beat 1, observe (40s).</b> "Static analysis gets dynamic requires and data files wrong. So we don't analyse, we run it and write down what it opened." Point at <em>lib/never-used.js</em>: in the source, not in the bundle, because nothing read it.</p>
-    <p><b>Beat 2, create (20s).</b> Fast. The <em>.run</em> extension means unsigned.</p>
+    <p><b>Beat 2, create (20s).</b> Fast. <em>--launcher</em> puts a two-line shell script in front so it runs by name; it's decided here, so the review sees it. <em>.unsigned.nzip</em> is just the convention for "not signed yet".</p>
     <p><b>Beat 3, sign (30s).</b> "By default this signs with sigstore: your GitHub Actions identity in CI, a browser login on your laptop. No key file to keep or leak." Live, sign with whatever you rehearsed with; the output shape is the same.</p>
     <p><b>Beat 4, run (40s). The beat people react to.</b> Show the first two lines: it's a two-line shell script, then a zip. Node mounts the file and runs the app inside it.</p>
     <p><b>Fallback:</b> the artifacts from rehearsal are in the demo folder. Run <em>./greet.nzip Grace</em> and move on; never debug on stage.</p>
@@ -412,10 +415,10 @@ does not match the recorded hash</span></div>
   <div class="eyebrow">Demo 3</div>
   <h2>No Node on the other end?</h2>
   <div class="cols" style="margin-top:24px">
-    <div class="cmd sm"><span class="p">$</span> bundle sea --output greet greet.run
+    <div class="cmd sm"><span class="p">$</span> bundle sea --output greet.unsigned greet.unsigned.nzip
 <span class="o">* building the SEA base (node runtime + verifier)
-* appending greet.run behind sea-base
-* wrote greet</span>
+* wrote greet.unsigned (unsigned)</span>
+<span class="p">$</span> bundle sign greet.unsigned          <span class="c"># -> greet</span>
 
 <span class="p">$</span> ./greet Grace
 <span class="g">hello, Grace</span>
@@ -607,9 +610,9 @@ permissions:
   contents: write
 steps:
   - run: npm ci
-  - run: npx bundle create --base . --files app.manifest --output app.run
-  - run: npx bundle audit --check app.run     <span class="c"># the gate</span>
-  - run: npx bundle sign --launcher --output app.nzip app.run
+  - run: npx bundle create --base . --files app.manifest --launcher --output app.unsigned.nzip
+  - run: npx bundle audit --check app.unsigned.nzip     <span class="c"># the gate</span>
+  - run: npx bundle sign app.unsigned.nzip              <span class="c"># -> app.nzip</span>
   - run: gh release upload "$TAG" app.nzip</div>
   <div class="grid3" style="margin-top:18px">
     <div class="card"><h3 style="font-size:17px;color:var(--accent)">No key to store</h3>
@@ -671,11 +674,12 @@ steps:
 <section class="slide" data-act="IV · wrapping up" data-t="40">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Try it tonight</div>
-  <h2>Four commands.</h2>
-  <div class="cmd" style="margin-top:28px;font-size:15.5px"><span class="p">$</span> npx @pipobscure/bundle install
+  <h2>Five commands.</h2>
+  <div class="cmd" style="margin-top:28px;font-size:15.5px"><span class="p">$</span> curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
+<span class="p">$</span> node --experimental-vfs --vfs-load ./bundle.nzip install
 <span class="p">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs -r @pipobscure/bundle/record --vfs-load=./app
-<span class="p">$</span> bundle create --base ./app --files app.manifest --output app.run
-<span class="p">$</span> bundle sign --launcher --output app.nzip app.run &amp;&amp; ./app.nzip</div>
+<span class="p">$</span> bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip
+<span class="p">$</span> bundle sign app.unsigned.nzip &amp;&amp; ./app.nzip</div>
   <div class="grid3" style="margin-top:26px">
     <div class="card"><h3 style="font-size:17px">Code &amp; docs</h3><p style="margin-top:6px" class="mono">github.com/pipobscure/bundles</p></div>
     <div class="card"><h3 style="font-size:17px">Package</h3><p style="margin-top:6px" class="mono">npm: @pipobscure/bundle</p></div>
@@ -684,7 +688,7 @@ steps:
   <div class="kicker"><span class="mono">feedback very welcome, it's experimental</span><span></span></div>
   <div class="notes" hidden>
     <p class="say">"If you ship a CLI, try packing it tonight. I'd love to hear where it breaks."</p>
-    <p>The second line is the observe step: run the app once, the way it is normally used, and it writes down every file it reads. The README has the rest.</p>
+    <p>The third line is the observe step: run the app once, the way it is normally used, and it writes down every file it reads. The README has the rest.</p>
   </div>
 </section>
 

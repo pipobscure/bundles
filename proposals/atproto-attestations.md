@@ -270,7 +270,7 @@ nothing else, which bsky.social accepts. A server that rejects it is asked for
 **No session is kept.** It lives for one command, is refreshed in memory if a token
 expires mid-command, and is revoked when the command ends. So every attestation is
 approved in the browser by whoever it speaks for, and no refresh token or DPoP key is
-ever on disk. `bundle attest a.nzip b-sea c.run` attests several archives under one
+ever on disk. `bundle attest a.nzip b-sea c.unsigned.nzip` attests several archives under one
 sign-in. It checks all of them first, and one that does not hold together stops the
 lot before anyone signs in. An app password (`BUNDLE_ATPROTO_PASSWORD`,
 `--password-file`) remains for CI, where no browser can be used.

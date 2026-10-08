@@ -878,13 +878,12 @@ dlopen(<span class="o">'./build/Release/addon.node'</span>)</div>
         <b style="color:var(--ink)">recording provider</b> &mdash; another use of that same extension point &mdash;
         which writes down every file it opens.</p>
       <div class="cmd sm"><span class="c"># 2. archive exactly that, then sign it</span>
-<span class="p">$</span> bundle create --base ./app \
-   -f app.manifest -o app.run
+<span class="p">$</span> bundle create --base ./app <span class="y">--launcher</span> \
+   -f app.manifest -o app.unsigned.nzip
 <span class="o">+ index.js  + lib/hello.js</span>  <span class="c">…</span>
 <span class="o">* unsigned archive (3 members)</span>
 
-<span class="p">$</span> bundle sign <span class="y">--launcher</span> \
-   -o app.nzip app.run
+<span class="p">$</span> bundle sign app.unsigned.nzip
 <span class="g">* signed: da9e7604113a…</span></div>
     </div>
     <div class="stack">
@@ -908,7 +907,7 @@ exec node --experimental-vfs \
     <p><b>Where `bundle` came from, if anyone wonders:</b> <em>npx @pipobscure/bundle install</em> — one command, which verifies a signature and leaves the CLI on your PATH. That is demo 6 and the last slide of this act; here it is just the tool being used.</p>
     <p><b>Beat 1 — the manifest (25s).</b> "Static dependency analysis is perennially wrong — dynamic require, data files, conditional imports. So don't analyse. Run it and write down what it touched." Note it records <em>open()</em> too, so streamed files get caught. Also: this is a <i>second</i> provider, which quietly proves the extension point isn't signing-shaped.</p>
     <p><b>The line to point at is the comment:</b> <em>lib/never-used.js</em> is in the source tree and is not in the manifest, because the run never opened it. That is the whole argument for observation over analysis in one line of output.</p>
-    <p><b>Beat 2 — build (20s).</b> Fast. <em>--launcher</em> is worth half a sentence: it prepends the shell prefix the package ships, so nobody has to know it lives in node_modules. <em>--prefix &lt;file&gt;</em> is still there for your own launcher, or for a node binary.</p>
+    <p><b>Beat 2 — build (20s).</b> Fast. <em>--launcher</em> is worth half a sentence: it puts the shell prefix the package ships in front, at <i>create</i> time, so the audit sees it and signing keeps it. <em>--prefix &lt;file&gt;</em> is there for your own launcher, or for a node binary.</p>
     <p><b>Beat 3 — head -c (25s). This is the beat people react to.</b> The front of the file is a shebang and nothing else. Let it sit.</p>
     <p><b>Beat 4 — run it (25s).</b> "Twenty-one kilobytes, and it is a program."</p>
     <p><b>Fallback:</b> artifacts are committed — just <em>./app.nzip help</em> and move on. Do not debug on stage.</p>
@@ -1040,9 +1039,9 @@ exec node --experimental-vfs \
       <p class="sub" style="font-size:16px;max-width:42ch">So the review is a step, not an afterthought &mdash; and it
         sits <b style="color:var(--ink)">before</b> the signature, because a signature is a claim about bytes
         <i>you</i> stand behind.</p>
-      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> bundle <span class="y">audit --check</span> app.run \
-    &amp;&amp; bundle sign --launcher …
-<span class="r">error</span>: app.run has not been audited</div>
+      <div class="cmd sm" style="border-left-color:var(--bad)"><span class="p">$</span> bundle <span class="y">audit --check</span> app.unsigned.nzip \
+    &amp;&amp; bundle sign …
+<span class="r">error</span>: app.unsigned.nzip has not been audited</div>
       <div class="card" style="border-color:#2C5F46;background:rgba(79,191,139,.06);padding:12px 16px">
         <p style="font-size:14.5px;line-height:1.45">The verdict names the archive's <b style="color:var(--ok)">sha256</b>,
           so rebuilding invalidates it. Otherwise the gate approves any later build on the strength of one earlier
@@ -1116,7 +1115,7 @@ exec node … --vfs-load="$0" -- "$@"</span></div>
   <div class="cols w" style="margin-top:22px">
     <div class="stack">
       <div class="cmd"><span class="c"># publish: the release *is* the file</span>
-<span class="p">$</span> bundle sign <span class="y">--launcher</span> <span class="y">--output</span> app.nzip app.run
+<span class="p">$</span> bundle sign app.unsigned.nzip    <span class="c"># -> app.nzip</span>
 <span class="p">$</span> gh release create v1.0.0 app.nzip</div>
       <div class="cmd" style="margin-top:12px;border-left-color:var(--ok)"><span class="c"># install: fetch, verify, then put on PATH</span>
 <span class="p">$</span> npx @pipobscure/bundle install <span class="c"># -&gt; bundle</span>

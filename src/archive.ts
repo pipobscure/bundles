@@ -7,23 +7,21 @@ import { buildManifest, formatSignature, AUTHORITY } from './manifest.ts';
 
 // Building an archive, in two steps that are deliberately separable.
 //
-// `bundle()` collects files off disk into an unsigned archive. `rebundle()`
-// takes an existing archive and re-emits it — with a different prefix, a
-// different certificate, or both. Signing is only ever `rebundle()`'s job.
+// `bundle()` collects files off disk into an unsigned archive, behind the
+// prefix that decides its shape: a `#!` launcher, a node binary, or nothing.
+// `rebundle()` takes an existing archive and signs it. Signing is only ever
+// `rebundle()`'s job, and the shape is never its business.
 //
-// That split is what makes one build serve every shape. The offsets inside a
-// ZIP central directory are absolute, so an archive that will sit behind a
-// 155 MB node binary is not byte-identical to the same archive behind a 79-byte
-// shebang: the prefix has to be chosen before the offsets are fixed, and
-// therefore before the hash exists. Re-emitting from the members rather than
-// copying bytes is what lets one `app.run` become a `#!` launcher, a
-// self-contained executable and a plain mountable archive, each correctly
-// offset and each signed over its own finished bytes:
+// The shape is decided first because it is part of what gets reviewed. The
+// prefix runs — a launcher is a shell script, a binary is a runtime — so the
+// archive an audit approves has to be the one that is signed, prefix and all.
+// Signing still re-emits rather than appending: the certificate chain goes
+// into `AUTHORITY.PEM`, which moves every offset after it. It does so behind
+// the archive's own prefix, copied as it is:
 //
-//   bundle   → app.run                        (unsigned, the source of truth)
-//   rebundle → app.nzip   (prefix: shell-base)    signed
-//   rebundle → app.sea   (prefix: node-base)     signed
-//   rebundle → app.signed.nzip (no prefix)     signed
+//   bundle   → app.nzip  (prefix: shell-base)   unsigned, records its hash: reviewed
+//   rebundle → app.nzip  (the same prefix)      signed over the finished bytes,
+//                                               in place
 //
 // A signer is `{ chain, signAlg, sign(digest) }`: the chain goes into
 // `AUTHORITY.PEM` *before* hashing, and `sign()` is called *after*, with the
@@ -65,7 +63,7 @@ export interface Signer {
 
 /** What `emit()` reports once the file has been fully written. */
 export interface EmitResult {
-    /** The whole-file hash, hex — null for an unsigned archive. */
+    /** The whole-file hash, hex: recorded in the archive, signed or not. */
     hash: string | null;
     signed: boolean;
 }
@@ -89,9 +87,8 @@ export interface BundleOptions {
 }
 
 export interface RebundleOptions {
-    /** Path to the archive whose members are re-emitted. */
+    /** Path to the archive whose members are re-emitted, behind its own prefix. */
     source: string;
-    prefix?: string | undefined;
     hashAlg?: string | undefined;
     signAlg?: string | undefined;
     key?: Buffer | string | CRYPTO.KeyObject | undefined;
@@ -139,9 +136,9 @@ async function *entries(
 /**
  * A Readable of the ZIP archive over `members`. Its members carry per-file
  * digests and its AUTHORITY.PEM manifest declares the algorithms and chain, but
- * the archive itself is left with an empty EOCD comment: the whole-file hash
- * and its signature are a property of the finished file and are applied by
- * `emit()`. `baseOffset` seeds the archive's internal offsets for when it is
+ * the archive itself is left with an empty EOCD comment: the whole-file hash,
+ * and any signature over it, are a property of the finished file and are
+ * recorded by `emit()`. `baseOffset` seeds the archive's internal offsets for when it is
  * appended after a prefix.
  */
 export function createArchive({ members, base, files, hashAlg = 'sha256', signAlg, chain, baseOffset = 0 }: {
@@ -176,25 +173,34 @@ export function keySigner({ key, chain, signAlg = 'sha256' }: {
     };
 }
 
+/** Bytes to put before an archive: the first `length` bytes of the file at `path`. */
+export interface Prefix {
+    path: string;
+    length: number;
+}
+
 // Writes `prefix` (when given) then the archive to `out`, without closing
 // `out`. With no prefix the result is a plain archive — a `.nzip` meant to be
 // run through `--vfs-load`; with one it is a self-running container (a shebang
-// launcher or a SEA binary) that carries the same archive in its tail. When a
-// `signer` is given, the whole file is signed. The hash runs over the prefix
-// and then over the archive up to (but not including) the EOCD comment; that
-// hash is what the signer signs. The EOCD comment records both, so a verifier
-// can validate the hash on its own (a cheap pre-mount integrity gate) and only
-// then check the signature over that hash against the certificate:
+// launcher or a SEA binary) that carries the archive in its tail. The
+// whole-file hash runs over the prefix and then over the archive up to (but
+// not including) the EOCD comment, and the comment records it. Without a
+// signer that is the hash alone, so even an unsigned archive says what its
+// bytes should hash to; with one, the hash is signed and both are recorded,
+// so a verifier can validate the hash on its own (a cheap pre-mount integrity
+// gate) and only then check the signature over it against the certificate:
 //
+//   UNSIGNED:<hash-of-region-hex>
 //   SIGNED:<hash-of-region-hex>:<signature-hex>[:<NAME>=<value>]*
-async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
+async function emit({ members, prefix: given, hashAlg = 'sha256', signer, out }: {
     members: AsyncIterable<Member> | Iterable<Member>;
-    prefix?: string | undefined;
+    prefix?: string | Prefix | undefined;
     hashAlg?: string | undefined;
     signer?: Signer | undefined;
     out: Writable;
 }): Promise<EmitResult> {
-    const hasher = signer ? CRYPTO.createHash(hashAlg) : null;
+    const hasher = CRYPTO.createHash(hashAlg);
+    const prefix = typeof given === 'string' ? { path: given, length: FS.statSync(given).size } : given;
 
     // 1. Stream the prefix straight to `out`, feeding the whole-file hash —
     //    and after it, if it needs one, a run of zeros that keeps an archive
@@ -204,7 +210,7 @@ async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
         await prepend(prefix, out, hasher);
         if (padding) {
             const zeros = Buffer.alloc(padding);
-            hasher?.update(zeros);
+            hasher.update(zeros);
             await write(out, zeros);
         }
     }
@@ -216,23 +222,24 @@ async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
         members, hashAlg,
         signAlg: signer?.signAlg,
         chain: signer?.chain,
-        baseOffset: prefix ? FS.statSync(prefix).size + padding : 0,
+        baseOffset: prefix ? prefix.length + padding : 0,
     }));
 
-    if (!signer || !hasher) {
-        await write(out, archive);
-        return { hash: null, signed: false };
-    }
-
-    // 3. The signed region is the prefix plus the archive minus its trailing
-    //    2-byte (empty) comment-length field. Hash it, sign the hash, and
-    //    re-emit the archive with the marker as the EOCD comment. Anything the
-    //    signer produced *after* signing — a transparency-log entry, a
-    //    timestamp — comes back as fields and rides in the same comment, since
-    //    it could not have been inside the hash it postdates.
+    // 3. The hashed region is the prefix plus the archive minus its trailing
+    //    2-byte (empty) comment-length field.
     const region = archive.subarray(0, archive.length - 2);
     hasher.update(region);
     const digest = hasher.digest();
+
+    if (!signer) {
+        await write(out, withComment(region, `UNSIGNED:${digest.toString('hex')}`));
+        return { hash: digest.toString('hex'), signed: false };
+    }
+
+    // 4. Sign the hash, and record both as the EOCD comment. Anything the
+    //    signer produced *after* signing — a transparency-log entry, a
+    //    timestamp — comes back as fields and rides in the same comment, since
+    //    it could not have been inside the hash it postdates.
     const { signature, fields } = await signer.sign(digest);
 
     const marker = formatSignature({
@@ -240,14 +247,19 @@ async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
         sig: Buffer.from(signature).toString('hex'),
         fields,
     });
+    await write(out, withComment(region, marker));
+    return { hash: digest.toString('hex'), signed: true };
+}
+
+// The hashed region, then the EOCD comment's length, then the comment.
+function withComment(region: Buffer, marker: string): Buffer {
     const comment = Buffer.from(marker, 'ascii');
     if (comment.length > 0xffff) {
-        throw new Error(`signature marker is ${comment.length} bytes; a ZIP comment holds at most 65535`);
+        throw new Error(`the marker is ${comment.length} bytes; a ZIP comment holds at most 65535`);
     }
     const length = Buffer.alloc(2);
     length.writeUInt16LE(comment.length, 0);
-    await write(out, Buffer.concat([region, length, comment]));
-    return { hash: digest.toString('hex'), signed: true };
+    return Buffer.concat([region, length, comment]);
 }
 
 /**
@@ -261,14 +273,20 @@ export async function bundle({ base, files, prefix, hashAlg = 'sha256', signAlg 
 }
 
 /**
- * Re-emit an existing archive: same members, new prefix, new signature. This is
- * what `bundle sign` runs. `source` is a path to an archive (signed or not,
- * prefixed or not) — its members are read out, its old AUTHORITY.PEM is
- * dropped, and everything is laid down again at the offsets the new prefix
- * implies before the result is hashed and signed as a whole.
+ * Re-emit an existing archive with a new signature: the same members, behind
+ * the same prefix. This is what `bundle sign` runs. `source` is a path to an
+ * archive, signed or not — its members are read out, its old AUTHORITY.PEM is
+ * dropped for one carrying the signer's chain, and everything is laid down
+ * again behind the bytes that preceded it before the result is hashed and
+ * signed as a whole. Which prefix an archive has is decided when it is
+ * created, where it can be reviewed, and never here.
  */
-export async function rebundle({ source, prefix, hashAlg = 'sha256', signAlg = 'sha256', key, chain, signer, out }: RebundleOptions): Promise<EmitResult> {
+export async function rebundle({ source, hashAlg = 'sha256', signAlg = 'sha256', key, chain, signer, out }: RebundleOptions): Promise<EmitResult> {
     const active = signer ?? (key && chain ? keySigner({ key, chain, signAlg }) : undefined);
+    // The archive keeps the shape it was created with: whatever precedes it is
+    // copied as it is, never chosen here.
+    const length = prefixLength(source);
+    const prefix = length ? { path: PATH.resolve(source), length } : undefined;
     const zip = ZLIB.ZipFile.openSync(PATH.resolve(source));
     try {
         // The member list is drained into memory before writing starts: the
@@ -278,6 +296,29 @@ export async function rebundle({ source, prefix, hashAlg = 'sha256', signAlg = '
         for await (const member of fromArchive(zip)) members.push(member);
         if (!members.length) throw new Error(`'${source}' contains no members to sign`);
         return await emit({ members, prefix, hashAlg, signer: active, out });
+    } finally {
+        zip.closeSync();
+    }
+}
+
+/**
+ * Re-emit an existing archive's members behind a different prefix, unsigned:
+ * what turns an application archive into an executable, the SEA base in
+ * front. Like `bundle()`, it decides a shape, and so its result is what gets
+ * reviewed and then signed. Any prefix the source had is left behind.
+ */
+export async function reprefix({ source, prefix, hashAlg = 'sha256', out }: {
+    source: string;
+    prefix: string;
+    hashAlg?: string | undefined;
+    out: Writable;
+}): Promise<EmitResult> {
+    const zip = ZLIB.ZipFile.openSync(PATH.resolve(source));
+    try {
+        const members: Member[] = [];
+        for await (const member of fromArchive(zip)) members.push(member);
+        if (!members.length) throw new Error(`'${source}' contains no members`);
+        return await emit({ members, prefix, hashAlg, out });
     } finally {
         zip.closeSync();
     }
@@ -319,13 +360,12 @@ export const READER_WINDOW = 22 + 0xffff + 20 + 56 + 4096;
  * prefix, inside the signed region; a prefix with no archive end near its own
  * end gets none.
  */
-export function separation(prefix: string): number {
-    const size = FS.statSync(prefix).size;
-    const length = Math.min(size, READER_WINDOW);
+export function separation(prefix: Prefix): number {
+    const length = Math.min(prefix.length, READER_WINDOW);
     const tail = Buffer.alloc(length);
-    const fd = FS.openSync(prefix, 'r');
+    const fd = FS.openSync(prefix.path, 'r');
     try {
-        FS.readSync(fd, tail, 0, length, size - length);
+        FS.readSync(fd, tail, 0, length, prefix.length - length);
     } finally {
         FS.closeSync(fd);
     }
@@ -335,12 +375,56 @@ export function separation(prefix: string): number {
 
 const EOCD_SIGNATURE = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
 
-function prepend(file: string, out: Writable, sink: CRYPTO.Hash | null): Promise<void> {
+/**
+ * How many bytes precede the archive in `source`: its prefix — a `#!`
+ * launcher, a node binary — or 0 for a plain archive. Read from the archive's
+ * own structure: the earliest local file header any central-directory record
+ * points at, whether the offsets are absolute (as this package writes them) or
+ * relative to the archive's start (as `cat prefix archive.zip` leaves them).
+ */
+export function prefixLength(source: string): number {
+    const fd = FS.openSync(PATH.resolve(source), 'r');
+    try {
+        const size = FS.fstatSync(fd).size;
+        const span = Math.min(size, READER_WINDOW);
+        const tail = Buffer.alloc(span);
+        FS.readSync(fd, tail, 0, span, size - span);
+        let at = -1;
+        for (let pos = tail.length - 22; pos >= 0; pos--) {
+            if (tail.readUInt32LE(pos) === 0x06054b50 && pos + 22 + tail.readUInt16LE(pos + 20) === tail.length) { at = pos; break; }
+        }
+        if (at < 0) throw new Error(`'${source}' does not end in a ZIP archive`);
+        const eocd = size - span + at;
+        const records = tail.readUInt16LE(at + 10);
+        const cdSize = tail.readUInt32LE(at + 12);
+        const cdOffset = tail.readUInt32LE(at + 16);
+        if (cdOffset === 0xffffffff || cdSize === 0xffffffff || records === 0xffff) {
+            throw new Error(`'${source}' is a Zip64 archive, which cannot be signed here`);
+        }
+        // Where the central directory is, against where it says it is: 0 for
+        // absolute offsets, the prefix's length for relative ones.
+        const shift = eocd - cdSize - cdOffset;
+        const directory = Buffer.alloc(cdSize);
+        FS.readSync(fd, directory, 0, cdSize, eocd - cdSize);
+        let first = Infinity;
+        for (let pos = 0, n = 0; n < records; n++) {
+            if (directory.readUInt32LE(pos) !== 0x02014b50) throw new Error(`'${source}' has a damaged central directory`);
+            first = Math.min(first, directory.readUInt32LE(pos + 42));
+            pos += 46 + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
+        }
+        return records ? shift + first : eocd - cdSize;
+    } finally {
+        FS.closeSync(fd);
+    }
+}
+
+function prepend(prefix: Prefix, out: Writable, sink: CRYPTO.Hash): Promise<void> {
+    if (!prefix.length) return Promise.resolve();
     return new Promise((resolve, reject) => {
         const tap = new Transform({
-            transform(chunk: Buffer, _enc, cb) { if (sink) sink.update(chunk); cb(null, chunk); },
+            transform(chunk: Buffer, _enc, cb) { sink.update(chunk); cb(null, chunk); },
         });
-        FS.createReadStream(file).on('error', reject)
+        FS.createReadStream(prefix.path, { start: 0, end: prefix.length - 1 }).on('error', reject)
             .pipe(tap).on('error', reject).on('end', () => resolve())
             .pipe(out, { end: false });
     });

@@ -34,11 +34,12 @@ import { attestersFrom, policyFromEnvironment, type Attester } from './attestati
 // third outcome where it quietly falls through to the built-in provider, which
 // checks nothing.
 //
-// So the extensions mean what they say. A `.nzip` is a signed archive and is
-// verified; a `.run` is an unsigned one and is refused here, because the only
-// way to run an unsigned archive is with this provider *not* in the mix — plain
-// `--vfs-load`, no preload. Renaming changes none of that: claiming is by
-// content as well as by name.
+// So what a file is called changes nothing. A `.nzip` is a bundle, signed or
+// not: a signed one mounts when its signature is good, and an unsigned one only
+// when the attestations the policy requires vouch for it. Any other ZIP is
+// claimed too, on the same terms. The only way to run an unsigned archive that
+// nobody vouches for is with this provider *not* in the mix — plain
+// `--vfs-load`, no preload.
 
 export const EXTENSION = '.nzip';
 
@@ -55,8 +56,9 @@ export interface ProviderOptions {
      */
     claimSigned?: boolean | undefined;
     /**
-     * Also claim any file that is a ZIP at all — `.run` included — and refuse
-     * it for want of a signature (default: true).
+     * Also claim any file that is a ZIP at all, whatever it is called, and
+     * refuse it for want of a signature unless attestations vouch for it
+     * (default: true).
      *
      * Without this, an unsigned archive mounts *unverified* through the
      * built-in provider while this one is registered, which reads as a pass.
@@ -153,7 +155,7 @@ export function open(path: string, options?: ProviderOptions | Settings): Bundle
  * selects it for signed archives. Meant to be preloaded, before `--vfs-load`
  * picks a provider:
  *
- *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.run
+ *   node --experimental-vfs -r @pipobscure/bundle/register --vfs-load=app.nzip
  */
 export function register(options?: ProviderOptions): Settings {
     const opts = settings(options);

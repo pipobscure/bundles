@@ -4,7 +4,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { main, USAGE, STATES, COMMANDS, splitRunArgs } from '../src/cli.ts';
-import { createBundle } from '../src/api.ts';
+import { createBundle, verifyBundleSync } from '../src/api.ts';
 import {
     APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, WINDOWS,
     cli, collector, scratch, testSigner, tree,
@@ -121,20 +121,27 @@ test('verify takes the archive as an option as well as a positional', async () =
     assert.equal(await main(['verify', '--archive', archive], io), STATES.unsigned.code);
 });
 
-test('the CLI refuses to write over the archive it is signing', () => {
-    const res = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
-        '--output', PATH.join(tmp, 'bare.run'), PATH.join(tmp, 'bare.run')]);
-    assert.notEqual(res.status, 0);
-    assert.match(res.stderr, /must differ from the input/);
+test('bundle sign turns app.unsigned.nzip into app.nzip, and signs any other name in place', async () => {
+    const unsigned = PATH.join(tmp, 'named.unsigned.nzip');
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+    const named = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, unsigned]);
+    assert.equal(named.status, 0, named.stderr);
+    assert.equal(verifyBundleSync(PATH.join(tmp, 'named.nzip'), { roots: [ROOT_PEM] }).state, 'valid');
+    assert.equal(verifyBundleSync(unsigned).state, 'unsigned', 'the unsigned one is left for the record');
+
+    const inPlace = PATH.join(tmp, 'inplace.nzip');
+    await createBundle({ base: source, files: Object.keys(APP), output: inPlace });
+    const signed = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, inPlace]);
+    assert.equal(signed.status, 0, signed.stderr);
+    assert.equal(verifyBundleSync(inPlace, { roots: [ROOT_PEM] }).state, 'valid');
 });
 
 test('an archive signed through the CLI verifies and runs from its shebang', async () => {
     const unsigned = PATH.join(tmp, 'runnable.run');
     const output = PATH.join(tmp, 'runnable.nzip');
-    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned, prefix: SHELL_BASE });
 
-    const signed = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
-        '--prefix', SHELL_BASE, '--output', output, unsigned]);
+    const signed = cli(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', output, unsigned]);
     assert.equal(signed.status, 0, signed.stderr);
 
     const checked = cli(['verify', '--root', ROOT_PEM, output]);
@@ -253,14 +260,25 @@ test('run passes the program its arguments without needing a separator', async (
     assert.equal(dashed.stdout, plain.stdout);
 });
 
-test('sign --launcher uses the packaged prefix, so nobody hunts for it', async () => {
+test('create --launcher uses the packaged prefix, the audit shows it, and sign keeps it', async () => {
+    const files = PATH.join(tmp, 'launcher.files');
+    FS.writeFileSync(files, Object.keys(APP).join('\n'));
     const unsigned = PATH.join(tmp, 'launcher.run');
     const output = PATH.join(tmp, 'launcher.nzip');
-    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
+
+    const made = collector();
+    assert.equal(await main(['create', '--base', source, '--files', files, '--launcher', '--output', unsigned], made), 0, made.stderr.join('\n'));
+    assert.match(made.stderr.join('\n'), /\* prefix .*shell-base \(\d+ bytes\)/);
+    assert.match(made.stderr.join('\n'), /\* hash: [0-9a-f]{64}/);
+
+    // What is about to be reviewed includes the launcher, line by line.
+    const audited = collector();
+    assert.equal(await main(['audit', unsigned], audited), 0);
+    assert.match(audited.stdout.join('\n'), /prefix: a \d+-byte #! launcher, which runs first:\n {4}\| #!\/bin\/sh/);
 
     const io = collector();
-    assert.equal(await main(['sign', '--launcher', '--key', LEAF_KEY, '--chain', CHAIN_PEM,
-        '--output', output, unsigned], io), 0);
+    assert.equal(await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', output, unsigned], io), 0, io.stderr.join('\n'));
+    assert.match(io.stderr.join('\n'), /keeping its \d+-byte prefix/);
 
     // Same result as naming shell-base by path, without knowing where it lives.
     assert.deepEqual(FS.readFileSync(output).subarray(0, FS.statSync(SHELL_BASE).size),
@@ -272,11 +290,16 @@ test('sign --launcher uses the packaged prefix, so nobody hunts for it', async (
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] x/);
 });
 
-test('--launcher and --prefix are alternatives, not a pair', async () => {
+test('--launcher and --prefix are alternatives, and signing takes neither', async () => {
     const io = collector();
-    assert.equal(await main(['sign', '--launcher', '--prefix', SHELL_BASE,
-        PATH.join(tmp, 'bare.run')], io), 70);
+    assert.equal(await main(['create', '--launcher', '--prefix', SHELL_BASE, '--output', PATH.join(tmp, 'x.run')], io), 70);
     assert.match(io.stderr.join('\n'), /--launcher and --prefix are alternatives/);
+
+    for (const flag of ['--launcher', '-l', `--prefix=${SHELL_BASE}`]) {
+        const refused = collector();
+        assert.equal(await main(['sign', flag, PATH.join(tmp, 'bare.run')], refused), 70);
+        assert.match(refused.stderr.join('\n'), /prefix is chosen when it is created, .*'bundle create --launcher'/);
+    }
 });
 
 test('audit reports what is about to be reviewed, and gates signing on it', async () => {
@@ -308,12 +331,11 @@ test('sea needs somewhere to put the result, and rejects what it cannot do', asy
     assert.match(missingOutput.stderr.join('\n'), /--output is required/);
 
     // Without an archive the result is a verifying node, which carries no
-    // application — so there is nothing for a signing key to sign, and nothing
-    // for a prebuilt base to be added to.
-    const signingNothing = collector();
-    assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea'),
-        '--key', LEAF_KEY, '--chain', CHAIN_PEM], signingNothing), 70);
-    assert.match(signingNothing.stderr.join('\n'), /signing options need an archive/);
+    // application — so there is nothing for a prebuilt base to be added to.
+    // And sea builds; signing is 'bundle sign's.
+    const signing = collector();
+    assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea'), '--key', LEAF_KEY, PATH.join(tmp, 'bare.run')], signing), 70);
+    assert.match(signing.stderr.join('\n'), /Unknown option '--key'/);
 
     const baseWithoutApp = collector();
     assert.equal(await main(['sea', '--output', PATH.join(tmp, 'x.sea'), '--base', process.execPath], baseWithoutApp), 70);

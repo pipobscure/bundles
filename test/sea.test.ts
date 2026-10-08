@@ -56,6 +56,18 @@ const OPEN_BASE = executablePath(PATH.join(tmp, 'open-base'));
 if (!SKIP) await createSeaBase({ output: OPEN_BASE, sigstore: false });
 
 
+/**
+ * Build an executable and sign it, as a user does: 'bundle sea', then 'bundle
+ * sign'. Building leaves it unsigned, so what is signed is what was built.
+ */
+async function sealed(options: Omit<Parameters<typeof buildSea>[0], 'output'> & { output: string }) {
+    const unsigned = `${options.output}.unsigned`;
+    await buildSea({ ...options, output: unsigned });
+    const res = await signBundle({ source: unsigned, output: options.output, signer: testSigner() });
+    FS.rmSync(unsigned);
+    return res;
+}
+
 function run(executable: string, args: string[] = [], env: NodeJS.ProcessEnv = {}) {
     const res = spawnSync(executable, args, { encoding: 'utf-8', env: { ...process.env, ...env } });
     // A spawn that never started has no output to report; say why instead.
@@ -115,10 +127,7 @@ test('the base is a runnable node binary with the verifier inside it', needsSea,
 
 test('a signed container verifies itself and runs the application inside it', needsSea, async () => {
     const output = PATH.join(tmp, 'app.sea');
-    const res = await buildSea({
-        app: APP_BUNDLE, output, base: BASE, signer: testSigner(),
-        bootstrap: { roots: [ROOT_PEM] },
-    });
+    const res = await sealed({ app: APP_BUNDLE, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
     assert.equal(res.signed, true);
     assert.match(res.hash!, /^[0-9a-f]{64}$/);
     if (process.platform !== 'win32') assert.ok(FS.statSync(output).mode & 0o111);
@@ -143,7 +152,7 @@ test('the application inside runs from the mount, not from any real directory', 
     await createBundle({ base: reporting, files: ['package.json', 'index.js'], output: archive });
 
     const output = PATH.join(tmp, 'where.sea');
-    await buildSea({ app: archive, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
+    await sealed({ app: archive, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
 
     const ran = run(output);
     assert.equal(ran.status, 0, ran.stderr);
@@ -165,7 +174,7 @@ test('a CommonJS application is run as CommonJS', needsSea, async () => {
     await createBundle({ base: commonjs, files: ['package.json', 'index.js'], output: archive });
 
     const output = PATH.join(tmp, 'cjs.sea');
-    await buildSea({ app: archive, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
+    await sealed({ app: archive, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
     const ran = run(output);
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /commonjs ran function true/);
@@ -174,7 +183,7 @@ test('a CommonJS application is run as CommonJS', needsSea, async () => {
 
 test('a container whose bytes changed refuses to run anything', needsSea, async () => {
     const output = PATH.join(tmp, 'tampered.sea');
-    await buildSea({ app: APP_BUNDLE, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
+    await sealed({ app: APP_BUNDLE, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
 
     // Change one byte of a member's content. It is inside the region the
     // whole-file hash covers, so the container's own check must catch it.
@@ -208,7 +217,7 @@ test('a trust root baked in at build time needs nothing from the environment', n
     // point of baking anything in: an executable that is run by its own name
     // has no flags and no preload to configure it.
     const output = PATH.join(tmp, 'baked.sea');
-    await buildSea({ app: APP_BUNDLE, output, base: BASE, signer: testSigner() });
+    await sealed({ app: APP_BUNDLE, output, base: BASE });
     const ran = run(output, [], { BUNDLE_ROOTS: '', BUNDLE_ALLOW_UNTRUSTED: '' });
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle/);
@@ -220,7 +229,7 @@ test('a container with nothing baked in takes its policy from the environment', 
     const plainBase = executablePath(PATH.join(tmp, 'plain-base'));
     await createSeaBase({ output: plainBase, sigstore: false });
     const output = PATH.join(tmp, 'plain.sea');
-    await buildSea({ app: APP_BUNDLE, output, base: plainBase, signer: testSigner() });
+    await sealed({ app: APP_BUNDLE, output, base: plainBase });
     FS.rmSync(plainBase);
 
     // Nothing to anchor the chain to: the signature is perfectly good and the
@@ -243,12 +252,21 @@ test('a container built through the CLI is the same self-validating thing', need
     const { main } = await import('../src/cli.ts');
     const { collector } = await import('./helpers.ts');
     const io = collector();
-    const code = await main([
-        'sea', '--output', output, '--base', BASE,
-        '--key', LEAF_KEY, '--chain', CHAIN_PEM,
-        '--root', ROOT_PEM, APP_BUNDLE,
-    ], io);
+    const unsigned = PATH.join(tmp, 'cli.unsigned.sea');
+    const code = await main(['sea', '--output', unsigned, '--base', BASE, '--root', ROOT_PEM, APP_BUNDLE], io);
     assert.equal(code, 0, io.stderr.join('\n'));
+    assert.match(io.stderr.join('\n'), /unsigned\)\n\* review it, then sign it: bundle sign .*\.unsigned/);
+
+    // Unsigned, it is reviewed as it will run — the runtime in front included —
+    // and refuses to run.
+    const audited = collector();
+    assert.equal(await main(['audit', unsigned], audited), 0);
+    assert.match(audited.stdout.join('\n'), /prefix: \d+ bytes of binary, which runs first/);
+    assert.notEqual(run(unsigned, ['cli']).status, 0);
+
+    const signed = collector();
+    assert.equal(await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', output, unsigned], signed), 0, signed.stderr.join('\n'));
+    FS.rmSync(unsigned);
 
     const ran = run(output, ['cli']);
     assert.equal(ran.status, 0, ran.stderr);
@@ -370,10 +388,12 @@ test('a runtime built with a policy of its own takes none from its command line'
 });
 
 test('the same base becomes a self-validating executable by appending an app', needsSea, async () => {
-    // The composition the two shapes share: `sign --prefix` over the runtime
-    // that was serving as a launcher a moment ago.
+    // The composition the two shapes share: `create --prefix` over the runtime
+    // that was serving as a launcher a moment ago, then `sign`.
     const output = PATH.join(tmp, 'appended.sea');
-    await signBundle({ source: APP_BUNDLE, output, prefix: BASE, executable: true, signer: testSigner() });
+    const unsigned = PATH.join(tmp, 'appended.run');
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned, prefix: BASE });
+    await signBundle({ source: unsigned, output, signer: testSigner() });
 
     const ran = run(output, ['appended'], { BUNDLE_ROOTS: ROOT_PEM });
     assert.equal(ran.status, 0, ran.stderr);
@@ -411,7 +431,7 @@ test('a worker thread runs from the application as its main thread does, verifie
 
     // A self-validating executable: the application is its own tail.
     const output = PATH.join(tmp, 'threaded.sea');
-    await buildSea({ app: archive, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
+    await sealed({ app: archive, output, base: BASE, bootstrap: { roots: [ROOT_PEM] } });
     const ran = run(output);
     assert.equal(ran.status, 0, ran.stderr + ran.stdout);
     const said = JSON.parse(ran.stdout) as { greeting: string; from: string; plugins: boolean };

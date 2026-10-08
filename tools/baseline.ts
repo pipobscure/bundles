@@ -40,7 +40,7 @@ const { values } = parseArgs({
     args: process.argv.slice(2),
     options: {
         spec:     { type: 'string' },
-        output:   { type: 'string', default: PATH.join('build', 'baseline.run') },
+        output:   { type: 'string', default: PATH.join('build', 'baseline.nzip') },
         member:   { type: 'string', multiple: true },
         identity: { type: 'string', multiple: true },
         issuer:   { type: 'string' },

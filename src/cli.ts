@@ -1,7 +1,7 @@
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
-import { createBundle, signBundle, verifyBundle, runBundle, fileSigner } from './api.ts';
+import { createBundle, signBundle, signedName, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members } from './archive.ts';
 import { launcherPath, packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
@@ -47,10 +47,12 @@ commands:
   skill     install this package's bundle-auditing skill into a project
   shell     print what to load at shell start: Tab completion, and validate
 
-create options:
+create options:                     usage: create [options]
   -b, --base <dir>      base directory the file list is relative to (default: .)
-  -p, --prefix <file>   prefix prepended before the archive (launcher or binary);
-                        omit it for a plain archive meant to be run from a mount
+  -l, --launcher        put this package's shell launcher in front, so the
+                        result runs by name — the usual way to make a program
+  -p, --prefix <file>   put some other prefix in front: a launcher of your own,
+                        or a verifying node; omit both for a plain archive
   -f, --files <file>    read the newline-separated file list from here (default: stdin)
   -o, --output <file>   write the archive here (default: stdout)
   -k, --key <file>      leaf private key (PEM); signs at build time with --chain
@@ -58,13 +60,17 @@ create options:
       --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
       --sign <alg>      digest the signature over that hash uses (default: sha256)
 
+  the prefix decides the archive's shape, and is part of what an audit
+  reviews; signing keeps it. Every member records its own digest, and the
+  archive records its whole-file hash, so even unsigned it says what its
+  bytes should be.
+
 sign options:                       usage: sign [options] <archive>
-  -o, --output <file>   write the signed archive here (default: stdout)
-  -l, --launcher        prepend this package's shell launcher, so the result runs
-                        by name — the usual way to make a self-executing archive
-  -p, --prefix <file>   prepend some other prefix: a launcher of your own, or a
-                        node binary; omit both for a plain mountable archive
-  -x, --executable      make the output executable (implied by --launcher/--prefix)
+  -o, --output <file>   write the signed archive here; '-' for stdout. By
+                        default app.unsigned.nzip is signed into app.nzip, and
+                        a name without '.unsigned' is signed in place
+  -x, --executable      make the output executable (implied when the archive
+                        has a prefix)
       --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
       --sign <alg>      digest the signature over that hash uses (default: sha256)
 
@@ -187,6 +193,7 @@ run options:                        usage: run [options] <archive> [app args...]
 
 sea options:                        usage: sea [options] [archive]
   -o, --output <file>   write the executable here (required)
+      --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
       --node <file>     node binary to embed (default: the running one)
       --base <file>     reuse a SEA base built earlier instead of building one
       --no-sigstore     leave the sigstore libraries out of the embedded verifier
@@ -214,8 +221,10 @@ sea options:                        usage: sea [options] [archive]
   checks attestations against the cache 'bundle trust' keeps current, and
   never the network.
 
-  the signing options are the same as 'sign': sigstore by default, or --key
-  with --chain against a certificate authority of your own
+  with an archive, the executable is built unsigned, and refuses to run until
+  'bundle sign' signs it: the same create, audit, sign order as any archive,
+  so what is signed is what was reviewed. A verifying node needs no
+  signature of its own; it checks what it is handed.
 
 search options:                     usage: search [options] <words>...
       --for <app>       search the plugins listed for this app instead: an app
@@ -541,6 +550,16 @@ async function create(args: string[], io: Console): Promise<number> {
         options: OPTIONS.create,
     });
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('create: --key and --chain must be given together');
+    if (values.launcher && values.prefix) throw new Error('create: --launcher and --prefix are alternatives');
+
+    // The prefix is the archive's shape, decided here and nowhere else: it is
+    // part of what an audit reviews, and signing keeps it. `--launcher` is
+    // `--prefix <this package's shell-base>`, spelled so that nobody has to
+    // know the prefix ships inside node_modules.
+    let prefix = values.launcher ? launcherPath() : values.prefix;
+    // A verifying node built as `--output node-verifying` is `node-verifying.exe`
+    // on Windows; `--prefix node-verifying` means that one.
+    if (prefix && process.platform === 'win32' && !FS.existsSync(prefix) && FS.existsSync(`${prefix}.exe`)) prefix = `${prefix}.exe`;
 
     const listing = values.files ? FS.readFileSync(values.files, 'utf-8') : await readStdin();
     const files = [...new Set(listing.split(/\r?\n/).filter(Boolean))].sort();
@@ -550,17 +569,25 @@ async function create(args: string[], io: Console): Promise<number> {
     io.err(values.key
         ? `* signed archive (${files.length} members, ${values.hash} digests, ${values.sign} signature)`
         : `* unsigned archive (${files.length} members, ${values.hash} digests)`);
+    if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
 
-    await createBundle({
-        base: values.base, files, prefix: values.prefix, output: values.output,
+    const res = await createBundle({
+        base: values.base, files, prefix, output: values.output,
         hashAlg: values.hash, signAlg: values.sign,
         key: values.key ? FS.readFileSync(values.key) : undefined,
         chain: values.chain ? FS.readFileSync(values.chain, 'utf-8') : undefined,
     });
+    io.err(`* ${values.key ? 'signed' : 'hash'}: ${res.hash}`);
     return 0;
 }
 
 async function sign(args: string[], io: Console): Promise<number> {
+    // The shape used to be chosen here. Say where it went, rather than
+    // "unknown option".
+    if (args.some((arg) => /^(?:-l|-p|--launcher|--prefix)(?:=|$)/.test(arg))) {
+        throw new Error("sign: an archive's prefix is chosen when it is created, so that it is part of what is reviewed — " +
+            "'bundle create --launcher' (or --prefix), then 'bundle sign' signs it as it is");
+    }
     const { values, positionals } = parseArgs({
         args,
         allowPositionals: true,
@@ -569,22 +596,21 @@ async function sign(args: string[], io: Console): Promise<number> {
     const source = positionals[0];
     if (!source) throw new Error('sign: an archive path is required');
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('sign: --key and --chain must be given together');
-    if (values.launcher && values.prefix) throw new Error('sign: --launcher and --prefix are alternatives');
-
-    // `--launcher` is `--prefix <this package's shell-base>`, spelled so that
-    // nobody has to know the prefix ships inside node_modules.
-    let prefix = values.launcher ? launcherPath() : values.prefix;
-    // A verifying node built as `--output node-verifying` is `node-verifying.exe`
-    // on Windows; `--prefix node-verifying` means that one.
-    if (prefix && process.platform === 'win32' && !FS.existsSync(prefix) && FS.existsSync(`${prefix}.exe`)) prefix = `${prefix}.exe`;
 
     for (const name of members(source)) io.err(`+ ${name}`);
-    if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
+    const { prefixLength } = await import('./archive.ts');
+    const prefix = prefixLength(source);
+    if (prefix) io.err(`* keeping its ${prefix}-byte prefix`);
 
     const signer = await chooseSigner(values, io);
 
+    // An archive is an `.nzip` whether it is signed or not. By default the
+    // signed one goes where the name says: `app.unsigned.nzip` → `app.nzip`,
+    // and a name without `.unsigned` is signed in place — replaced only once
+    // the signed archive is complete. `-o -` is stdout.
+    const output = values.output === undefined ? signedName(source) : values.output === '-' ? undefined : values.output;
     const res = await signBundle({
-        source, output: values.output, prefix, executable: values.executable,
+        source, output, executable: values.executable,
         hashAlg: values.hash, signAlg: values.sign, signer,
     });
     io.err(`* signed: ${res.hash}`);
@@ -1618,10 +1644,18 @@ function audit(args: string[], io: Console): number {
     if (found.state === 'unsigned') {
         io.out('  unsigned, as an archive that has not been signed yet should be');
     }
+    // The prefix runs before anything in the archive does, so it is reviewed
+    // with it: a launcher in full, anything else by size and hash.
+    if (found.prefix?.script) {
+        io.out(`  prefix: a ${found.prefix.bytes}-byte #! launcher, which runs first:`);
+        for (const line of found.prefix.script.trimEnd().split('\n')) io.out(`    | ${line}`);
+    } else if (found.prefix) {
+        io.out(`  prefix: ${found.prefix.bytes} bytes of binary, which runs first (sha256 ${found.prefix.sha256.slice(0, 16)}…)`);
+    }
     if (found.baseline) {
         io.out(`  against ${found.baseline.path} (${found.baseline.sha256.slice(0, 16)}…)`);
         io.out(`  ${found.baseline.added.length} added, ${found.baseline.removed.length} removed, ` +
-            `${found.baseline.carried} carried over`);
+            `${found.baseline.carried} carried over${found.prefix ? `, prefix ${found.baseline.samePrefix ? 'unchanged' : 'CHANGED'}` : ''}`);
         for (const name of found.baseline.added.slice(0, 10)) io.out(`    + ${name}`);
         for (const name of found.baseline.removed.slice(0, 10)) io.out(`    - ${name}`);
     } else {
@@ -1654,7 +1688,6 @@ async function sea(args: string[], io: Console): Promise<number> {
     });
     const app = positionals[0];
     if (!values.output) throw new Error('sea: --output is required');
-    if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('sea: --key and --chain must be given together');
 
     const SEA = await import('./sea.ts');
     // A policy baked into a runtime is the last word: it would be no policy at
@@ -1675,9 +1708,6 @@ async function sea(args: string[], io: Console): Promise<number> {
     };
 
     if (!app) {
-        if (values.key || values.chain) {
-            throw new Error('sea: signing options need an archive to sign — a verifying node carries none');
-        }
         if (values.base) throw new Error('sea: --base reuses a runtime; without an archive there is nothing to add to it');
         io.err('* building a verifying node (node runtime + verifier, no application)');
         const built = await SEA.createSeaBase({
@@ -1691,20 +1721,22 @@ async function sea(args: string[], io: Console): Promise<number> {
         return 0;
     }
 
-    const signer = await chooseSigner(values, io);
+    // Built here, signed by 'bundle sign': the executable is reviewed as it
+    // will run, and what is signed is what was reviewed.
     const res = await SEA.buildSea({
         app,
         output: values.output,
         node: values.node,
         base: values.base,
         sigstore: values.sigstore,
-        signer,
         hashAlg: values.hash,
-        signAlg: values.sign,
         bootstrap,
         log: io.err,
     });
-    if (res.output) io.err(`* wrote ${res.output} (${res.size} bytes)`);
+    if (res.output) {
+        io.err(`* wrote ${res.output} (${res.size} bytes, unsigned)`);
+        io.err(`* review it, then sign it: bundle sign ${res.output}${res.output.includes('.unsigned') ? '' : ' (in place)'}`);
+    }
     return 0;
 }
 
@@ -1844,6 +1876,7 @@ function readStdin(): Promise<string> {
 export const OPTIONS = {
     create: {
         base:   { type: 'string', short: 'b', default: '.' },
+        launcher: { type: 'boolean', short: 'l' },
         prefix: { type: 'string', short: 'p' },
         files:  { type: 'string', short: 'f' },
         output: { type: 'string', short: 'o' },
@@ -1854,8 +1887,6 @@ export const OPTIONS = {
     },
     sign: {
         output:     { type: 'string',  short: 'o' },
-        launcher:   { type: 'boolean', short: 'l' },
-        prefix:     { type: 'string',  short: 'p' },
         executable: { type: 'boolean', short: 'x' },
         key:        { type: 'string',  short: 'k' },
         chain:      { type: 'string',  short: 'c' },
@@ -1945,17 +1976,7 @@ export const OPTIONS = {
         root:      { type: 'string',  short: 'r', multiple: true },
         identity:  { type: 'string' },
         issuer:    { type: 'string' },
-        key:       { type: 'string',  short: 'k' },
-        chain:     { type: 'string',  short: 'c' },
         hash:      { type: 'string',  default: 'sha256' },
-        sign:      { type: 'string',  default: 'sha256' },
-        flow:      { type: 'string',  default: 'auto' },
-        token:     { type: 'string' },
-        'oidc-issuer': { type: 'string' },
-        connector: { type: 'string' },
-        fulcio:    { type: 'string' },
-        rekor:     { type: 'string' },
-        tsa:       { type: 'string' },
         ...POLICY_OPTIONS,
     },
     trust: {

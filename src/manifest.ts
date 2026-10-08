@@ -307,10 +307,12 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
 
     const { hashAlg, signAlg, chain } = parseManifest(authority.contentSync());
 
-    // The signature lives in the EOCD comment as `SIGNED:<hash>:<sig>`; the
+    // The signature lives in the EOCD comment as `SIGNED:<hash>:<sig>` — or,
+    // for an archive not signed yet, the hash alone as `UNSIGNED:<hash>`. The
     // region the hash covers ends just before the comment's length field.
     const eocd = locateEocd(io.tail(), io.size);
     const marker = parseSignature(eocd.comment.toString('ascii'));
+    const recorded = marker ? marker.hash : parseUnsigned(eocd.comment.toString('ascii'));
     const signed = Boolean(signAlg && chain.length > 0 && marker);
     // An unsigned archive is only worth hashing when attestations could vouch
     // for it; otherwise "unsigned" is the whole answer.
@@ -329,7 +331,7 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     } catch {
         digest = null;
     }
-    if (marker && digest !== marker.hash) return result('invalid', 'archive hash does not match the recorded hash', chain, { hashAlg });
+    if (recorded && digest !== recorded) return result('invalid', 'archive hash does not match the recorded hash', chain, { hashAlg });
     if (digest === null) return result('invalid', 'archive could not be hashed', chain, { hashAlg });
 
     // 2. Authenticity: the recorded hash must be signed by the leaf certificate.
@@ -540,6 +542,17 @@ function sigstoreTrust(
  * archive is unsigned (no such marker). Field values never contain a `:`, which
  * is what keeps splitting on it unambiguous (base64 does not use one).
  */
+/**
+ * The whole-file hash an unsigned archive records — `UNSIGNED:<hash>`, which
+ * `bundle create` writes — or null. It says what the bytes should hash to,
+ * not who made them: anyone can recompute it, so it catches damage and
+ * accidents, and only a signature speaks to authorship.
+ */
+export function parseUnsigned(comment: string): string | null {
+    const m = /^UNSIGNED:([0-9a-f]+)$/.exec(String(comment).trim());
+    return m ? m[1]!.toLowerCase() : null;
+}
+
 export function parseSignature(comment: string): SignatureMarker | null {
     const m = /^SIGNED:([0-9a-f]+):([0-9a-f]+)((?::[A-Za-z0-9_]+=[^:]*)*)$/.exec(String(comment).trim());
     if (!m) return null;

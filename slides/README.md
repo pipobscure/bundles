@@ -103,8 +103,8 @@ moving window over the recent past, not a complete history. The caption says so.
   last rehearsed with two flags, re-read `0x09` and `0x0A`.
 - **Re-type the install/publish slide's commands** before you show them. They
   are the ones an audience will copy, and they are the newest thing in the deck:
-  `bundle sign --launcher`, `bundle install <url>`, `bundle update`. The archive
-  extensions mean something — `.run` is unsigned, `.nzip` is signed — so a slide
+  `bundle create --launcher`, `bundle sign`, `bundle install <url>`, `bundle update`. Every
+  bundle is an `.nzip`, signed or not, and the unsigned one is `app.unsigned.nzip` — so a slide
   that mixes them up says the opposite of what it means.
 
 - **Verify the Shai-Hulud framing** on `0x03`. Reporting varies by source and wave; the
@@ -133,9 +133,9 @@ moving window over the recent past, not a complete history. The caption says so.
   npm run build && npm run testpki
   BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
       -r @pipobscure/bundle/record --vfs-load=./app -- Ada
-  npx bundle create --base ./app -f app.manifest -o app.run
-  npx bundle sign --launcher \
-      --key build/certs/leaf.key --chain build/certs/chain.pem -o app.nzip app.run
+  npx bundle create --base ./app -f app.manifest --launcher -o app.unsigned.nzip
+  npx bundle sign \
+      --key build/certs/leaf.key --chain build/certs/chain.pem app.unsigned.nzip
   ```
 
   The demo is deliberately two commands — `create` then `sign` — because signing is a

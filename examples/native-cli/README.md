@@ -36,8 +36,8 @@ Then bundle it the way anything else is bundled:
 
 ```sh
 printf 'package.json\nindex.ts\nlibnative_cli.so\n' > native-cli.manifest
-bundle create --base examples/native-cli --files native-cli.manifest --output native-cli.run
-bundle sign --launcher --output native-cli.nzip native-cli.run
+bundle create --base examples/native-cli --files native-cli.manifest --launcher --output native-cli.unsigned.nzip
+bundle sign native-cli.unsigned.nzip       # -> native-cli.nzip
 
 ./native-cli.nzip echo alpha beta
 ```

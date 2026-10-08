@@ -56,17 +56,26 @@ be inside what the signature covers — which is where the sigstore bundle rides
 transparency-log entry and timestamp that establish *when* a ten-minute certificate was
 valid. RFC 3161 puts timestamp tokens in CMS `unsignedAttrs` for exactly this reason.
 
-**Prefixes.** ZIP offsets are absolute, so an archive can sit *after* arbitrary bytes and
-still be a valid ZIP — which is what lets one build become a `#!` launcher, a native
-executable, or a plain mountable archive. The prefix has to be chosen before offsets are
-fixed, and therefore before the hash exists, which is exactly why signing re-emits an archive
-rather than appending to one.
+**Unsigned, it still records its hash.** `bundle create` writes `UNSIGNED:<hash>` where a
+signature would go: the same whole-file hash over the same region. It says what the bytes
+should be, so damage shows, and it is what attestations of an unsigned bundle name. It says
+nothing about who made it, since anyone can recompute it; that is the signature's job.
 
-**The two extensions say which is which.** A `.run` is an archive that has not been signed.
-A `.nzip` has been, and is what anything else should be handed. The verifying provider knows
-the difference: registered, it claims every archive it is offered and mounts only the ones
-that verify, so a `.run` does not run through it at all. Running an unsigned archive is
-something you do deliberately, with that provider out of the picture.
+**Prefixes.** ZIP offsets can be absolute, so an archive can sit *after* arbitrary bytes and
+still be a valid ZIP — which is what lets a bundle be a `#!` launcher, a native executable,
+or a plain mountable archive. The prefix is chosen when the archive is **created**, because
+it runs: a launcher is a shell script, a binary is a runtime, and either runs before anything
+in the archive does. So it is part of what an audit reviews, and signing keeps it byte for
+byte. Signing still re-emits the archive rather than appending to it, since the certificate
+chain goes into `AUTHORITY.PEM` and moves every offset after it, but it does so behind the
+prefix it was given.
+
+**Every bundle is an `.nzip`.** Signed or not: an unsigned one is a bundle that attestations
+can vouch for. The verifying provider claims every archive it is offered, whatever it is
+called, and mounts one only when its signature checks out, or when the attestations the
+policy requires vouch for it. Running an unsigned archive nobody vouches for is something you
+do deliberately, with that provider out of the picture. While both copies exist, the unsigned
+one is conventionally `app.unsigned.nzip`, and signing writes `app.nzip`.
 
 ## Building one
 
@@ -111,9 +120,12 @@ point: hold your own artifact to the standard you would hold someone else's. It 
 review only the **diff** against a previously approved archive, which is the realistic
 repeat-use case.
 
-**Why sign separately.** One unsigned build serves every target, a `#!` launcher, a
-standalone executable or a plain mountable archive, because each shape is signed over its own
-finished bytes (see [Prefixes](#the-archive) above).
+**Why sign separately, and last.** What is signed should be exactly what was reviewed. So
+`create` decides everything about the archive, the prefix included, `audit` reviews that
+file, and `sign` adds a signature without changing anything else (see
+[Prefixes](#the-archive) above). It signs in place by default, writing the signed archive
+beside the original and moving it over only once it is complete, so a failed sign leaves the
+reviewed file as it was.
 
 **Why sigstore by default.** There is no long-lived key to steal. The certificate lasts about
 ten minutes, and the transparency-log entry and timestamp recorded with the signature are
@@ -153,18 +165,23 @@ is the difference between the two shapes it can take.
 before running anything:
 
 ```
-[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app.run ]
+[ node runtime | SEA blob: stub + the verifier, as a mounted archive ] [ app ]
   \_______________________ the prefix, and part of the _______________/
    \______________________ archive's signed region ______/
 ```
 
 ```sh
-bundle sea --output app.sea \
+bundle sea --output app.unsigned \
     --root /etc/ssl/my-root.pem \
     --identity 'https://github.com/me/app/.github/workflows/release.yml@refs/heads/main' \
     --issuer 'https://token.actions.githubusercontent.com' \
-    app.run
+    app.unsigned.nzip
+bundle sign app.unsigned          # -> app
 ```
+
+`bundle sea` builds; it does not sign. The executable is a new archive with a new prefix, the
+runtime, so it is reviewed as it will run and then signed, like any other. Until it is signed,
+it refuses to run.
 
 The whole-file hash covers the prefix too, so the runtime and the verifier inside it are
 signed by the same signature that covers the application. There is nothing to check the
@@ -184,8 +201,8 @@ application sees the argv it would have had from `--vfs-load`: the archive where
 path goes, its own arguments from index 2 on, and none of the runtime's flags — which is why
 everything after the archive belongs to the program, `--help` included.
 
-The two are the same binary. A verifying node with an archive appended to it — `bundle sign
---prefix node-verifying app.run` — *is* the self-validating executable, and at startup the
+The two are the same binary. A verifying node with an archive behind it — `bundle create
+--prefix node-verifying …`, then `bundle sign` — *is* the self-validating executable, and at startup the
 runtime decides which it is by looking at its own tail: a signed archive behind it runs that,
 nothing behind it takes one from the command line, and an *unsigned* archive behind it is
 refused rather than quietly treated as neither.
@@ -437,18 +454,18 @@ Building the tool the way the tool says to build things — the same four steps:
 ```sh
 npm run release:cli         # 1-3: observe, pack, fetch the baseline, stop at the gate
 npm run sign:cli:local      # 4: refuses — nothing has been audited yet
-BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.run"
+BUNDLE_AUDIT_VERDICT=build/cli.audit.json claude "/audit-bundle build/cli.unsigned.nzip"
 npm run sign:cli:local      # 4: now allowed -> bundle.nzip
 ```
 
 | Script | |
 |---|---|
 | `manifest:cli` | observe a run, close over the dependencies, write the file list |
-| `pack:cli` | `bundle create` over that list |
+| `pack:cli` | `bundle create --launcher` over that list |
 | `baseline:cli` | fetch and verify the published release, to review against |
 | `audit:cli` | `bundle audit` — report the diff and print the skill invocation |
 | `approve:cli` | `bundle audit --approve` |
-| `sign:cli` | `bundle audit --check`, then `bundle sign --launcher` through sigstore |
+| `sign:cli` | `bundle audit --check`, then `bundle sign` through sigstore |
 | `release:cli` | steps 1–3, stopping at the gate |
 
 Only `manifest:cli` and `baseline:cli` are scripts of their own; the rest are the CLI. The

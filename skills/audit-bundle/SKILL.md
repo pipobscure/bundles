@@ -95,9 +95,17 @@ unzip -o <archive> -d <scratch>/extracted
 
 A prefixed archive (`app.nzip`, or a SEA binary) extracts correctly too — the offsets
 are absolute, which is the point of building it that way. `unzip` echoes the EOCD
-comment, so the `SIGNED:<hash>:<signature>` marker scrolls past first; that is the
-signature itself, not output to act on. Some `unzip` builds additionally warn about
-leading bytes before the archive. Neither is a finding.
+comment, so the `SIGNED:<hash>:<signature>` marker (or, unsigned, `UNSIGNED:<hash>`)
+scrolls past first; that is the signature or the recorded hash, not output to act on.
+Some `unzip` builds additionally warn about leading bytes before the archive. Neither is
+a finding.
+
+**The prefix is part of the review.** Whatever precedes the archive runs before
+anything in it does, and signing keeps it as it is. `bundle audit <archive>` prints a
+`#!` launcher in full; read it like any other script — it should do nothing but start
+node on the archive itself (`exec node … --vfs-load="$0" -- "$@"`), and anything else in
+it is a finding. A binary prefix (an executable built by `bundle sea`) is reported by
+size and hash: say what it is, and, against a baseline, whether it changed.
 
 Then reconcile:
 
@@ -191,9 +199,9 @@ anything but a clean result.
 
 ```json
 {
-  "bundle": "build/cli.run",
+  "bundle": "build/cli.unsigned.nzip",
   "sha256": "<sha256sum of the archive file, lower-case hex>",
-  "baseline": "build/baseline.run",
+  "baseline": "build/baseline.nzip",
   "baselineSha256": "<sha256sum of the archive it was reviewed against>",
   "mode": "sign",
   "state": "unsigned",

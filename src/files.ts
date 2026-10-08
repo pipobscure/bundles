@@ -131,7 +131,7 @@ export function moduleFiles({ base, files = [], dirs = [], dependencies = [], fi
 
 /**
  * The shell launcher this package ships: the prefix that turns an archive into
- * a file you can run by name. `bundle sign --launcher` uses it, so nobody has
+ * a file you can run by name. `bundle create --launcher` uses it, so nobody has
  * to know it lives inside `node_modules`.
  */
 export function launcherPath(): string {

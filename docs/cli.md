@@ -11,10 +11,10 @@ bundle --help          bundle -v, --version
 
 | Building and signing | |
 |---|---|
-| [`create`](#create) | build an unsigned archive from a list of files |
+| [`create`](#create) | build an archive from a list of files, behind a launcher or a binary if asked |
 | [`audit`](#audit) | report what is about to be reviewed, and gate signing on the verdict |
-| [`sign`](#sign) | sign an archive into a new file, optionally behind a launcher or a binary |
-| [`sea`](#sea) | build a node runtime that verifies an archive before running it |
+| [`sign`](#sign) | sign an archive as it is: `app.unsigned.nzip` into `app.nzip`, or in place |
+| [`sea`](#sea) | build a node runtime that verifies an archive before running it, unsigned until signed |
 
 | Checking and running | |
 |---|---|
@@ -96,37 +96,50 @@ could not tell" with "this is forged" is how people learn to click through warni
 
 ```
 bundle create [options] < file-list
-bundle create --base ./app --files app.manifest --output app.run
+bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip   # runs by name
+bundle create --base ./app --files app.manifest --output app.unsigned.nzip              # a plain archive, for a mount
 ```
 
 Builds an archive from a newline-separated list of files, read from `--files` or from stdin,
-relative to `--base`. Each member records the digest of its own content, and an
-`AUTHORITY.PEM` member declares the algorithms. The result is **unsigned**, deliberately:
-it is the one input to every shape you then sign ([`sign`](#sign), [`sea`](#sea)), and the
-thing [`audit`](#audit) reviews. By convention it is called `.run`.
+relative to `--base`. Each member records the digest of its own content, an `AUTHORITY.PEM`
+member declares the algorithms, and the archive records its whole-file hash
+(`UNSIGNED:<hash>` in its end comment). So even unsigned, it says what its bytes should be,
+and anything that hashes it notices if they are not.
+
+**This is where an archive's shape is decided.** `--launcher` puts this package's two-line
+`#!/bin/sh` launcher in front, so the result runs by name. `--prefix` puts something else
+there: a launcher of your own, or a verifying node built by [`sea`](#sea). Without either it
+is a plain archive, to be run from a mount. The prefix runs before anything in the archive
+does, so it is part of what [`audit`](#audit) reviews, and [`sign`](#sign) keeps it as it is.
+
+The result is **unsigned**, and that is a bundle in its own right: one that attestations can
+vouch for, or that [`sign`](#sign) signs. Every bundle is an `.nzip`. While both an unsigned
+and a signed copy are around, call the unsigned one `app.unsigned.nzip`: signing then writes
+`app.nzip`.
 
 | Option | |
 |---|---|
 | `-b, --base <dir>` | the directory the file list is relative to (default: `.`) |
 | `-f, --files <file>` | read the file list from here (default: stdin) |
 | `-o, --output <file>` | write the archive here (default: stdout) |
-| `-p, --prefix <file>` | put this in front of the archive: a launcher or a node binary. Omit it for a plain archive, to be run from a mount. |
+| `-l, --launcher` | put this package's `#!/bin/sh` launcher in front, so the result runs by name. The usual way to make a program. |
+| `-p, --prefix <file>` | put this in front instead: a launcher of your own, or a verifying node |
 | `-k, --key <file>` | sign as it is built, with this private key (PEM) — only with `--chain` |
 | `-c, --chain <file>` | the certificate chain for `--key` (PEM, leaf first) |
 | `--hash <alg>` | the digest for the whole-file hash and the member digests (default: `sha256`) |
 | `--sign <alg>` | the digest the signature uses (default: `sha256`) |
 
-Signing at build time is for a certificate authority of your own. To sign through sigstore,
-create unsigned and use [`sign`](#sign).
+Signing at build time is for a certificate authority of your own, and skips the review in
+between. To review first, or to sign through sigstore, create unsigned and use [`sign`](#sign).
 
 ### `audit`
 
 ```
 bundle audit [options] <archive>
-bundle audit app.run                                  # what is about to be reviewed, and how
-bundle audit --baseline last-release.nzip app.run     # ...as a diff against what was approved before
-bundle audit --check app.run && bundle sign …         # the gate
-bundle audit --approve --note 'read every member' app.run
+bundle audit app.unsigned.nzip                                   # what is about to be reviewed, and how
+bundle audit --baseline last-release.nzip app.unsigned.nzip      # ...as a diff against what was approved before
+bundle audit --check app.unsigned.nzip && bundle sign …          # the gate
+bundle audit --approve --note 'read every member' app.unsigned.nzip
 ```
 
 The review itself needs judgement, so no command performs it. `audit` does the two mechanical
@@ -134,8 +147,10 @@ halves around it.
 
 - **On its own**, it reports the archive's hash and members, and how to run the review: the
   [`audit-bundle`](../skills/audit-bundle/SKILL.md) skill (see [`skill`](#skill)), or reading it
-  yourself. With `--baseline`, it says what was added and removed since an archive you approved
-  before, so the review can be of the difference.
+  yourself. It shows the **prefix** too, because it runs first: a `#!` launcher line by line,
+  a binary by size and hash. With `--baseline`, it says what was added and removed since an
+  archive you approved before, and whether the prefix changed, so the review can be of the
+  difference.
 - **`--check`** is the gate. It reads the JSON verdict (the skill writes one) and exits
   non-zero unless that verdict passed, names the sha256 of the bytes on disk, and was reached
   against the same baseline. Rebuilding invalidates an approval.
@@ -157,15 +172,24 @@ your pipeline.
 
 ```
 bundle sign [options] <archive>
-bundle sign --launcher --output app.nzip app.run                 # runs by name, signed through sigstore
-bundle sign --output app.signed.nzip app.run                     # a plain archive, for a mount
-bundle sign --key leaf.key --chain chain.pem --output app.nzip app.run   # your own CA
+bundle sign app.unsigned.nzip                               # -> app.nzip, signed through sigstore
+bundle sign app.nzip                                        # signs it in place
+bundle sign --key leaf.key --chain chain.pem app.unsigned.nzip   # your own CA
 ```
 
-Re-emits an archive's members into a new file, behind whatever prefix is asked for, and signs
-the finished bytes. The input is never modified. The signature covers the **whole file**:
-the prefix, every member, and the central directory. So each shape (a launcher, an executable,
-a plain archive) is correctly offset and signed over itself.
+Signs an archive as it is: the same members, behind the same prefix it was created with, so
+what is signed is what was reviewed. The certificate chain goes into `AUTHORITY.PEM`, and the
+signature covers the **whole file**: the prefix, every member, and the central directory.
+
+**Where the result goes.** `app.unsigned.nzip` is signed into `app.nzip` (and an executable
+`app.unsigned` into `app`), leaving the unsigned copy as it was. Any other name is signed in
+place. Either way the result is written beside its destination and moved over it only once
+it is complete, so a sign that fails leaves everything as it was. `--output` names somewhere
+else, and `--output -` is stdout. The result is made executable when the archive has a
+prefix.
+
+A shape is never chosen here. The old `--launcher` and `--prefix` options moved to
+[`create`](#create), where the prefix is part of what gets reviewed.
 
 **Through sigstore by default.** The signing certificate is issued for an identity you sign in
 as. In CI that is the workflow's own token; elsewhere it is a browser sign-in, or a device
@@ -175,10 +199,8 @@ afterwards. Or sign against a certificate authority of your own with `--key` and
 
 | Option | |
 |---|---|
-| `-o, --output <file>` | write the signed archive here (default: stdout) |
-| `-l, --launcher` | prepend this package's two-line `#!/bin/sh` launcher, so the result runs by name. The usual way to make a self-executing archive. |
-| `-p, --prefix <file>` | prepend some other prefix: a launcher of your own, or a node binary |
-| `-x, --executable` | make the output executable (implied by `--launcher` and `--prefix`) |
+| `-o, --output <file>` | write the signed archive here; `-` for stdout (default: `app.unsigned.nzip` → `app.nzip`, otherwise in place) |
+| `-x, --executable` | make the output executable (implied when the archive has a prefix) |
 | `--hash <alg>`, `--sign <alg>` | as for [`create`](#create) |
 | `-k, --key <file>` | sign with this private key (PEM) instead of sigstore — with `--chain` |
 | `-c, --chain <file>` | the certificate chain for `--key` (PEM, leaf first) |
@@ -197,28 +219,32 @@ into an append-only log.
 
 ```
 bundle sea --output <file> [options] [archive]
-bundle sea --output app.sea --identity '<workflow>' --issuer '<issuer>' app.run   # the application
-bundle sea --output node-verifying --root my-root.pem                             # a verifying node
+bundle sea --output app.unsigned --identity '<workflow>' --issuer '<issuer>' app.unsigned.nzip
+bundle sign app.unsigned                                                        # -> app
+bundle sea --output node-verifying --root my-root.pem                           # a verifying node
 ```
 
 Builds a node runtime with this package's verifier inside it.
 
 - **With an archive, the result is that application:** one executable that verifies its own
-  signature before running anything. The signature covers the runtime and the verifier too.
+  signature before running anything. It is built **unsigned**, and refuses to run until
+  [`sign`](#sign) signs it: the same create, audit, sign order as any archive, so the
+  executable is reviewed as it will run. The signature covers the runtime and the verifier
+  too. Any prefix the archive had is replaced by the runtime.
 - **Without one, the result is a verifying node:** a runtime that takes an archive on its
-  command line (`./node-verifying app.zip --args`), verifies it, and runs it. `--verify`
-  reports the trust state without running anything.
+  command line (`./node-verifying app.nzip --args`), verifies it, and runs it. `--verify`
+  reports the trust state without running anything. It needs no signature of its own.
 
 The policy flags given here (`--root`, `--identity`, `--issuer`, `--attester`, `--quorum`,
 `--max-age`, `--untrusted`) are **baked in**, and a runtime with a policy is **sealed**: its
 command line cannot loosen that policy. `--block` only ever tightens, so the runtime accepts
-it at any time. Signing works as for [`sign`](#sign): sigstore by default, or `--key` and
-`--chain`. Attestations are checked against the cache [`trust`](#trust) keeps, never the
+it at any time. Attestations are checked against the cache [`trust`](#trust) keeps, never the
 network.
 
 | Option | |
 |---|---|
 | `-o, --output <file>` | where to write the executable (required) |
+| `--hash <alg>` | the digest for the whole-file hash and the member digests (default: `sha256`) |
 | `--node <file>` | the node binary to embed (default: the one running) |
 | `--base <file>` | reuse a runtime built before, instead of building one |
 | `--no-sigstore` | leave the sigstore libraries out of the verifier (it can then check only certificate-chain signatures) |
@@ -229,11 +255,10 @@ network.
 | `--max-age <time>` | how stale a cached attestation may be (default: `7d`) |
 | `--block <who>` | refuse what this DID or handle has marked bad; repeatable |
 | `--untrusted` | let it run an archive whose signature is good but unanchored |
-| `-k`, `-c`, `--hash`, `--sign`, `--flow`, `--token`, `--oidc-issuer`, `--connector`, `--fulcio`, `--rekor`, `--tsa` | signing, as for [`sign`](#sign) |
 
-Building an executable needs a Node with
-[nodejs/node#65810](https://github.com/nodejs/node/pull/65810); see
-[Executables that verify before they run](../README.md#standalone-executables).
+A verifying node turns into an application the same way as anything else gets a prefix:
+`bundle create --prefix node-verifying …`, then `bundle sign`. See
+[standalone executables](../README.md#standalone-executables).
 
 ## Checking and running
 
@@ -318,7 +343,7 @@ returns.
 
 ```
 bundle attest [options] <archive>...
-bundle attest --as audit.example.com --kind audited app.nzip app.sea app.run   # one sign-in for all three
+bundle attest --as audit.example.com --kind audited app.nzip app app.unsigned.nzip   # one sign-in for all three
 bundle attest --as scanner.example --verdict bad --kind malware app.nzip
 bundle attest --as audit.example.com --revoke app.nzip
 ```

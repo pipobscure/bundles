@@ -4,7 +4,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-    createBundle, signBundle, verifyBundle, verifyBundleSync, inspectBundle,
+    createBundle, signBundle, signedName, verifyBundle, verifyBundleSync, inspectBundle,
     runBundle, fileSigner, mountArgv, registerPath,
 } from '../src/api.ts';
 import { APP, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner, tree } from './helpers.ts';
@@ -24,7 +24,8 @@ test('createBundle writes an unsigned archive and reports its members', async ()
     const res = await createBundle({ base: source, files: Object.keys(APP), output });
     assert.equal(res.output, output);
     assert.equal(res.signed, false);
-    assert.equal(res.hash, null);
+    // Unsigned, it still records what its bytes hash to.
+    assert.match(res.hash!, /^[0-9a-f]{64}$/);
     assert.deepEqual(res.members.sort(), Object.keys(APP).sort());
     assert.equal(res.size, FS.statSync(output).size);
     assert.equal((await verifyBundle(output)).state, 'unsigned');
@@ -59,18 +60,36 @@ test('signBundle turns an unsigned archive into a valid one', async () => {
     assert.equal(verifyBundleSync(signed, { roots }).state, 'valid');
 });
 
-test('signBundle refuses to write over the archive it is signing', async () => {
-    const unsigned = PATH.join(tmp, 'inplace.run');
-    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
-    await assert.rejects(() => signBundle({ source: unsigned, output: unsigned, signer: testSigner() }),
-        /must differ from the input/);
+test('signBundle signs in place, and a sign that fails leaves the archive as it was', async () => {
+    const archive = PATH.join(tmp, 'inplace.nzip');
+    await createBundle({ base: source, files: Object.keys(APP), output: archive, prefix: SHELL_BASE });
+    const before = FS.readFileSync(archive);
+
+    // A signer that fails part way: nothing replaces the archive.
+    const failing = { ...testSigner(), sign: async () => { throw new Error('no signature today'); } };
+    await assert.rejects(() => signBundle({ source: archive, output: archive, signer: failing }), /no signature today/);
+    assert.deepEqual(FS.readFileSync(archive), before);
+    assert.deepEqual(FS.readdirSync(tmp).filter((name) => name.includes('.incoming-')), [], 'no half-written file left behind');
+
+    await signBundle({ source: archive, output: archive, signer: testSigner() });
+    assert.equal(verifyBundleSync(archive, { roots }).state, 'valid');
+    assert.deepEqual(FS.readFileSync(archive).subarray(0, FS.statSync(SHELL_BASE).size), FS.readFileSync(SHELL_BASE), 'the prefix is kept');
 });
 
-test('a prefixed archive is made executable and keeps its prefix intact', async () => {
+test('signing app.unsigned.nzip makes app.nzip, by name', () => {
+    assert.equal(signedName('app.unsigned.nzip'), 'app.nzip');
+    assert.equal(signedName('build/cli.unsigned.nzip'), 'build/cli.nzip');
+    assert.equal(signedName('tool.unsigned'), 'tool');
+    assert.equal(signedName('tool.unsigned.exe'), 'tool.exe');
+    assert.equal(signedName('app.nzip'), 'app.nzip', 'otherwise, in place');
+    assert.equal(signedName('dir.unsigned/app.nzip'), 'dir.unsigned/app.nzip');
+});
+
+test('a prefix is chosen when the archive is created, and signing keeps it and makes the result executable', async () => {
     const unsigned = PATH.join(tmp, 'prefixed.run');
     const output = PATH.join(tmp, 'prefixed.nzip');
-    await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
-    await signBundle({ source: unsigned, output, prefix: SHELL_BASE, signer: testSigner() });
+    await createBundle({ base: source, files: Object.keys(APP), output: unsigned, prefix: SHELL_BASE });
+    await signBundle({ source: unsigned, output, signer: testSigner() });
 
     // Windows has no executable bit; what makes a prefixed archive runnable
     // there is the .nzip association, which `bundle install` sets up.
@@ -80,6 +99,10 @@ test('a prefixed archive is made executable and keeps its prefix intact', async 
         FS.readFileSync(SHELL_BASE),
     );
     assert.equal(verifyBundleSync(output, { roots }).state, 'valid');
+
+    // Signing does not choose a shape.
+    await assert.rejects(() => signBundle({ source: unsigned, output: PATH.join(tmp, 'x.nzip'), signer: testSigner(), prefix: SHELL_BASE } as never),
+        /the prefix is chosen when the archive is created/);
 });
 
 test('roots are accepted as PEM text as well as as file paths', async () => {
