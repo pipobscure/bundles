@@ -8,8 +8,9 @@ import { createBundle, signBundle } from '../src/api.ts';
 import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
 import { selectable, type Review } from '../src/review.ts';
-import { UNDECIDED } from '../src/cli.ts';
+import { UNDECIDED, main } from '../src/cli.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
+import { scopeDir } from '../src/scopes.ts';
 
 // Installing from a URL, and keeping it current.
 //
@@ -55,6 +56,7 @@ process.env['BUNDLE_POWERSHELL_PROFILE'] = PATH.join(HOME, 'Documents', 'PowerSh
 FS.mkdirSync(HOME, { recursive: true });
 process.env['BUNDLE_SYSTEM_POLICY'] = PATH.join(HOME, 'no-system-policy.json');
 process.env['BUNDLE_POLICY'] = PATH.join(HOME, 'policy.json');
+process.env['BUNDLE_PLUGINS'] = PATH.join(HOME, 'plugins');
 FS.writeFileSync(process.env['BUNDLE_POLICY'], JSON.stringify({ discovery: false }));
 
 /** What the server is currently serving, and under what ETag. */
@@ -87,9 +89,10 @@ test.after(() => {
     FS.rmSync(tmp, { recursive: true, force: true });
 });
 
-/** A signed archive whose entry point prints `tag`, so versions are visible. */
-async function archive(tag: string): Promise<Buffer> {
-    const dir = tree(PATH.join(tmp, tag), { ...APP, 'index.js': `console.log(${JSON.stringify(tag)});` }, 'app');
+/** A signed archive whose entry point prints `tag`, so versions are visible — with another package name, if given. */
+async function archive(tag: string, pkg?: string): Promise<Buffer> {
+    const files = { ...APP, 'index.js': `console.log(${JSON.stringify(tag)});`, ...(pkg ? { 'package.json': JSON.stringify({ name: pkg, type: 'module', main: 'index.js' }) } : {}) };
+    const dir = tree(PATH.join(tmp, tag), files, 'app');
     const unsigned = PATH.join(tmp, `${tag}.nzip`);
     const signed = PATH.join(tmp, `${tag}.signed`);
     await createBundle({ base: dir, files: Object.keys(APP), output: unsigned });
@@ -546,4 +549,122 @@ test('the install directory is this tool\'s own, and says so when it is not on P
     const fallback = installDir();
     process.env['BUNDLE_INSTALL_DIR'] = BIN;
     assert.match(fallback, process.platform === 'win32' ? /bundle[\\/]bin$/ : /\.local[\\/]bin$/);
+});
+
+// ------------------------------------------------------------------ plugins ---
+
+test('install --for puts a plugin in its app\'s scope, under its package name, and keeps it current', async () => {
+    served.bytes = await archive('plugin-one', '@alice/gpio');
+    served.etag = '"plugin-one"';
+    const record = await install(URL_, { ...options, scope: 'bled' });
+    assert.equal(record.name, 'bled:@alice/gpio');
+    assert.deepEqual({ scope: record.scope, package: record.package }, { scope: 'bled', package: '@alice/gpio' });
+    const file = PATH.join(scopeDir('bled'), '@alice', 'gpio.nzip');
+    assert.deepEqual(FS.readFileSync(file), served.bytes, 'where the plugin loader looks for it');
+    if (!WINDOWS) assert.equal(FS.statSync(file).mode & 0o111, 0, 'data, not a command');
+    assert.equal(FS.existsSync(PATH.join(BIN, 'gpio')) || FS.existsSync(PATH.join(BIN, 'gpio.nzip')), false, 'never on the PATH');
+    assert.equal(installedChecks().find((each) => each.record.name === record.name)?.state, 'ok');
+
+    // A new version of the same plugin replaces it; one that calls itself
+    // something else is not a new version of it.
+    served.bytes = await archive('plugin-two', '@alice/gpio');
+    served.etag = '"plugin-two"';
+    const [updated] = await update(record.name, options);
+    assert.equal(updated!.state, 'updated');
+    assert.deepEqual(FS.readFileSync(file), served.bytes);
+    const renamed = served.bytes = await archive('plugin-renamed', '@mallory/gpio');
+    served.etag = '"renamed"';
+    const [refused] = await update(record.name, options);
+    assert.equal(refused!.state, 'failed');
+    assert.match(refused!.reason ?? '', /now carries @mallory\/gpio, not @alice\/gpio/);
+    assert.notDeepEqual(FS.readFileSync(file), renamed);
+
+    assert.equal(uninstall('bled:@alice/gpio').name, 'bled:@alice/gpio');
+    assert.equal(FS.existsSync(file), false);
+});
+
+test('a plugin answers to its scope\'s policy, never the app\'s, and must name its package', async () => {
+    served.bytes = await archive('scoped', 'checked-plugin');
+    served.etag = '"scoped"';
+    const policy = process.env['BUNDLE_POLICY']!;
+    FS.writeFileSync(policy, JSON.stringify({
+        discovery: false,
+        apps: { 'bled:checked-plugin': { require: { attesters: ['did:web:apps-section.example'] } } },
+        scopes: { bled: { require: { attesters: ['did:web:scope-section.example'] } } },
+    }));
+    try {
+        await assert.rejects(install(URL_, { ...options, scope: 'bled' }), /did:web:scope-section\.example/);
+        // Without the scope's rule, the app's section does not apply to it.
+        FS.writeFileSync(policy, JSON.stringify({ discovery: false, apps: { 'bled:checked-plugin': { require: { attesters: ['did:web:apps-section.example'] } } } }));
+        assert.equal((await install(URL_, { ...options, scope: 'bled' })).name, 'bled:checked-plugin');
+        uninstall('bled:checked-plugin');
+    } finally {
+        FS.writeFileSync(policy, JSON.stringify({ discovery: false }));
+    }
+
+    served.bytes = await (async () => {
+        const dir = tree(PATH.join(tmp, 'nameless'), { ...APP, 'package.json': '{ "type": "module", "main": "index.js" }' }, 'app');
+        const unsigned = PATH.join(tmp, 'nameless.nzip');
+        const signed = PATH.join(tmp, 'nameless.signed');
+        await createBundle({ base: dir, files: Object.keys(APP), output: unsigned });
+        await signBundle({ source: unsigned, output: signed, signer: testSigner() });
+        return FS.readFileSync(signed);
+    })();
+    await assert.rejects(install(URL_, { ...options, scope: 'bled' }), /not a plugin: it carries no package\.json with a name/);
+    await assert.rejects(install(URL_, { ...options, scope: 'Not A Scope' }), /not a scope/);
+    await assert.rejects(install(URL_, { ...options, scope: 'bled', name: 'x' }), /--name and --dir do not apply/);
+});
+
+test('bundle install --for takes an installed app by name, and uninstalling the app takes its plugins along', async () => {
+    // The app: its package.json calls it 'cli-host', whatever it is installed as.
+    const host = await archive('cli-host', 'cli-host');
+    served.bytes = host;
+    served.etag = '"host"';
+    served.disposition = undefined;
+    const roots = ['--root', ROOT_PEM, '--yes', '--no-shell'];
+    assert.equal(await main(['install', ...roots, '--name', 'my-demo', URL_], collector()), 0);
+
+    served.bytes = await archive('cli-plugin', 'demo-plugin');
+    served.etag = '"cli-plugin"';
+    const io = collector();
+    assert.equal(await main(['install', ...roots, '--for', 'my-demo', URL_], io), 0, io.stderr.join('\n'));
+    assert.match(io.stdout.join('\n'), /demo-plugin installed for cli-host, in /);
+    const file = PATH.join(scopeDir('cli-host'), 'demo-plugin.nzip');
+    assert.ok(FS.existsSync(file));
+
+    const listed = collector();
+    await main(['installed'], listed);
+    assert.match(listed.stdout.join('\n'), /^cli-host:demo-plugin {2}OK\n {2}plugin: demo-plugin, for cli-host$/m);
+
+    // The same app installed twice: removing one leaves the plugins the other loads.
+    served.bytes = host;
+    served.etag = '"host-again"';
+    assert.equal(await main(['install', ...roots, '--name', 'demo-again', URL_], collector()), 0);
+    const once = collector();
+    assert.equal(await main(['uninstall', 'demo-again'], once), 0);
+    assert.match(once.stderr.join('\n'), /its plugins stay: my-demo is the same app, and loads them too/);
+    assert.ok(FS.existsSync(file));
+
+    // The last one: nothing can load them now, so they go too, and the scope with them.
+    const last = collector();
+    assert.equal(await main(['uninstall', 'my-demo'], last), 0);
+    assert.match(last.stdout.join('\n'), /removed its plugin demo-plugin from /);
+    assert.equal(FS.existsSync(file), false);
+    assert.equal(FS.existsSync(scopeDir('cli-host')), false, 'the empty scope goes too');
+    assert.equal(records()['cli-host:demo-plugin'], undefined);
+    assert.equal(await main(['install', '--for', 'my-demo'], collector()), 70, 'a plugin to install is needed');
+});
+
+test('a shared scope belongs to no single app, and stays until its plugins are removed one by one', async () => {
+    served.bytes = await archive('suite-core', '@acme/suite-core');
+    served.etag = '"suite-core"';
+    const core = await install(URL_, { ...options, scope: '@acme/suite' });
+    served.bytes = await archive('suite-app', 'suite-app');
+    served.etag = '"suite-app"';
+    const app = await install(URL_, { ...options, name: 'suite-app' });
+    const removed = uninstall(app.name);
+    assert.deepEqual(removed.plugins, [], 'the suite\'s scope is not this app\'s');
+    assert.ok(FS.existsSync(PATH.join(scopeDir('@acme/suite'), '@acme', 'suite-core.nzip')));
+    uninstall(core.name);
+    assert.equal(FS.existsSync(scopeDir('@acme/suite')), false);
 });

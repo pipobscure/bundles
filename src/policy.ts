@@ -2,6 +2,9 @@ import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import { attestersFrom, parseDuration, type Attester } from './attestation.ts';
+import { isScope } from './scopes.ts';
+
+export { SCOPE_PATTERN, isScope } from './scopes.ts';
 
 // The rules this machine installs by.
 //
@@ -24,9 +27,11 @@ import { attestersFrom, parseDuration, type Attester } from './attestation.ts';
 //     accepted, in which case nothing proceeds without asking.
 //
 // Two files are read: one for the machine and one for the user. Requirements
-// from both apply; trust from both adds up. Each file has global rules and,
-// under `apps`, rules for one installed name. Unknown keys are an error, so a
-// typo cannot quietly loosen anything.
+// from both apply; trust from both adds up. Each file has global rules; under
+// `apps`, rules for one installed name; and under `scopes`, rules for the
+// plugins installed for one app (`bundle install --for <scope>`), which apply
+// to those plugins and never to the app. Unknown keys are an error, so a typo
+// cannot quietly loosen anything.
 //
 //   {
 //     "require": {
@@ -46,13 +51,14 @@ import { attestersFrom, parseDuration, type Attester } from './attestation.ts';
 //     "ignore": ["did:plc:…"],
 //     "discovery": "https://constellation.microcosm.blue",
 //     "maxAge": "7d",
-//     "apps": { "pnpm": { "require": { "sameIssuer": true } } }
+//     "apps": { "pnpm": { "require": { "sameIssuer": true } } },
+//     "scopes": { "bled": { "require": { "attesters": ["audited@did:web:bled.dev"] } } }
 //   }
 
 // The settings each part of a policy file may have — what the checker below
 // accepts, and what the published JSON Schema lists, which a test holds to
 // exactly these.
-export const FILE_KEYS = ['$schema', 'require', 'issuers', 'trust', 'block', 'ignore', 'discovery', 'maxAge', 'apps'];
+export const FILE_KEYS = ['$schema', 'require', 'issuers', 'trust', 'block', 'ignore', 'discovery', 'maxAge', 'apps', 'scopes'];
 export const RULE_KEYS = ['require', 'issuers', 'trust', 'block', 'ignore'];
 export const REQUIRE_KEYS = ['signature', 'sameIssuer', 'attesters', 'quorum'];
 export const TRUST_KEYS = ['signers', 'attesters', 'certificates'];
@@ -130,6 +136,8 @@ export interface PolicyFile extends Rules {
     /** How stale a cached attestation proof may be, as a duration. */
     maxAge?: string | undefined;
     apps?: Record<string, Rules> | undefined;
+    /** Rules for the plugins installed for one app, by its package name. */
+    scopes?: Record<string, Rules> | undefined;
 }
 
 /** An attestation requirement, and where it came from. */
@@ -189,17 +197,26 @@ export function userPolicyPath(): string {
 /**
  * The policy in force for `app` (an installed name), or the global one: the
  * system file, then the user's, each with its `apps[app]` section.
+ *
+ * With `scope`, it is the policy for a plugin installed for that app instead:
+ * the global rules and each file's `scopes[scope]` section — never the app's
+ * own `apps` section, which is about the app's author, not the plugin's. With
+ * `global: false` as well, only the scope's sections: what a plugin is checked
+ * against when it is loaded, on top of what the runtime carries over.
  */
-export function loadPolicy(app?: string | undefined): Policy {
+export function loadPolicy(app?: string | undefined, { scope, global = true }: {
+    scope?: string | undefined;
+    global?: boolean | undefined;
+} = {}): Policy {
     const policy = emptyPolicy();
     let discovery: string | false | undefined;
     for (const path of [systemPolicyPath(), userPolicyPath()]) {
         const file = readPolicyFile(path);
         if (!file) continue;
         policy.files.push(path);
-        apply(policy, file, path);
-        const section = app !== undefined ? file.apps?.[app] : undefined;
-        if (section) apply(policy, section, `${path} (apps.${app})`);
+        if (global) apply(policy, file, path);
+        const section = scope !== undefined ? file.scopes?.[scope] : app !== undefined ? file.apps?.[app] : undefined;
+        if (section) apply(policy, section, scope !== undefined ? `${path} (scopes.${scope})` : `${path} (apps.${app})`);
         // The user's choice of index wins, unless the machine turned discovery off.
         if (file.discovery !== undefined && discovery !== false) discovery = file.discovery;
         if (file.maxAge !== undefined) {
@@ -257,10 +274,12 @@ function checkFile(value: unknown, path: string): void {
         if (!new RegExp(DISCOVERY_PATTERN).test(discovery)) throw new Error(`${path}: discovery must be an http(s) URL or false`);
     }
     if (file['maxAge'] !== undefined) parseDuration(string(file['maxAge'], `${path}: maxAge`));
-    if (file['apps'] !== undefined) {
-        for (const [name, rules] of Object.entries(object(file['apps'], `${path}: apps`))) {
-            const where = `${path}: apps.${name}`;
-            if (!name) throw new Error(`${path}: apps has an entry with no name`);
+    for (const part of ['apps', 'scopes']) {
+        if (file[part] === undefined) continue;
+        for (const [name, rules] of Object.entries(object(file[part], `${path}: ${part}`))) {
+            const where = `${path}: ${part}.${name}`;
+            if (!name) throw new Error(`${path}: ${part} has an entry with no name`);
+            if (part === 'scopes' && !isScope(name)) throw new Error(`${path}: scopes: '${name}' is not a package name`);
             keys(object(rules, where), RULE_KEYS, where);
             checkRules(rules as Record<string, unknown>, where);
         }

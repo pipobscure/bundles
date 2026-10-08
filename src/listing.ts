@@ -24,18 +24,24 @@ import { claimedHandle, pdsEndpoint, type DidDocument, type Value } from './repo
 // URL serves next, and what it serves is verified like any other download. A
 // listing vouches for nothing.
 //
-// Every listing carries the same `subject`. That is what makes them findable
-// without a service of our own: a backlink index (Constellation) indexes every
-// field that parses as a URI, so asking it what links to that one value
-// enumerates every listing on the network. Searching them happens locally, in
-// an SQLite index in the state directory that `syncIndex()` keeps current.
+// Every listing of an app carries the same `subject`. That is what makes them
+// findable without a service of our own: a backlink index (Constellation)
+// indexes every field that parses as a URI, so asking it what links to that one
+// value enumerates every app listed on the network. Searching them happens
+// locally, in an SQLite index in the state directory that `syncIndex()` keeps
+// current.
+//
+// A plugin's listing has, as its subject, the `at://` address of the listing of
+// the app it is for. So it never appears among apps, and asking the backlink
+// index what links to an app's listing finds exactly its plugins — which the
+// index asks only for the apps installed here.
 //
 // See proposals/atproto-listings.md for the reasoning.
 
 /** The record type, and the collection listings live in. */
 export const LISTING = 'com.pipobscure.bundle.listing';
 
-/** The value every listing's `subject` holds: the sha256 of the NSID. */
+/** The `subject` of every app's listing: the sha256 of the NSID. A plugin's is its app's listing's address. */
 export const SUBJECT = `sha256:${CRYPTO.createHash('sha256').update(LISTING).digest('hex')}`;
 
 /** What a listing's name — its record key, and the name it installs as — may be. */
@@ -47,7 +53,8 @@ export const DOMAIN_PATTERN = '^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-
 /** The record as it is written: with a `url`, or a `domain`, never both. */
 export interface ListingRecord {
     $type: typeof LISTING;
-    subject: typeof SUBJECT;
+    /** `SUBJECT` for an app; for a plugin, the `at://` address of its app's listing. */
+    subject: string;
     /** Where the bundle is fetched from. */
     url?: string | undefined;
     /** A domain whose `nzip:` TXT record says where the bundle is fetched from. */
@@ -73,6 +80,8 @@ export interface Listing {
     /** What `bundle install` takes: `@<handle or did>/<name>`. */
     install: string;
     uri: string;
+    /** For a plugin: the address of its app's listing. */
+    for?: string | undefined;
 }
 
 /** Whether `name` can be a listing's name. */
@@ -85,6 +94,18 @@ export function listingUri(did: string, name: string): string {
     return `at://${did}/${LISTING}/${name}`;
 }
 
+/** The DID and name in a listing's `at://` address, or null when it is not one. */
+export function parseListingUri(uri: string): { did: string; name: string } | null {
+    const m = /^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(uri);
+    if (!m || m[2] !== LISTING || !isDid(m[1]!) || !isName(m[3]!)) return null;
+    return { did: m[1]!, name: m[3]! };
+}
+
+/** For a plugin's listing, the address of the app's listing it is for. */
+export function appOf(record: ListingRecord): string | undefined {
+    return record.subject === SUBJECT ? undefined : record.subject;
+}
+
 // The lexicon's limits, which a PDS validating against it would apply too.
 const LIMITS = { url: 2048, title: [640, 64], description: [3000, 300] } as const;
 
@@ -93,7 +114,9 @@ export function readListing(value: Value, name: string): { ok: true; record: Lis
     const record = value as Partial<ListingRecord> | null;
     if (!record || typeof record !== 'object' || record.$type !== LISTING) return { ok: false, reason: `the record is not a ${LISTING}` };
     if (!isName(name)) return { ok: false, reason: `'${name}' is not a usable name (lowercase letters, digits and '-', at most 64)` };
-    if (record.subject !== SUBJECT) return { ok: false, reason: `its subject is not ${SUBJECT}` };
+    if (record.subject !== SUBJECT && (typeof record.subject !== 'string' || !parseListingUri(record.subject))) {
+        return { ok: false, reason: `its subject is neither ${SUBJECT} nor the address of an app's listing` };
+    }
     if ((record.url === undefined) === (record.domain === undefined)) return { ok: false, reason: 'it must name a url or a domain, and not both' };
     if (record.url !== undefined) {
         if (typeof record.url !== 'string' || record.url.length > LIMITS.url) return { ok: false, reason: 'it names no usable URL' };
@@ -181,9 +204,9 @@ export async function resolveListing(target: string, options: NetworkOptions = {
  * one is remembered by, and what `update` asks again.
  */
 export async function followListing(uri: string, options: NetworkOptions = {}): Promise<{ did: string; name: string; uri: string; record: ListingRecord }> {
-    const m = /^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(uri);
-    if (!m || m[2] !== LISTING || !isDid(m[1]!) || !isName(m[3]!)) throw new Error(`'${uri}' is not the address of a listing`);
-    const [, did, , name] = m as unknown as [string, string, string, string];
+    const parsed = parseListingUri(uri);
+    if (!parsed) throw new Error(`'${uri}' is not the address of a listing`);
+    const { did, name } = parsed;
     const record = await fetchListing(did, name, options);
     if (!record) throw new Error(`${uri} is no longer listed`);
     return { did, name, uri, record };
@@ -202,13 +225,15 @@ async function fetchListing(did: string, name: string, options: NetworkOptions):
 /**
  * List a bundle under `name` from the session's account, and read it back to
  * confirm what landed is what was sent. It names a `url`, or a `domain` whose
- * `nzip:` TXT record names one. Listing it again replaces the record, keeping
- * when it was first listed.
+ * `nzip:` TXT record names one. With `for`, the address of an app's listing,
+ * it lists a plugin for that app. Listing it again replaces the record,
+ * keeping when it was first listed.
  */
-export async function publish(session: Session, { name, url, domain, title, description }: {
+export async function publish(session: Session, { name, url, domain, for: app, title, description }: {
     name: string;
     url?: string | undefined;
     domain?: string | undefined;
+    for?: string | undefined;
     title?: string | undefined;
     description?: string | undefined;
 }, options: NetworkOptions = {}): Promise<{ uri: string; replaced: boolean; record: ListingRecord }> {
@@ -217,7 +242,7 @@ export async function publish(session: Session, { name, url, domain, title, desc
     const previous = existing ? readListing(existing.value, name) : null;
     const record: ListingRecord = {
         $type: LISTING,
-        subject: SUBJECT,
+        subject: app ?? SUBJECT,
         ...(url !== undefined ? { url } : {}),
         ...(domain !== undefined ? { domain } : {}),
         ...(title ? { title } : {}),
@@ -229,7 +254,8 @@ export async function publish(session: Session, { name, url, domain, title, desc
 
     const { uri } = await putRecord(session, LISTING, name, record as unknown as Record<string, unknown>, options);
     const back = await fetchListing(session.did, name, options);
-    if (!back || back.url !== record.url || back.domain !== record.domain || back.title !== record.title || back.description !== record.description) {
+    if (!back || back.subject !== record.subject || back.url !== record.url || back.domain !== record.domain
+        || back.title !== record.title || back.description !== record.description) {
         throw new Error(`${uri} was written, but does not read back as the listing that was sent`);
     }
     return { uri, replaced: Boolean(existing), record };
@@ -246,7 +272,7 @@ export async function unpublish(session: Session, name: string, options: Network
 // ---------------------------------------------------------------- the index ---
 
 /** The version of the index's schema; an index of any other version is rebuilt. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /** How long a publisher's handle is believed before it is checked again (a day). */
 export const HANDLE_AGE = 24 * 60 * 60 * 1000;
@@ -265,6 +291,9 @@ CREATE TABLE sync (
   index_url TEXT NOT NULL,
   synced_at TEXT NOT NULL
 );
+CREATE TABLE subjects (
+  uri TEXT PRIMARY KEY
+);
 CREATE TABLE publishers (
   did               TEXT PRIMARY KEY,
   handle            TEXT,
@@ -278,6 +307,7 @@ CREATE TABLE listings (
   did         TEXT NOT NULL REFERENCES publishers(did) ON DELETE CASCADE,
   rkey        TEXT NOT NULL,
   cid         TEXT NOT NULL,
+  subject     TEXT NOT NULL,
   url         TEXT,
   domain      TEXT,
   title       TEXT,
@@ -321,13 +351,18 @@ function usable(db: DatabaseSync): boolean {
     return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === SCHEMA_VERSION;
 }
 
-/** When the index was last synced, and from which backlink index — or null when there is none. */
-export function lastSync(path: string = indexPath()): { at: Date; index: string } | null {
+/**
+ * When the index was last synced, from which backlink index, and for which
+ * subjects — `SUBJECT`, and the listings of the apps whose plugins it holds —
+ * or null when there is none.
+ */
+export function lastSync(path: string = indexPath()): { at: Date; index: string; subjects: string[] } | null {
     const db = openForReading(path);
     if (!db) return null;
     try {
         const row = db.prepare('SELECT index_url, synced_at FROM sync').get() as { index_url: string; synced_at: string } | undefined;
-        return row ? { at: new Date(row.synced_at), index: row.index_url } : null;
+        const subjects = (db.prepare('SELECT uri FROM subjects ORDER BY uri').all() as { uri: string }[]).map(({ uri }) => uri);
+        return row ? { at: new Date(row.synced_at), index: row.index_url, subjects } : null;
     } finally {
         db.close();
     }
@@ -336,6 +371,7 @@ export function lastSync(path: string = indexPath()): { at: Date; index: string 
 interface ListingRow {
     did: string;
     rkey: string;
+    subject: string;
     url: string | null;
     domain: string | null;
     title: string | null;
@@ -344,7 +380,7 @@ interface ListingRow {
     handle: string | null;
 }
 
-const COLUMNS = 'l.did, l.rkey, l.url, l.domain, l.title, l.description, l.created_at, p.handle';
+const COLUMNS = 'l.did, l.rkey, l.subject, l.url, l.domain, l.title, l.description, l.created_at, p.handle';
 
 function toListing(row: ListingRow): Listing {
     return {
@@ -358,16 +394,21 @@ function toListing(row: ListingRow): Listing {
         createdAt: row.created_at,
         install: `@${row.handle ?? row.did}/${row.rkey}`,
         uri: listingUri(row.did, row.rkey),
+        for: row.subject === SUBJECT ? undefined : row.subject,
     };
 }
 
-/** Every listing in the index, by name. Empty when there is no index yet. */
-export function listings(path: string = indexPath()): Listing[] {
+/**
+ * Every app listed in the index, by name — or, with `for`, the address of an
+ * app's listing, every plugin listed for that app. Empty when there is no
+ * index yet.
+ */
+export function listings(path: string = indexPath(), { for: app }: { for?: string | undefined } = {}): Listing[] {
     const db = openForReading(path);
     if (!db) return [];
     try {
-        return (db.prepare(`SELECT ${COLUMNS} FROM listings l JOIN publishers p ON p.did = l.did ORDER BY l.rkey, coalesce(p.handle, l.did)`)
-            .all() as unknown as ListingRow[]).map(toListing);
+        return (db.prepare(`SELECT ${COLUMNS} FROM listings l JOIN publishers p ON p.did = l.did WHERE l.subject = ? ORDER BY l.rkey, coalesce(p.handle, l.did)`)
+            .all(app ?? SUBJECT) as unknown as ListingRow[]).map(toListing);
     } finally {
         db.close();
     }
@@ -378,15 +419,15 @@ export function listings(path: string = indexPath()): Listing[] {
  * the name, title, description or publisher's handle — best first. The name
  * counts most, then the title, the handle, and the description least.
  */
-export function search(text: string, path: string = indexPath()): Listing[] {
+export function search(text: string, path: string = indexPath(), { for: app }: { for?: string | undefined } = {}): Listing[] {
     const query = matchQuery(text);
     if (!query) return [];
     const db = openForReading(path);
     if (!db) return [];
     try {
         return (db.prepare(`SELECT ${COLUMNS} FROM listings_fts f JOIN listings l ON l.rowid = f.rowid JOIN publishers p ON p.did = l.did
-            WHERE listings_fts MATCH ? ORDER BY bm25(listings_fts, 10.0, 5.0, 1.0, 3.0), l.rkey`)
-            .all(query) as unknown as ListingRow[]).map(toListing);
+            WHERE listings_fts MATCH ? AND l.subject = ? ORDER BY bm25(listings_fts, 10.0, 5.0, 1.0, 3.0), l.rkey`)
+            .all(query, app ?? SUBJECT) as unknown as ListingRow[]).map(toListing);
     } finally {
         db.close();
     }
@@ -421,9 +462,11 @@ export interface SyncReport {
 /**
  * Bring the index up to date with the network, asking as little as possible.
  *
- * 1. The backlink index names every publisher with a listing — one request per
- *    hundred listings, and the only full pass. It is also how a publisher who
- *    has taken everything down is noticed: they are no longer named.
+ * 1. The backlink index names every publisher with an app listed — one request
+ *    per hundred listings, and the only full pass — and every publisher of a
+ *    plugin for one of `apps`, the listings of the apps installed here. It is
+ *    also how a publisher who has taken everything down is noticed: they are
+ *    no longer named.
  * 2. Each publisher's PDS is asked for the revision of their repository. When
  *    it is the one already recorded, nothing there has changed, and nothing
  *    more is asked. The concept hash never changes, so this — not the backlink
@@ -438,16 +481,21 @@ export interface SyncReport {
  * The backlink index is asked first, before the file is touched, so a sync
  * that cannot start leaves the index exactly as it was.
  */
-export async function syncIndex({ index, path = indexPath(), concurrency = 8, handleAge = HANDLE_AGE, ...network }: NetworkOptions & {
+export async function syncIndex({ index, path = indexPath(), apps = [], concurrency = 8, handleAge = HANDLE_AGE, ...network }: NetworkOptions & {
     index: string;
     path?: string | undefined;
+    /** The listings of the apps installed here, whose plugins to follow. */
+    apps?: string[] | undefined;
     concurrency?: number | undefined;
     handleAge?: number | undefined;
 }): Promise<SyncReport> {
     const now = (network.now ?? (() => new Date()))();
+    const subjects = [SUBJECT, ...new Set(apps.filter((uri) => parseListingUri(uri)))];
     const dids = new Set<string>();
-    for await (const link of backlinks(SUBJECT, `${LISTING}:subject`, { ...network, index })) {
-        if (link.collection === LISTING && isDid(link.did) && isName(link.rkey)) dids.add(link.did);
+    for (const subject of subjects) {
+        for await (const link of backlinks(subject, `${LISTING}:subject`, { ...network, index })) {
+            if (link.collection === LISTING && isDid(link.did) && isName(link.rkey)) dids.add(link.did);
+        }
     }
 
     const db = openForWriting(path, index);
@@ -478,7 +526,11 @@ export async function syncIndex({ index, path = indexPath(), concurrency = 8, ha
             }
         }));
 
-        db.prepare('INSERT OR REPLACE INTO sync (id, index_url, synced_at) VALUES (1, ?, ?)').run(index, now.toISOString());
+        transaction(db, () => {
+            db.prepare('INSERT OR REPLACE INTO sync (id, index_url, synced_at) VALUES (1, ?, ?)').run(index, now.toISOString());
+            db.prepare('DELETE FROM subjects').run();
+            for (const subject of subjects) db.prepare('INSERT INTO subjects (uri) VALUES (?)').run(subject);
+        });
         const count = (db.prepare('SELECT count(*) AS n FROM listings').get() as { n: number }).n;
         return { publishers: dids.size, listings: count, refreshed, removed, failed: failed.sort((a, b) => a.did.localeCompare(b.did)) };
     } finally {
@@ -545,9 +597,9 @@ async function refreshPublisher(db: DatabaseSync, did: string, now: Date, handle
         if (listed || handle !== (row?.handle ?? null)) unindex(db, did);
         if (listed) {
             db.prepare('DELETE FROM listings WHERE did = ?').run(did);
-            const insert = db.prepare('INSERT INTO listings (did, rkey, cid, url, domain, title, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+            const insert = db.prepare('INSERT INTO listings (did, rkey, cid, subject, url, domain, title, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
             for (const { name, cid, record } of listed) {
-                insert.run(did, name, cid, record.url ?? null, record.domain ?? null, record.title ?? null, record.description ?? null, record.createdAt);
+                insert.run(did, name, cid, record.subject, record.url ?? null, record.domain ?? null, record.title ?? null, record.description ?? null, record.createdAt);
             }
         }
         if (listed || handle !== (row?.handle ?? null)) reindex(db, did, handle);

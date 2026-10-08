@@ -101,7 +101,7 @@ export interface ProviderOptions {
     name?: string | undefined;
 }
 
-interface Settings {
+export interface Settings {
     [kSettings]: true;
     name: string;
     extensions: string[];
@@ -290,7 +290,8 @@ function reads(flags: string | number | undefined): boolean {
 
 const kSettings: unique symbol = Symbol('bundle.settings');
 
-function settings(options: ProviderOptions | Settings = {}): Settings {
+/** `options` with every default filled in from the environment, as `open()` and `register()` use them. */
+export function settings(options: ProviderOptions | Settings = {}): Settings {
     if ((options as Settings)[kSettings]) return options as Settings;
     const opts = options as ProviderOptions;
     const environment = policyFromEnvironment();

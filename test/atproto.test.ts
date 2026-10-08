@@ -1112,11 +1112,11 @@ function listed(url: string, extra: Record<string, unknown> = {}): Value {
     return { $type: LISTING, subject: SUBJECT, url, createdAt: '2026-10-07T00:00:00.000Z', ...extra } as Value;
 }
 
-test('the concept hash is the sha256 of the NSID, and the lexicon pins it', () => {
+test('the concept hash is the sha256 of the NSID, and the lexicon names it', () => {
     assert.equal(SUBJECT, `sha256:${CRYPTO.createHash('sha256').update('com.pipobscure.bundle.listing').digest('hex')}`);
     const doc = lexicons().find((each) => each.id === LISTING)!;
-    const subject = ((doc.defs['main'] as { record: { properties: Record<string, { const?: string }> } }).record.properties['subject'])!;
-    assert.equal(subject.const, SUBJECT);
+    const subject = ((doc.defs['main'] as { record: { properties: Record<string, { description?: string }> } }).record.properties['subject'])!;
+    assert.ok(subject.description?.includes(`'${SUBJECT}'`), String(subject.description));
 });
 
 test('a listing is read only when it is one: the subject, an https URL, a usable name, limits kept', () => {
@@ -1134,6 +1134,10 @@ test('a listing is read only when it is one: the subject, an https URL, a usable
     assert.match(refused({ ...bare, domain: 'Bled.pip.fyi' } as Value), /not a domain name/);
     assert.match(refused({ ...bare, domain: 'localhost' } as Value), /not a domain name/);
     assert.match(refused(listed('https://x.test/a.nzip', { subject: 'sha256:00' })), /subject/);
+    // A plugin's subject is the listing of the app it is for.
+    const forApp = listed('https://x.test/p.nzip', { subject: `at://did:web:app.test/${LISTING}/bled` });
+    assert.equal(LISTINGS.readListing(forApp, 'tool').ok && LISTINGS.appOf((LISTINGS.readListing(forApp, 'tool') as { record: LISTINGS.ListingRecord }).record), `at://did:web:app.test/${LISTING}/bled`);
+    assert.match(refused(listed('https://x.test/p.nzip', { subject: 'at://did:web:app.test/app.bsky.feed.post/x' })), /subject/);
     assert.match(refused(listed('https://x.test/a.nzip'), 'Tool'), /not a usable name/);
     assert.match(refused(listed('https://x.test/a.nzip'), '-tool'), /not a usable name/);
     assert.match(refused(listed('https://x.test/a.nzip', { description: 'x'.repeat(301) })), /longer than 300/);
@@ -1323,6 +1327,51 @@ test('a listing can name a domain, whose TXT record names the URL — and an ins
     assert.deepEqual({ domain: shown.domain, url: shown.url }, { domain: 'viadns.example', url: undefined });
 
     (await import('../src/install.ts')).uninstall(named('viadns'));
+});
+
+test('a plugin is listed against its app: found with --for, never among apps, and installed only for that app', async () => {
+    const author = account();
+    const extender = account();
+    const app = await version();
+    await attestAs(author, app, 'published');
+    DOWNLOADS.set('/plugins/host.nzip', FS.readFileSync(app));
+    const authorSession = await ATPROTO.login(author.did, author.password);
+    const listedApp = await LISTINGS.publish(authorSession, { name: 'host-app', url: 'https://dl.test/plugins/host.nzip', description: 'an app with plugins' });
+
+    const plugin = await version();
+    await attestAs(extender, plugin, 'published');
+    DOWNLOADS.set('/plugins/extra.nzip', FS.readFileSync(plugin));
+    const extenderSession = await ATPROTO.login(extender.did, extender.password);
+    const listedPlugin = await LISTINGS.publish(extenderSession, { name: 'host-extra', url: 'https://dl.test/plugins/extra.nzip', for: listedApp.uri, description: 'more for host-app' });
+    assert.equal(listedPlugin.record.subject, listedApp.uri);
+
+    // Synced with the app's plugins followed: found for the app, never among apps.
+    const path = PATH.join(tmp, 'plugin-listings.sqlite');
+    await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt, apps: [listedApp.uri] });
+    assert.ok(LISTINGS.listings(path).some((each) => each.uri === listedApp.uri));
+    assert.ok(!LISTINGS.listings(path).some((each) => each.uri === listedPlugin.uri), 'not an app');
+    assert.deepEqual(LISTINGS.search('more', path, { for: listedApp.uri }).map((each) => each.uri), [listedPlugin.uri]);
+    assert.equal(LISTINGS.lastSync(path)?.subjects.includes(listedApp.uri), true);
+
+    // Not following that app, its plugins' publishers are not asked about at all.
+    requests.length = 0;
+    await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });
+    assert.ok(!requests.some((line) => line.startsWith(`GET ${extender.pds}/`)), 'the extender is not one of ours');
+
+    // Installed, the plugin needs --for, and goes in that app's scope.
+    await assert.rejects(install(`@${extender.did}/host-extra`, { decide: async (review) => selectable(review) }),
+        /is a plugin for .*: install it with --for/);
+    const host = await install(`@${author.did}/host-app`, { decide: async (review) => selectable(review) });
+    assert.equal(host.package, 'demo', 'the app knows itself by its package name');
+    await assert.rejects(install(`@${extender.did}/host-extra`, { scope: 'other-app', decide: async (review) => selectable(review) }),
+        /whose plugins go in 'demo', not 'other-app'/);
+    const installedPlugin = await install(`@${extender.did}/host-extra`, { scope: 'demo', decide: async (review) => selectable(review) });
+    assert.equal(installedPlugin.name, 'demo:demo');
+    assert.equal(installedPlugin.source, listedPlugin.uri);
+
+    const { uninstall: remove } = await import('../src/install.ts');
+    remove('demo:demo');
+    remove(host.name);
 });
 
 test('bundle publish, search, listings and unpublish, end to end', async () => {

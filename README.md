@@ -26,7 +26,7 @@ of the process.
 
 - [Installing bundle](#installing-bundle) · [The four steps](#the-four-steps) · [CLI reference](#cli-reference)
 - [Using it from code](#using-it-from-code) · [Exports](#exports)
-- [Executables that verify before they run](#executables-that-verify-before-they-run)
+- [Executables that verify before they run](#executables-that-verify-before-they-run) · [Plugins](#plugins)
 - [How it works](#how-it-works) · [What it does and does not prove](#what-it-does-and-does-not-prove)
 - [Requirements](#requirements) · [Development](#development) · [Reading further](#reading-further)
 
@@ -260,7 +260,8 @@ bundle --help          bundle -v, --version
   hands. With a kind, only attestations of that kind count.
 - **Installs are named** by the name they were installed under (`tool`), by the URL they came
   from, by the domain whose `nzip:` record named them, or by the listing they were installed
-  from, as `@<did>/<name>`.
+  from, as `@<did>/<name>`. A plugin is named `<app's package>:<plugin's package>`
+  (`bled:@alice/bled-gpio`).
 - **Errors go to stderr**, results to stdout. `--json`, where offered, prints a machine-readable
   result on stdout and nothing else there.
 - **Nothing is done without asking that is not yours to decide.** A signer or attester nobody
@@ -612,6 +613,7 @@ that parses as a URI, so asking it what links to that one value lists every list
 bundle publish [options] <name> <url | domain>
 bundle publish --as pipobscure.com --description 'blink an LED' bled https://github.com/pipobscure/bled/releases/latest/download/bled.nzip
 bundle publish --as pipobscure.com --description 'blink an LED' bled bled.pip.fyi     # the URL is the TXT record's to say
+bundle publish --as alice.example --for @pipobscure.com/bled bled-gpio https://…/bled-gpio.nzip   # a plugin for bled
 ```
 
 Writes `at://<your DID>/com.pipobscure.bundle.listing/<name>`, naming the URL, or the domain.
@@ -629,10 +631,16 @@ replaces the listing, keeping when it was first listed.
   access to listing records only (`repo:com.pipobscure.bundle.listing`), and nothing kept
   afterwards. In CI, an app password from `BUNDLE_ATPROTO_PASSWORD` or `--password-file`.
 - **The record is read back** to confirm what landed is what was sent.
+- **A plugin is listed against its app.** With `--for`, the listing's `subject` is the
+  `at://` address of the app's listing, not the concept hash. So it never appears among apps,
+  and `search --for` and `listings --for` find exactly that app's plugins. An app installed
+  from a URL or a domain has no listing for plugins to name, so its plugins can't be listed.
+  They still install with `install --for`, from a URL or a domain.
 
 | Option | |
 |---|---|
 | `--as <handle or did>` | the account to publish from (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
+| `--for <app>` | list it as a plugin for this app: an app installed from its listing, `@<handle or did>/<name>`, or an `at://` address |
 | `--title <text>` | a display name (default: the name) |
 | `--description <text>` | what it is, in a sentence or two (at most 300 characters) |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
@@ -687,14 +695,20 @@ Handles are checked again once a day, since a handle can change without the repo
 changing. A PDS that cannot be reached keeps what the index had for it. A sync that cannot
 start at all leaves the index as it was, and the search answers from that, saying how old it is.
 
+**Plugins are searched for one app at a time.** `--for` names the app: one installed from its
+listing, or `@<handle or did>/<name>`. The index follows the plugins of every app installed
+here from a listing, and of the one `--for` names. It asks the backlink index what links to each
+app's listing, so plugins for apps you don't have are never fetched.
+
 Nothing is installed from the index. `install` fetches the listing again, from the publisher's
 own PDS, and verifies it.
 
 | Option | |
 |---|---|
+| `--for <app>` | search the plugins listed for this app instead |
 | `--refresh` | sync first, however recent the index is |
 | `--offline` | answer from the index as it is, without the network |
-| `--json` | print `[{ install, did, handle, name, title, description, url, domain, createdAt }]` |
+| `--json` | print `[{ install, did, handle, name, title, description, url, domain, for, createdAt }]` |
 
 #### `listings`
 
@@ -706,6 +720,7 @@ Every listing in the index, by name, synced first exactly as for [`search`](#sea
 
 | Option | |
 |---|---|
+| `--for <app>` | the plugins listed for this app instead |
 | `--refresh` | sync first, however recent the index is |
 | `--offline` | answer from the index as it is, without the network |
 | `--json` | print the listings as JSON, as `search --json` does |
@@ -719,6 +734,7 @@ bundle install [options] [url | domain | @account/name]
 bundle install https://example.com/tool.nzip     # fetch, review, put on PATH
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
+bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into bled's scope
 bundle install                                  # this package, from its own release
 ```
 
@@ -792,6 +808,21 @@ asked again: the listing, then the domain's TXT record. A listing is remembered 
 `at://<did>/com.pipobscure.bundle.listing/<name>`, never by the handle, because handles change
 hands.
 
+**`--for` installs a plugin** for an app, from a URL, a domain or a listing alike: a bundle
+the app loads by package name, with `@pipobscure/bundle/plugins` (see [Plugins](#plugins)).
+`--for` takes the app as it is installed (`bled`, mapped to its package name) or its package
+name. The plugin goes into that app's **scope**: a directory of the app's own
+(`~/.local/share/bundle/plugins/<scope>/`; see [Files and directories](#files-and-directories)),
+under the package name inside it. It is not made executable and is never on the PATH.
+
+It is reviewed like any install, under the policy's global rules and its `scopes` section for
+that app, never the app's own `apps` section, because a plugin's author is not the app's.
+A listing that says it is a plugin for an app (see [`publish`](#publish)) installs only with
+`--for`. If that app was installed from its listing, it installs only into that app's scope.
+Its record is `<scope>:<package>`, which `update`, `installed`, `validate` and `uninstall`
+take like any other name. An update that carries another package name is refused, because it
+is a different plugin.
+
 **With neither, it installs this package itself**, from its own GitHub release, accepting
 the identity its [publish workflow](.github/workflows/publish.yml) signs with. `npx
 @pipobscure/bundle install` is therefore the whole bootstrap. It then offers to set up the
@@ -810,6 +841,7 @@ shells, `bundle install` is all it takes.
 | `--no-discover` | do not ask the backlink index who has attested it |
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
 | `-n, --name <name>` | install under this name |
+| `--for <app>` | install a plugin for this app: an installed name, or the app's package name |
 | `-d, --dir <dir>` | install here (default: `~/.local/bin`, or `%LOCALAPPDATA%\bundle\bin`) |
 | `--no-shell` | installing itself, do not offer to set up the shell |
 
@@ -925,9 +957,14 @@ bundle uninstall                                   # this package's own install
 ```
 
 Deletes the file and forgets the record. With no argument it removes what `bundle install`
-left behind, found by the URL it came from whatever it ended up called. It also takes the
+left behind, found by the URL it came from whatever it ended up called, and also takes the
 shell setup out of every startup file it was added to. The `.nzip` association on Windows is
 left alone: other archives may need it.
+
+**An app's plugins go with it**, since nothing can load them any more. The exception is
+another install of the same app (the same package, under another name), which loads the same
+scope, so they stay for that one. A scope no app is installed as, such as a suite's shared one,
+belongs to no single app, and is only emptied plugin by plugin.
 
 ### Trust and policy
 
@@ -994,9 +1031,15 @@ The rules this machine installs by, in JSON, from two files that both apply:
   "ignore": ["did:plc:…"],           // their verdicts are not shown at all
   "discovery": "https://constellation.microcosm.blue",  // or false
   "maxAge": "7d",
-  "apps": { "tool": { "require": { "sameIssuer": true } } }
+  "apps": { "tool": { "require": { "sameIssuer": true } } },
+  "scopes": { "bled": { "require": { "attesters": ["audited@did:web:bled.dev"] } } }
 }
 ```
+
+`apps` sections are for one installed name. `scopes` sections are for the plugins installed for
+one app, by its package name. A plugin answers to the global rules and its scope's section,
+never to its app's `apps` section. When an app verifies its plugins as it loads them, the
+scope's section applies there too (see [Plugins](#plugins)).
 
 Requirements from every file and section apply together, and trust adds up. Unknown settings
 are an error, so a typo cannot quietly loosen anything. The policy governs `install`, `update`,
@@ -1126,6 +1169,7 @@ a file that is already there unless forced, so local edits survive.
 | Install records | `installed.json` in the state directory | |
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
 | Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
+| Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows | `BUNDLE_PLUGINS` |
 | The state directory | `$XDG_STATE_HOME/bundle` (`~/.local/state/bundle`); `~/Library/Application Support/bundle` on macOS; `%LOCALAPPDATA%\bundle\Data` on Windows | |
 | Policy | see [`policy`](#policy) | `BUNDLE_POLICY`, `BUNDLE_SYSTEM_POLICY` |
 | Sigstore trust root | `$XDG_DATA_HOME/sigstore-js` (`~/.local/share/sigstore-js`); `~/Library/Application Support/sigstore-js` on macOS; `%LOCALAPPDATA%\sigstore-js\Data` on Windows | `BUNDLE_SIGSTORE_ROOT`, `--sigstore-root` |
@@ -1140,6 +1184,7 @@ session.
 | Variable | |
 |---|---|
 | `BUNDLE_INSTALL_DIR` | where `install` puts programs |
+| `BUNDLE_PLUGINS` | where plugin scopes are, for `install --for` and the plugin loader alike |
 | `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. |
 | `BUNDLE_NO_WINDOWS_SETUP` | do not register `.nzip` or touch `PATHEXT` on Windows |
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file |
@@ -1268,6 +1313,7 @@ environment: `BUNDLE_ROOTS`, `BUNDLE_IDENTITY`, `BUNDLE_ATTESTERS` and the rest,
   "./oauth":    "signing in to a PDS: atproto OAuth with PAR, PKCE and DPoP",
   "./lexicon":  "this package's lexicons, and publishing them",
   "./listing":  "listings: publishing, resolving, and the local search index",
+  "./plugins":  "use() and list(): load plugin bundles by package name, verified when asked",
   "./oidc":     "identity tokens: CI, browser, or device code"
 }
 ```
@@ -1344,6 +1390,55 @@ still open), which is why the generated stub is a handful of lines and why there
 copy of the verifier anywhere.
 
 ---
+
+## Plugins
+
+A plugin is a bundle an app loads by package name, rather than runs: created, audited and
+signed like any other, installed for one app with `bundle install --for`, and loaded with
+`@pipobscure/bundle/plugins`:
+
+```js
+import { use, list } from '@pipobscure/bundle/plugins';
+
+use('bled');                                   // this app's plugins, in this thread
+const gpio = await import('@alice/bled-gpio'); // ordinary import and require from here on
+for (const name of list('bled')) await import(name);   // or everything installed
+
+use('bled', { verify: {                        // checked as they load, on top of what the
+    attesters: ['audited@did:web:bled.dev'],   // runtime and the policy require
+    ca: certificatePem,                        // also: identity, issuer, quorum, block
+} });
+```
+
+`use(scope)` takes the app's package name, which is the scope `install --for` put the plugins
+in, or an absolute path to a directory of plugins. Each plugin is found by the `name` in its
+`package.json`, and its entry points are its `exports` (or `main`).
+
+- **Plugins resolve last.** Builtins and the app's own dependencies always come first, so a
+  plugin can never stand in for them. What a plugin imports and does not carry is resolved as
+  the host would, so it gets the app's API as the same instance the app has.
+- **Every thread calls `use()` itself.** Mounts and module hooks are per thread.
+- **Checking at load is opt-in, as it is for apps.** The full review happens at install, and
+  `installed` and `validate` repeat it. `use(scope, { verify })` checks every plugin before
+  it returns, and a verifying runtime (`bundle run`, `register`, a SEA) always does.
+- **A plugin is judged as a plugin.** The app's signer, roots and `apps` section never apply
+  to it. What carries over from the runtime is attestations, blocks, and that a signature is
+  needed. The policy's `scopes` section and the host's own rules in code add to that, and
+  nothing can take any of it away. With verification, `use()` checks every plugin before it
+  returns. If any is refused, none is loaded, and the `ERR_BUNDLE_UNTRUSTED` it throws names
+  every plugin, every reason, and where each rule came from.
+- **The loader is light, and the verifier comes only when needed.** The loader goes into every
+  host's bundle, so it imports nothing heavy, and loads without `--experimental-vfs`. Under a
+  verifying runtime, the runtime's own verifier checks plugins, so the code and policy that
+  checked the app check its plugins too. Otherwise this package's verifier is loaded the first
+  time `use()` verifies. `bundle create` bundles what the recording run read, so record a host
+  that verifies its plugins from a run that does.
+
+Shared code for a suite of apps works the same way: install it into a scope the suite's apps
+share (`--for @acme/suite`), and have each app `use()` that scope too. Each name has one
+version per scope, there is no dependency resolution, and bundles in a scope are meant to be
+loaded, never re-wrapped npm packages. [proposals/plugins.md](proposals/plugins.md) has the
+reasoning.
 
 ## How it works
 

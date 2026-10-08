@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/pipobscure/bundles/releases/latest/download/policy.schema.json",
   "title": "bundle install policy",
-  "description": "The rules a machine installs and updates bundles by (`bundle install`, `bundle update`, `bundle installed`).\n\nTwo files are read, and both apply: the machine's (/etc/bundle/policy.json, /Library/Application Support/bundle/policy.json on macOS, %ProgramData%\\bundle\\policy.json on Windows; BUNDLE_SYSTEM_POLICY overrides) and the user's (~/.config/bundle/policy.json, ~/Library/Application Support/bundle/policy.json on macOS, %APPDATA%\\bundle\\policy.json on Windows; BUNDLE_POLICY overrides).\n\nWhen something new is installed, everything that vouches for it is gathered — its signature, and every attestation of its hash — and then:\n• it is REFUSED if a requirement here (or a command-line flag) is not met, or an attester under `block` has marked it bad;\n• it PROCEEDS if any of the evidence comes from someone accepted for this install before, someone under `trust`, or a certificate anchored in the trust store;\n• otherwise the person installing is ASKED.\n\nRequirements from every file and every `apps` section apply together; trust adds up. Unknown settings are an error, so a typo cannot quietly loosen anything. `bundle policy` shows what is in force; `bundle policy check <file>` checks a file.",
+  "description": "The rules a machine installs and updates bundles by (`bundle install`, `bundle update`, `bundle installed`).\n\nTwo files are read, and both apply: the machine's (/etc/bundle/policy.json, /Library/Application Support/bundle/policy.json on macOS, %ProgramData%\\bundle\\policy.json on Windows; BUNDLE_SYSTEM_POLICY overrides) and the user's (~/.config/bundle/policy.json, ~/Library/Application Support/bundle/policy.json on macOS, %APPDATA%\\bundle\\policy.json on Windows; BUNDLE_POLICY overrides).\n\nWhen something new is installed, everything that vouches for it is gathered — its signature, and every attestation of its hash — and then:\n• it is REFUSED if a requirement here (or a command-line flag) is not met, or an attester under `block` has marked it bad;\n• it PROCEEDS if any of the evidence comes from someone accepted for this install before, someone under `trust`, or a certificate anchored in the trust store;\n• otherwise the person installing is ASKED.\n\nRequirements from every file and every `apps` section apply together (for a plugin, its `scopes` section instead of `apps`); trust adds up. Unknown settings are an error, so a typo cannot quietly loosen anything. `bundle policy` shows what is in force; `bundle policy check <file>` checks a file.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -35,11 +35,18 @@
       "propertyNames": { "minLength": 1 },
       "additionalProperties": { "$ref": "#/$defs/rules" },
       "examples": [{ "pnpm": { "require": { "sameIssuer": true } } }]
+    },
+    "scopes": {
+      "description": "Rules for the plugins installed for one app (`bundle install --for <scope>`), by the app's package name — e.g. \"bled\" or \"@acme/editor\". They apply to those plugins on top of the global rules when they are installed, and on top of what the runtime carries over when an app that verifies its plugins loads them. They never apply to the app itself, and the app's `apps` section never applies to its plugins: the two have different authors.",
+      "type": "object",
+      "propertyNames": { "pattern": "^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$", "maxLength": 214 },
+      "additionalProperties": { "$ref": "#/$defs/rules" },
+      "examples": [{ "bled": { "require": { "attesters": ["audited@did:web:bled.dev"] } } }]
     }
   },
   "$defs": {
     "rules": {
-      "description": "Rules for one installed name.",
+      "description": "Rules for one installed name, or for the plugins of one app.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

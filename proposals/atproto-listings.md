@@ -88,7 +88,7 @@ already is the name.
   "defs": {
     "main": {
       "type": "record",
-      "description": "A bundle the repository's owner makes available under a name: the record key, which is also what it installs as. The record says only where the bundle is fetched from — a url, or a domain whose 'nzip:' TXT record names one, exactly one of the two. It vouches for nothing, and whatever is fetched is verified like any other download.",
+      "description": "A bundle the repository's owner makes available under a name: the record key, which is also what it installs as. It is an app, or a plugin for one, as its subject says. The record says only where the bundle is fetched from — a url, or a domain whose 'nzip:' TXT record names one, exactly one of the two. It vouches for nothing, and whatever is fetched is verified like any other download.",
       "key": "any",
       "record": {
         "type": "object",
@@ -99,8 +99,9 @@ already is the name.
         "properties": {
           "subject": {
             "type": "string",
-            "const": "sha256:aa2e2af5c7e057ae771b9c28543044546b9107216418fbb511d1353fd55c1169",
-            "description": "The sha256 of this lexicon's NSID, the same in every listing, so that a backlink index can enumerate every listing on the network."
+            "format": "uri",
+            "description": "For an app: 'sha256:aa2e2af5c7e057ae771b9c28543044546b9107216418fbb511d1353fd55c1169', the sha256 of this lexicon's NSID, the same in every app's listing, so that a backlink index can enumerate every app listed on the network. For a plugin: the at:// address of the listing of the app it is for, so that the backlink index finds an app's plugins, and never lists them among apps.",
+            "maxLength": 2048
           },
           "url": {
             "type": "string",
@@ -297,6 +298,16 @@ refuses anything that is not an archive whose bytes hold together, so a typo is 
 published. An unsigned archive is published with a warning rather than refused: an
 attestation-only release is a legitimate thing to list. Publishing again keeps the
 original `createdAt`.
+
+## Plugins
+
+A plugin's listing names, as its `subject`, the `at://` address of the listing of the app it
+is for, instead of the concept hash. The backlink index then answers "what are this app's
+plugins" with the same query it answers "what are all the apps" with, only for another
+subject. So plugins never appear among apps. `bundle publish --for <app>` lists one, and
+`search --for` and `listings --for` find them. The local index follows the plugins of the
+apps installed here from a listing, which keeps what it fetches proportional to what is
+actually installed. See [proposals/plugins.md](plugins.md).
 
 ## When this stops scaling
 

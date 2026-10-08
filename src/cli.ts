@@ -141,6 +141,8 @@ attest options:                     usage: attest [options] <archive>...
 publish options:                    usage: publish [options] <name> <url | domain>
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --for <app>       list it as a plugin for this app: an app installed from
+                        its listing, @<handle or did>/<name>, or an at:// address
       --title <text>    a display name (default: the name)
       --description <text>  what it is, in a sentence or two
       --password-file <file>  an app password instead of signing in, for CI
@@ -216,6 +218,8 @@ sea options:                        usage: sea [options] [archive]
   with --chain against a certificate authority of your own
 
 search options:                     usage: search [options] <words>...
+      --for <app>       search the plugins listed for this app instead: an app
+                        installed from its listing, or @<handle or did>/<name>
       --refresh         sync the index first, however recent it is
       --offline         answer from the index as it is, without the network
       --json            print the results as JSON
@@ -228,7 +232,12 @@ search options:                     usage: search [options] <words>...
   ('discovery'), and only publishers whose repository changed asked again.
   If that fails, the index answers as it is.
 
+  plugins are listed against their app's listing, so they never show up
+  among apps; --for asks for one app's. The index follows the plugins of
+  every app installed here from a listing, and of the one --for names.
+
 listings options:                   usage: listings [options]
+      --for <app>       the plugins listed for this app instead
       --refresh         sync the index first, however recent it is
       --offline         answer from the index as it is, without the network
       --json            print the listings as JSON
@@ -247,6 +256,9 @@ install options:                    usage: install [options] [url | domain | @ac
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
   -n, --name <name>     install under this name, rather than the one the
                         server suggests (Content-Disposition, else the URL)
+      --for <app>       install a plugin for this app — an installed name, or
+                        the app's package name — into the app's scope rather
+                        than onto the PATH
   -d, --dir <dir>       where to install (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
       --no-shell        installing itself, do not offer to set up the shell
@@ -282,6 +294,15 @@ install options:                    usage: install [options] [url | domain | @ac
 
   how it was installed — url, domain or listing — is remembered, and 'update'
   asks it again, so a listing or TXT record that moves moves the install too.
+
+  --for installs a plugin: a bundle an app loads by its package name, with
+  '@pipobscure/bundle/plugins'. It goes into the app's scope — a directory of
+  that app's own (BUNDLE_PLUGINS overrides where those are) — under the
+  package name inside it, is not made executable, and is never on the PATH.
+  It is reviewed like any install, under the policy's global rules and its
+  'scopes' section for that app, never the app's own 'apps' section: a
+  plugin's author is not the app's. Its record is '<scope>:<package>', which
+  update, installed, validate and uninstall take like any other name.
 
   with neither, this package installs itself from its own published release,
   whose publish workflow's signature is accepted without asking — so
@@ -376,8 +397,9 @@ lexicon options:                    usage: lexicon [check | publish] [options]
 uninstall options:                  usage: uninstall [name | url | domain | @did/name]
 
   deletes the file and forgets the record. With no argument it removes this
-  package's own install — what 'bundle install' left behind. The .nzip
-  association on Windows is left alone: other archives may need it.
+  package's own install — what 'bundle install' left behind. An app's plugins
+  go with it, unless another install of the same app still loads them. The
+  .nzip association on Windows is left alone: other archives may need it.
 
 trust options:
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
@@ -836,6 +858,8 @@ async function install(args: string[], io: Console): Promise<number> {
     });
     const INSTALL = await import('./install.ts');
     const demands = await policy(values);
+    if (values.for !== undefined && !positionals[0]) throw new Error('install: --for needs a plugin to install: a url, a domain or @account/name');
+    const scope = values.for !== undefined ? await scopeFor(values.for, INSTALL) : undefined;
 
     // With no URL, this package installs itself: the published release, signed
     // by the workflow that publishes it. `npx @pipobscure/bundle install` is
@@ -857,7 +881,7 @@ async function install(args: string[], io: Console): Promise<number> {
 
     try {
         const record = await INSTALL.install(target, {
-            roots: values.root ?? [], name: values.name, dir: values.dir,
+            roots: values.root ?? [], name: values.name, dir: values.dir, scope,
             identity: values.identity, issuer: values.issuer,
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
             discover: values.discover,
@@ -865,7 +889,9 @@ async function install(args: string[], io: Console): Promise<number> {
             decide: decider(Boolean(values.yes), io),
             log: (line) => io.err(line),
         });
-        io.out(`${record.name} installed in ${record.dir}`);
+        io.out(record.scope !== undefined
+            ? `${record.package} installed for ${record.scope}, in ${record.dir}`
+            : `${record.name} installed in ${record.dir}`);
         // Installing itself is setting up a machine, so it offers the rest of
         // the setup too: the shell hook, for the shell this is being run from.
         if (!positionals[0] && values.shell) await offerShellHook(io);
@@ -873,6 +899,28 @@ async function install(args: string[], io: Console): Promise<number> {
     } catch (err) {
         return refused(err, io);
     }
+}
+
+// The scope `--for` names: an installed app by the name it was installed as,
+// which is turned into its package name — the name the app knows itself by at
+// runtime, and which survives `--name` — or a package name given directly.
+async function scopeFor(value: string, INSTALL: typeof import('./install.ts')): Promise<string> {
+    const app = INSTALL.records()[value];
+    if (app && app.scope === undefined) {
+        let name = app.package;
+        if (!name) {
+            try {
+                name = INSTALL.packageName(FS.readFileSync(INSTALL.pathOf(app)));
+            } catch {
+                // said below
+            }
+        }
+        if (!name) throw new Error(`install: ${value} carries no package name to install plugins for — name the scope instead`);
+        return name;
+    }
+    const { isScope } = await import('./policy.ts');
+    if (!isScope(value)) throw new Error(`install: --for takes an installed app, or the package name of one; '${value}' is neither`);
+    return value;
 }
 
 // Add `bundle shell` to the startup file of the shell `bundle install` was run
@@ -1036,7 +1084,7 @@ async function installed(args: string[], io: Console): Promise<number> {
 
     if (values.json) {
         io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
-            name: record.name, path, state, sha256, reason,
+            name: record.name, scope: record.scope, package: record.package, path, state, sha256, reason,
             source: INSTALL.sourceOf(record), url: record.url, identity: record.identity, issuer: record.issuer,
             attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record),
             warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
@@ -1046,6 +1094,7 @@ async function installed(args: string[], io: Console): Promise<number> {
     } else {
         for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
+            if (record.scope !== undefined) io.out(`  plugin: ${record.package}, for ${record.scope}`);
             io.out(`  at:     ${path}`);
             const source = INSTALL.sourceOf(record);
             if (source !== record.url) io.out(`  source: ${source}`);
@@ -1107,14 +1156,17 @@ async function publish(args: string[], io: Console): Promise<number> {
     io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
     if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
 
+    const app = values.for !== undefined ? await appListing('publish', values.for, true) : undefined;
+    if (app) io.err(`* listing it as a plugin for ${app.label} (${app.uri})`);
+
     const session = await signIn('publish', values, io, `atproto repo:${LISTING.LISTING}`);
     try {
         const written = await LISTING.publish(session, {
-            name, ...(domain ? { domain } : { url }), title: values.title, description: values.description,
+            name, ...(domain ? { domain } : { url }), for: app?.uri, title: values.title, description: values.description,
         });
         io.out(`${written.replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
         io.out(`  ${written.uri}`);
-        io.err(`  install it with: bundle install @${session.handle ?? session.did}/${name}`);
+        io.err(`  install it with: bundle install ${app ? `--for ${app.installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`);
     } finally {
         await session.end?.();
     }
@@ -1165,10 +1217,11 @@ async function search(args: string[], io: Console): Promise<number> {
     const text = positionals.join(' ');
     const LISTING = await import('./listing.ts');
     if (!LISTING.matchQuery(text)) throw new Error('search: say what to search for');
-    await freshIndex(values, io);
-    const found = LISTING.search(text);
-    printListings(found, Boolean(values.json), io);
-    if (!found.length && !values.json) io.err(`nothing listed matches '${text}'`);
+    const app = values.for !== undefined ? await appListing('search', values.for, !values.offline) : undefined;
+    await freshIndex(values, io, app?.uri);
+    const found = LISTING.search(text, undefined, { for: app?.uri });
+    printListings(found, Boolean(values.json), io, app);
+    if (!found.length && !values.json) io.err(`nothing listed${app ? ` for ${app.label}` : ''} matches '${text}'`);
     return 0;
 }
 
@@ -1176,21 +1229,53 @@ async function search(args: string[], io: Console): Promise<number> {
 async function listings(args: string[], io: Console): Promise<number> {
     const { values } = parseArgs({ args, options: OPTIONS.listings });
     const LISTING = await import('./listing.ts');
-    await freshIndex(values, io);
-    const found = LISTING.listings();
-    printListings(found, Boolean(values.json), io);
-    if (!found.length && !values.json) io.err('nothing listed');
+    const app = values.for !== undefined ? await appListing('listings', values.for, !values.offline) : undefined;
+    await freshIndex(values, io, app?.uri);
+    const found = LISTING.listings(undefined, { for: app?.uri });
+    printListings(found, Boolean(values.json), io, app);
+    if (!found.length && !values.json) io.err(app ? `no plugins listed for ${app.label}` : 'nothing listed');
     return 0;
+}
+
+// The app `--for` names, by its listing: an installed app made from a listing,
+// `@<handle or did>/<name>`, or a listing's at:// address. Plugins are listed
+// against the app's listing, so an app installed from a URL or a domain has
+// plugins only by URL or domain — `install --for` still takes those.
+async function appListing(command: string, value: string, online: boolean): Promise<{ uri: string; label: string; installed?: string | undefined }> {
+    const INSTALL = await import('./install.ts');
+    const LISTING = await import('./listing.ts');
+    const record = INSTALL.records()[value];
+    if (record && record.scope === undefined) {
+        const source = INSTALL.sourceOf(record);
+        if (!LISTING.parseListingUri(source)) {
+            throw new Error(`${command}: ${value} was installed from ${source}, not from a listing, so nothing is listed for it — its plugins install from a URL or a domain, with 'bundle install --for ${value}'`);
+        }
+        return { uri: source, label: value, installed: value };
+    }
+    if (LISTING.parseListingUri(value)) return { uri: value, label: value };
+    if (!value.startsWith('@')) throw new Error(`${command}: --for takes an installed app, @<handle or did>/<name>, or a listing's at:// address; '${value}' is none of those`);
+    if (!online) throw new Error(`${command}: finding ${value} needs the network — name the app as it is installed, or by its at:// address`);
+    const found = await LISTING.resolveListing(value);
+    if (LISTING.appOf(found.record)) throw new Error(`${command}: ${value} is itself a plugin, for ${LISTING.appOf(found.record)}`);
+    return { uri: found.uri, label: value };
 }
 
 // Sync the listing index if it is older than an hour, or built from some other
 // backlink index, or --refresh says so. A sync that fails leaves the index to
 // answer as it is, and says how old that is; only no index at all is an error.
-async function freshIndex(values: { refresh?: boolean | undefined; offline?: boolean | undefined }, io: Console): Promise<void> {
+async function freshIndex(values: { refresh?: boolean | undefined; offline?: boolean | undefined }, io: Console, app?: string | undefined): Promise<void> {
     const LISTING = await import('./listing.ts');
     const POLICY = await import('./policy.ts');
+    const INSTALL = await import('./install.ts');
     if (values.refresh && values.offline) throw new Error('--refresh and --offline are alternatives');
     const last = LISTING.lastSync();
+    // Plugins are followed only for the apps installed here from a listing,
+    // and for the one asked about.
+    const apps = [...new Set([
+        ...Object.values(INSTALL.records()).filter((record) => record.scope === undefined).map((record) => INSTALL.sourceOf(record))
+            .filter((source) => LISTING.parseListingUri(source)),
+        ...(app ? [app] : []),
+    ])];
     if (values.offline) {
         if (!last) throw new Error('there is no listing index yet — run this without --offline once');
         return;
@@ -1201,11 +1286,12 @@ async function freshIndex(values: { refresh?: boolean | undefined; offline?: boo
         io.err(`! ${why} — the index is from ${last.at.toISOString()}`);
     };
     if (!index) return stale("discovery is turned off by the policy ('bundle policy')");
-    if (!values.refresh && last && last.index === index && Date.now() - last.at.getTime() < LISTING.INDEX_AGE) return;
+    const covered = last !== null && apps.every((uri) => last.subjects.includes(uri));
+    if (!values.refresh && last && last.index === index && covered && Date.now() - last.at.getTime() < LISTING.INDEX_AGE) return;
 
     io.err(`* syncing the listing index from ${index}`);
     try {
-        const report = await LISTING.syncIndex({ index });
+        const report = await LISTING.syncIndex({ index, apps });
         io.err(`  ${report.listings} listing${report.listings === 1 ? '' : 's'} from ${report.publishers} publisher${report.publishers === 1 ? '' : 's'}` +
             `${report.refreshed ? `, ${report.refreshed} refreshed` : ''}${report.removed ? `, ${report.removed} gone` : ''}`);
         for (const { did, error } of report.failed) io.err(`  ! ${did}: ${error} — kept what the index had`);
@@ -1214,13 +1300,14 @@ async function freshIndex(values: { refresh?: boolean | undefined; offline?: boo
     }
 }
 
-function printListings(found: import('./listing.ts').Listing[], json: boolean, io: Console): void {
+function printListings(found: import('./listing.ts').Listing[], json: boolean, io: Console, app?: { label: string; installed?: string | undefined } | undefined): void {
     if (json) {
-        io.out(JSON.stringify(found.map(({ install, did, handle, name, title, description, url, domain, createdAt }) => ({
-            install, did, handle, name, title, description, url, domain, createdAt,
+        io.out(JSON.stringify(found.map(({ install, did, handle, name, title, description, url, domain, createdAt, for: forApp }) => ({
+            install, did, handle, name, title, description, url, domain, for: forApp, createdAt,
         })), null, 2));
         return;
     }
+    if (app && found.length) io.err(`* plugins for ${app.label}; install one with: bundle install --for ${app.installed ?? '<the app>'} <the first column>`);
     const width = Math.max(0, ...found.map((each) => each.install.length));
     for (const each of found) {
         const about = [each.title && each.title !== each.name ? each.title : undefined, each.description].filter(Boolean).join(' — ');
@@ -1477,6 +1564,12 @@ async function uninstall(args: string[], io: Console): Promise<number> {
     const record = INSTALL.uninstall(positionals[0]);
     io.out(`removed ${record.name} from ${record.dir}`);
     io.err(`  it came from ${record.url}`);
+    // Its plugins went with it — unless another install of the same app
+    // still loads them.
+    for (const plugin of record.plugins) io.out(`removed its plugin ${plugin.package} from ${plugin.dir}`);
+    if (record.sharedWith.length) {
+        io.err(`  its plugins stay: ${record.sharedWith.join(', ')} ${record.sharedWith.length === 1 ? 'is' : 'are'} the same app, and ${record.sharedWith.length === 1 ? 'loads' : 'load'} them too`);
+    }
     // This package going takes its shell hook with it — the hook would only
     // look for a `bundle` that is no longer there.
     if (!positionals[0]) {
@@ -1642,7 +1735,7 @@ async function trust(args: string[], io: Console): Promise<number> {
     const POLICY = await import('./policy.ts');
     const environment = policyFromEnvironment();
     for (const { did } of [...environment.attesters, ...(environment.block ?? [])]) dids.add(did);
-    const policies = [POLICY.loadPolicy(), ...Object.keys(INSTALL.records()).map((name) => POLICY.loadPolicy(name))];
+    const policies = [POLICY.loadPolicy(), ...Object.values(INSTALL.records()).map((record) => INSTALL.policyOf(record))];
     for (const each of policies) {
         for (const { attesters } of each.attesters) for (const { did } of attesters) dids.add(did);
         for (const { did } of [...each.trust.attesters, ...each.block]) dids.add(did);
@@ -1800,6 +1893,7 @@ export const OPTIONS = {
     },
     publish: {
         as:              { type: 'string' },
+        for:             { type: 'string' },
         title:           { type: 'string' },
         description:     { type: 'string' },
         'password-file': { type: 'string' },
@@ -1811,11 +1905,13 @@ export const OPTIONS = {
     },
     run: RUN_OPTIONS,
     search: {
+        for:     { type: 'string' },
         refresh: { type: 'boolean' },
         offline: { type: 'boolean' },
         json:    { type: 'boolean' },
     },
     listings: {
+        for:     { type: 'string' },
         refresh: { type: 'boolean' },
         offline: { type: 'boolean' },
         json:    { type: 'boolean' },
@@ -1824,6 +1920,7 @@ export const OPTIONS = {
         ...INSTALL_OPTIONS,
         name:      { type: 'string', short: 'n' },
         dir:       { type: 'string', short: 'd' },
+        for:       { type: 'string' },
         shell:     { type: 'boolean', default: true },
     },
     update: INSTALL_OPTIONS,

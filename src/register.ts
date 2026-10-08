@@ -1,5 +1,6 @@
 import { preload, sibling } from './preload.ts';
 import type * as Provider from './provider.ts';
+import type * as Plugins from './plugin-verifier.ts';
 
 // The preload entry point: registering the signed-archive provider is all this
 // does, so `--vfs-load` finds it already in place when it picks a provider for
@@ -33,5 +34,9 @@ import type * as Provider from './provider.ts';
 // with options from a preload module of your own.
 
 preload(() => {
-    sibling<typeof Provider>(import.meta.filename, 'provider').register();
+    const settings = sibling<typeof Provider>(import.meta.filename, 'provider').register();
+    // Plugins this process loads are verified too, with what carries over
+    // from this runtime to code someone else wrote (see plugin-verifier.ts).
+    const plugins = sibling<typeof Plugins>(import.meta.filename, 'plugin-verifier');
+    plugins.enforce(plugins.carriedFrom(settings));
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import {
-    FILE_KEYS, RULE_KEYS, REQUIRE_KEYS, TRUST_KEYS, SIGNER_KEYS, FINGERPRINT_PATTERN, DISCOVERY_PATTERN,
+    FILE_KEYS, RULE_KEYS, REQUIRE_KEYS, TRUST_KEYS, SIGNER_KEYS, FINGERPRINT_PATTERN, DISCOVERY_PATTERN, SCOPE_PATTERN,
     readPolicyFile, formatPolicyFile, starterPolicy, schemaUrl,
 } from '../src/policy.ts';
 import { DID_PATTERN, ATTESTER_PATTERN, DURATION_PATTERN } from '../src/attestation.ts';
@@ -113,6 +113,7 @@ const VALID: unknown[] = [
     { discovery: false },
     { maxAge: '90' },
     { require: { attesters: [] } },
+    { scopes: { bled: { require: { attesters: [DID] }, block: [PLC] }, '@acme/suite': { issuers: ['https://token.actions.githubusercontent.com'] } } },
 ];
 
 const INVALID: unknown[] = [
@@ -139,6 +140,9 @@ const INVALID: unknown[] = [
     { apps: { '': {} } },
     { apps: { pnpm: { discovery: false } } },                   // global-only settings
     { apps: { pnpm: [] } },
+    { scopes: { Bled: {} } },                                   // not a package name
+    { scopes: { '../escape': {} } },
+    { scopes: { bled: { maxAge: '1d' } } },                     // global-only settings
 ];
 
 test('the schema and the checker agree on every document', () => {
@@ -180,6 +184,7 @@ test('the schema uses the checker\'s own patterns', () => {
     const certificates = schema.$defs['trust']!.properties!['certificates']!['items'] as Schema;
     assert.equal(certificates['pattern'], FINGERPRINT_PATTERN);
     assert.equal((schema.properties!['discovery']!['anyOf'] as Schema[])[0]!['pattern'], DISCOVERY_PATTERN);
+    assert.equal((schema.properties!['scopes']!['propertyNames'] as Schema)['pattern'], SCOPE_PATTERN);
 });
 
 test('every setting is described, since the schema is the reference for writing one', () => {

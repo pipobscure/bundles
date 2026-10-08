@@ -4,7 +4,8 @@ import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { open as openBundle, type ProviderOptions } from './provider.ts';
+import { open as openBundle, settings as providerSettings, type ProviderOptions } from './provider.ts';
+import { enforce, carriedFrom } from './plugin-verifier.ts';
 import { message, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
 import { attestersFrom, parseDuration } from './attestation.ts';
 
@@ -104,6 +105,9 @@ export function mount(container: string, options: LaunchOptions = {}): Mounted {
 
     const vfs = VFS.create(provider, { emitExperimentalWarning: false });
     const root = vfs.mount();
+    // What runs from here may load plugins; they are verified too, with what
+    // carries over from this runtime to code someone else wrote.
+    enforce(carriedFrom(providerSettings(settings)));
     return { root, vfs, entry: entryPoint(root, options.entry) };
 }
 

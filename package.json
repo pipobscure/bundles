@@ -47,6 +47,7 @@
     "./oauth": "./dist/oauth.js",
     "./lexicon": "./dist/lexicon.js",
     "./listing": "./dist/listing.js",
+    "./plugins": "./dist/plugins.js",
     "./package.json": "./package.json"
   },
   "files": [

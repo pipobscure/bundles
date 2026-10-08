@@ -7,7 +7,9 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { STATES, message, type VerificationState } from './manifest.ts';
 import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
+import * as ZLIB from 'node:zlib';
 import { loadPolicy, type Policy, type Signer } from './policy.ts';
+import { isScope, scopeDir, pluginFile, pluginsDir } from './scopes.ts';
 import {
     gather, gatherSync, judge, accept, noneAccepted, refusal,
     type Accepted, type Demands, type Review, type ReviewItem, type Gathered,
@@ -77,8 +79,17 @@ export function self(): { url: string; identity: string; issuer: string } {
 
 /** What an installed archive is, and where it came from. */
 export interface InstallRecord {
-    /** The file name it was installed as, which is the key in the record. */
+    /**
+     * The key in the record: the file name an app was installed as, or for a
+     * plugin `<scope>:<package name>` (`bled:@alice/bled-gpio`).
+     */
     name: string;
+    /** For a plugin: the scope it was installed into — the package name of the app it is for. */
+    scope?: string | undefined;
+    /** The package name inside the archive, when it has one. */
+    package?: string | undefined;
+    /** Where in `dir` the file is, when that is not `name` — a plugin's `@alice/bled-gpio.nzip`. */
+    file?: string | undefined;
     /**
      * How it was installed, which is what an update asks again: a URL; a
      * domain, whose `nzip:` TXT record names the URL; or the `at://` address of
@@ -167,6 +178,11 @@ export interface InstallOptions {
     /** Install under this name instead of the one the server suggests. */
     name?: string | undefined;
     /**
+     * Install as a plugin for this scope — the package name of the app it is
+     * for — into that scope's directory, rather than onto the PATH.
+     */
+    scope?: string | undefined;
+    /**
      * Register `.nzip` and extend PATHEXT on Windows (default: true, or false
      * when `BUNDLE_NO_WINDOWS_SETUP` is set). Turn it off when something else
      * owns the association — an installer, or a test suite, which has no
@@ -242,22 +258,74 @@ export function records(): Record<string, InstallRecord> {
  */
 export async function install(target: string, options: InstallOptions = {}): Promise<InstallRecord> {
     const log = options.log ?? (() => {});
-    const dir = options.dir ? PATH.resolve(options.dir) : installDir();
+    const { scope } = options;
+    if (scope !== undefined) {
+        if (!isScope(scope)) throw new Error(`'${scope}' is not a scope: plugins are installed for an app by its package name`);
+        if (options.name || options.dir) throw new Error('a plugin goes where its scope says, under its own package name: --name and --dir do not apply');
+    }
+    const dir = scope !== undefined ? scopeDir(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
 
-    const { source, url, name: named } = await locate(target, options, log);
+    const { source, url, name: named, app } = await locate(target, options, log);
+    if (app !== undefined) forApp(target, app, scope);
     log(`* fetching ${url}`);
     const response = await fetch(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
-
-    const name = options.name ?? named ?? fileName(response, url);
     const bytes = Buffer.from(await response.arrayBuffer());
-    const record = await place(bytes, { name, dir, source, url, response, options, log });
 
-    log(`* installed ${PATH.join(dir, name)}`);
-    if (!onPath(dir)) {
+    // A plugin is found by the package name inside it, so that is what it is
+    // installed as. The name is read before the review only to say what is
+    // being reviewed; nothing in the archive runs, and the review decides.
+    const pkg = packageName(bytes);
+    if (scope !== undefined && !pkg) throw new Error(`${url} is not a plugin: it carries no package.json with a name`);
+    const name = scope !== undefined ? `${scope}:${pkg}` : options.name ?? named ?? fileName(response, url);
+    const file = scope !== undefined ? pluginFile(pkg!) : undefined;
+    const record = await place(bytes, { name, dir, file, scope, pkg, source, url, response, options, log });
+
+    log(`* installed ${pathOf(record)}`);
+    if (scope === undefined && !onPath(dir)) {
         log(`! ${dir} is not on your PATH — add it, or set BUNDLE_INSTALL_DIR to somewhere that is`);
     }
     return record;
+}
+
+// A listing that says it is a plugin for an app is installed as one, and for
+// that app: not onto the PATH, and not into the scope of some other app. Which
+// app a scope belongs to is only known for apps installed from their listing;
+// for any other, the person saying --for is the one who knows.
+function forApp(target: string, app: string, scope: string | undefined): void {
+    const host = Object.values(records()).find((record) => record.scope === undefined && sourceOf(record) === app);
+    if (scope === undefined) {
+        throw new Error(`${target} is a plugin for ${host ? `${host.name} (${app})` : app}: install it with --for${host ? ` ${host.name}` : ' <that app>'}`);
+    }
+    if (host?.package !== undefined && host.package !== scope) {
+        throw new Error(`${target} is a plugin for ${host.name} (${app}), whose plugins go in '${host.package}', not '${scope}'`);
+    }
+}
+
+/** Where an install's file is. */
+export function pathOf(record: InstallRecord): string {
+    return PATH.join(record.dir, record.file ?? record.name);
+}
+
+/**
+ * The policy an install answers to: an app's, with its `apps` section; a
+ * plugin's, with its scope's section and never the app's — the app's rules
+ * are about the app's author.
+ */
+export function policyOf(record: Pick<InstallRecord, 'name' | 'scope'>): Policy {
+    return record.scope !== undefined ? loadPolicy(undefined, { scope: record.scope }) : loadPolicy(record.name);
+}
+
+/** The package name an archive's package.json gives, if it has one. */
+export function packageName(bytes: Buffer): string | undefined {
+    try {
+        const zip = new ZLIB.ZipBuffer(bytes);
+        if (!zip.has('package.json')) return undefined;
+        const name = (JSON.parse(zip.get('package.json').contentSync().toString('utf-8')) as { name?: unknown }).name;
+        return typeof name === 'string' && isScope(name) ? name : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /**
@@ -334,9 +402,17 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
         return { record: remember({ ...previous, source, url, ...validators(response), at: previous.at }), state: 'unchanged' };
     }
 
+    // A plugin is found by its package name: one that now calls itself
+    // something else is a different plugin, not a new version of this one.
+    if (previous.scope !== undefined && packageName(bytes) !== previous.package) {
+        throw new Error(`${url} now carries ${packageName(bytes) ?? 'no package name'}, not ${previous.package} — install it as a plugin of its own`);
+    }
     const record = await place(bytes, {
         name: previous.name,
         dir: previous.dir,
+        file: previous.file,
+        scope: previous.scope,
+        pkg: previous.scope !== undefined ? previous.package : packageName(bytes),
         source,
         url,
         response,
@@ -419,7 +495,7 @@ export function sourceOf(record: InstallRecord): string {
  * listing by its address, with the DID in it rather than a handle, since
  * handles change hands. `name` is what it installs as, when the source says.
  */
-async function locate(target: string, options: InstallOptions, log: (line: string) => void): Promise<{ source: string; url: string; name?: string | undefined }> {
+async function locate(target: string, options: InstallOptions, log: (line: string) => void): Promise<{ source: string; url: string; name?: string | undefined; app?: string | undefined }> {
     if (target.startsWith('@') || target.startsWith('at://')) {
         const LISTING = await import('./listing.ts');
         const found = target.startsWith('@')
@@ -429,7 +505,7 @@ async function locate(target: string, options: InstallOptions, log: (line: strin
         // record — two hops, both asked again on every update.
         const url = found.record.domain ? (await resolveAlias(found.record.domain, options.resolveTxt)).url : found.record.url!;
         log(`* ${target} is ${found.uri}, ${found.record.domain ? `whose domain ${found.record.domain} names ` : 'at '}${url}`);
-        return { source: found.uri, url, name: commandName(found.name) };
+        return { source: found.uri, url, name: commandName(found.name), app: LISTING.appOf(found.record) };
     }
     if (hasScheme(target)) return { source: target, url: target };
     if (!isDomain(target)) throw new Error(`'${target}' is neither a URL, a domain name, nor a listing (@<handle>/<name>)`);
@@ -507,7 +583,7 @@ async function refreshRecord(record: InstallRecord, network: NetworkOptions): Pr
     const { refreshFor, discover } = await import('./atproto.ts');
     const { cachedFor } = await import('./attestation.ts');
     const problems: string[] = [];
-    const policy = loadPolicy(record.name);
+    const policy = policyOf(record);
     const dids = new Set([...candidates(record, policy), ...cachedFor(hash[1]!)]);
     if (policy.discovery) {
         try {
@@ -564,7 +640,7 @@ export async function validate(which: string[] = [], { roots = [], network = {},
         const record = all[name]!;
         const last = record.validatedAt ? Date.parse(record.validatedAt) : NaN;
         if (every !== undefined && Date.now() - last < every) {
-            results.push({ record, check: { record, path: PATH.join(record.dir, record.name), state: 'ok', reason: 'validated recently' }, added: [], removed: [], problems: [], skipped: true });
+            results.push({ record, check: { record, path: pathOf(record), state: 'ok', reason: 'validated recently' }, added: [], removed: [], problems: [], skipped: true });
             continue;
         }
         const problems = await refreshRecord(record, network);
@@ -590,7 +666,7 @@ function seenIn(review: Review): Seen[] {
 }
 
 function check(record: InstallRecord, roots: string[]): InstalledCheck {
-    const path = PATH.join(record.dir, record.name);
+    const path = pathOf(record);
 
     let bytes: Buffer;
     try {
@@ -610,7 +686,7 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
     // The same review an update would get, from the cache: whoever was
     // accepted must still vouch for it, the policy must still hold, and nobody
     // it blocks on may have marked it bad since.
-    const policy = loadPolicy(record.name);
+    const policy = policyOf(record);
     let gathered: Gathered;
     try {
         gathered = gatherSync(bytes, { roots, candidates: candidates(record, policy), ignore: policy.ignore, maxAge: policy.maxAge, everyCached: true });
@@ -670,6 +746,14 @@ function selfTrust(url: string): Signer[] {
     return url === SELF.url || url === self().url ? [{ identity: SELF.identity, issuer: SELF.issuer }] : [];
 }
 
+/** What `uninstall` removed: the install, and its plugins when nothing else can load them. */
+export type Uninstalled = InstallRecord & {
+    /** The app's plugins, removed with it. */
+    plugins: InstallRecord[];
+    /** Other installs of the same app, for whom its plugins were left where they are. */
+    sharedWith: string[];
+};
+
 /**
  * Forget an install, and remove the file it put on the PATH.
  *
@@ -677,15 +761,51 @@ function selfTrust(url: string): Signer[] {
  * nothing means this package's own install, which is what somebody typing
  * `bundle uninstall` means. The file association on Windows is left alone:
  * other archives may rely on it, and it is not this one's to take away.
+ *
+ * An app's plugins go with it: nothing can load them any more. The exception
+ * is another install of the same app — the same package, under another name —
+ * which loads the same scope, so they stay for that. A scope no app is
+ * installed as, such as a suite's shared one, belongs to no single app and is
+ * only ever emptied plugin by plugin.
  */
-export function uninstall(which?: string): InstallRecord {
+export function uninstall(which?: string): Uninstalled {
     const all = records();
     const name = resolve(all, which);
     const record = all[name]!;
-    FS.rmSync(PATH.join(record.dir, name), { force: true });
+    FS.rmSync(pathOf(record), { force: true });
     delete all[name];
+
+    const plugins: InstallRecord[] = [];
+    let sharedWith: string[] = [];
+    if (record.scope === undefined && record.package) {
+        const scope = record.package;
+        sharedWith = Object.values(all).filter((each) => each.scope === undefined && each.package === scope).map((each) => each.name).sort();
+        if (!sharedWith.length) {
+            for (const plugin of Object.values(all).filter((each) => each.scope === scope)) {
+                FS.rmSync(pathOf(plugin), { force: true });
+                delete all[plugin.name];
+                plugins.push(plugin);
+            }
+            if (plugins.length) prune(scopeDir(scope));
+        }
+    } else if (record.scope !== undefined) {
+        prune(PATH.dirname(pathOf(record)));
+    }
     write(all);
-    return record;
+    return { ...record, plugins, sharedWith };
+}
+
+// Remove `dir` if it is empty, and its parents up to the plugins directory —
+// a scope's directory, and the `@scope/` ones inside and above it.
+function prune(dir: string): void {
+    const top = pluginsDir();
+    for (let at = dir; at.startsWith(top + PATH.sep); at = PATH.dirname(at)) {
+        try {
+            FS.rmdirSync(at);
+        } catch {
+            return;
+        }
+    }
 }
 
 /** The name this package installs itself under, which the extension decides. */
@@ -706,6 +826,7 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
         if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
         return mine;
     }
+    if (all[which]) return which;
     if (which.startsWith('@')) {
         const slash = which.lastIndexOf('/');
         const uri = `at://${which.slice(1, slash)}/com.pipobscure.bundle.listing/${which.slice(slash + 1)}`;
@@ -729,9 +850,12 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
 
 // Review, decide, then move into place. The order is the whole point: an
 // archive nobody accepted never exists at its destination, not even briefly.
-async function place(bytes: Buffer, { name, dir, source, url, response, options, log, previous }: {
+async function place(bytes: Buffer, { name, dir, file, scope, pkg, source, url, response, options, log, previous }: {
     name: string;
     dir: string;
+    file?: string | undefined;
+    scope?: string | undefined;
+    pkg?: string | undefined;
     source: string;
     url: string;
     response: Response;
@@ -739,7 +863,7 @@ async function place(bytes: Buffer, { name, dir, source, url, response, options,
     log: (line: string) => void;
     previous?: InstallRecord | undefined;
 }): Promise<InstallRecord> {
-    const policy = options.policy ?? loadPolicy(name);
+    const policy = options.policy ?? policyOf({ name, scope });
     const demands: Demands = {
         identity: options.identity || undefined,
         issuer: options.issuer || undefined,
@@ -779,14 +903,17 @@ async function place(bytes: Buffer, { name, dir, source, url, response, options,
     }
     log(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
 
-    FS.mkdirSync(dir, { recursive: true });
-    const target = PATH.join(dir, name);
+    // A plugin is the app's data, not a command: it is not made executable,
+    // and Windows is not told how to run it.
+    const plugin = scope !== undefined;
+    const target = PATH.join(dir, file ?? name);
+    FS.mkdirSync(PATH.dirname(target), { recursive: true });
     const temporary = `${target}.incoming-${process.pid}`;
     try {
-        FS.writeFileSync(temporary, bytes, { mode: 0o755 });
+        FS.writeFileSync(temporary, bytes, { mode: plugin ? 0o644 : 0o755 });
         // Windows has no executable bit; what makes the file runnable there is
         // the .nzip association, which `ensureWindowsAssociation()` sets up.
-        if (process.platform !== 'win32') FS.chmodSync(temporary, 0o755);
+        if (process.platform !== 'win32' && !plugin) FS.chmodSync(temporary, 0o755);
         FS.renameSync(temporary, target);
     } catch (err) {
         FS.rmSync(temporary, { force: true });
@@ -794,7 +921,7 @@ async function place(bytes: Buffer, { name, dir, source, url, response, options,
     }
 
     const associating = options.associate ?? !process.env['BUNDLE_NO_WINDOWS_SETUP'];
-    if (process.platform === 'win32' && associating) {
+    if (process.platform === 'win32' && associating && !plugin) {
         for (const line of ensureWindowsAssociation(name)) log(`  ${line}`);
     }
 
@@ -804,6 +931,9 @@ async function place(bytes: Buffer, { name, dir, source, url, response, options,
         .map((each) => { const e = each as { did: string; kind?: string | undefined }; return formatAttester({ did: e.did, kind: e.kind }); });
     return remember({
         name,
+        scope,
+        package: pkg,
+        file,
         source,
         url,
         ...validators(response),
