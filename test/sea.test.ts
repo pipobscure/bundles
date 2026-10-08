@@ -4,7 +4,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { buildSea, createSeaBase, verifierFiles, stubSource, type SeaBaseResult } from '../src/sea.ts';
+import { buildSea, createSeaBase, executablePath, verifierFiles, stubSource, type SeaBaseResult } from '../src/sea.ts';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { APP, CHAIN_PEM, LEAF_KEY, ROOT_PEM, scratch, testSigner, tree } from './helpers.ts';
 
@@ -21,7 +21,9 @@ const APP_BUNDLE = PATH.join(tmp, 'app.run');
 await createBundle({ base: source, files: Object.keys(APP), output: APP_BUNDLE });
 
 // The base is what takes the time; every executable below reuses it.
-const BASE = PATH.join(tmp, 'sea-base');
+// Where it lands, which on Windows has `.exe` on the end: a file that is run
+// can be named without it, but one that is read or appended to cannot.
+const BASE = executablePath(PATH.join(tmp, 'sea-base'));
 
 // Building one needs a node whose --build-sea understands "vfsArchive"
 // (nodejs/node#65810). One without it builds a binary that cannot start, and
@@ -50,7 +52,7 @@ await signBundle({ source: APP_BUNDLE, output: SIGNED_APP, signer: testSigner() 
 // BASE has a root baked in, which is what most of these want. One more with no
 // policy at all is what the environment-driven cases need: with a trusted root
 // already inside the binary, nothing it is handed is ever untrusted.
-const OPEN_BASE = PATH.join(tmp, 'open-base');
+const OPEN_BASE = executablePath(PATH.join(tmp, 'open-base'));
 if (!SKIP) await createSeaBase({ output: OPEN_BASE, sigstore: false });
 
 
@@ -101,7 +103,8 @@ test('the generated stub requires the launcher and lets it decide the shape', ()
 
 test('the base is a runnable node binary with the verifier inside it', needsSea, () => {
     assert.ok(base!.size > 1_000_000, `${base!.size} bytes`);
-    assert.ok(FS.statSync(BASE).mode & 0o111);
+    // Windows has no executable bit; the extension is what makes it runnable.
+    if (process.platform !== 'win32') assert.ok(FS.statSync(BASE).mode & 0o111);
     assert.ok(base!.verifier.includes('package.json'));
 
     // On its own it has no archive at the end, so there is nothing to verify
@@ -214,7 +217,7 @@ test('a trust root baked in at build time needs nothing from the environment', n
 
 test('a container with nothing baked in takes its policy from the environment', needsSea, async () => {
     // The other half: build once, decide where it is allowed to run later.
-    const plainBase = PATH.join(tmp, 'plain-base');
+    const plainBase = executablePath(PATH.join(tmp, 'plain-base'));
     await createSeaBase({ output: plainBase, sigstore: false });
     const output = PATH.join(tmp, 'plain.sea');
     await buildSea({ app: APP_BUNDLE, output, base: plainBase, signer: testSigner() });
@@ -337,7 +340,7 @@ test('the runtime says what it is, and what it wants', needsSea, () => {
 });
 
 test('a runtime built with a policy of its own takes none from its command line', needsSea, async () => {
-    const sealed = PATH.join(tmp, 'sealed-node');
+    const sealed = executablePath(PATH.join(tmp, 'sealed-node'));
     // Deliberately relative: a policy is baked *here* and read *there*, so the
     // build has to anchor it. A binary carrying `build/certs/root.pem` would
     // refuse everything the moment it ran from anywhere else.

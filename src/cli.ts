@@ -573,7 +573,10 @@ async function sign(args: string[], io: Console): Promise<number> {
 
     // `--launcher` is `--prefix <this package's shell-base>`, spelled so that
     // nobody has to know the prefix ships inside node_modules.
-    const prefix = values.launcher ? launcherPath() : values.prefix;
+    let prefix = values.launcher ? launcherPath() : values.prefix;
+    // A verifying node built as `--output node-verifying` is `node-verifying.exe`
+    // on Windows; `--prefix node-verifying` means that one.
+    if (prefix && process.platform === 'win32' && !FS.existsSync(prefix) && FS.existsSync(`${prefix}.exe`)) prefix = `${prefix}.exe`;
 
     for (const name of members(source)) io.err(`+ ${name}`);
     if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);

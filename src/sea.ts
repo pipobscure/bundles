@@ -228,7 +228,7 @@ export async function buildSea(options: SeaOptions): Promise<BuildResult> {
     const scratch = options.scratch ?? FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-sea-'));
     const owned = !options.scratch;
     try {
-        let base = options.base;
+        let base = options.base ? existingExecutable(options.base) : undefined;
         if (!base) {
             log('* building the SEA base (node runtime + verifier)');
             const built = await createSeaBase({ ...options, output: PATH.join(scratch, 'sea-base'), scratch });
@@ -307,6 +307,16 @@ function anchorPolicy(options: BootstrapOptions): BootstrapOptions {
 export function executablePath(output: string): string {
     const resolved = PATH.resolve(output);
     return process.platform === 'win32' && !/\.exe$/i.test(resolved) ? `${resolved}.exe` : resolved;
+}
+
+/**
+ * An executable built here, by the name it was built under. On Windows that
+ * name gained `.exe` (see `executablePath()`), so `--output node-verifying`
+ * followed by `--base node-verifying` would otherwise not find what it built.
+ */
+export function existingExecutable(path: string): string {
+    const resolved = PATH.resolve(path);
+    return FS.existsSync(resolved) ? resolved : executablePath(resolved);
 }
 
 function selftest(output: string): void {
