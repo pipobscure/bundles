@@ -110,7 +110,7 @@ stays available when that trade is the wrong one.
 
 The one thing to do deliberately is the **file list**: an observation run sees
 only the library it loaded, so the others have to be added on purpose. That is
-what a computed closure is for (see [`moduleFiles`](../../README.md#using-it-from-code)),
+what a computed closure is for (see [`moduleFiles`](../../docs/api.md#the-library)),
 and the audit then reviews every one of them — which is the point, since the
 architectures you are not running are the ones nobody looks at.
 

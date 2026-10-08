@@ -114,8 +114,8 @@ it does.
 That is the shape of the warning in general. Observation records the files a run
 *read*, so a path never taken is a file never archived — a lazily-required
 module, an error template, a locale file. Exercise those paths deliberately, or
-pair the observation with a computed closure; the root
-[README](../../README.md#1-observe) has the longer version.
+pair the observation with a computed closure;
+[design.md](../../docs/design.md#building-one) has the longer version.
 
 A content archive is any ZIP: `zip -r docs.zip docs/`, or `bundle create` if you
 would rather use one tool. An archive built by `bundle create` carries an
@@ -288,4 +288,4 @@ enumeration page instead — every mounted source, in precedence order.
 
 The same Node the rest of this repository needs: 26.11.1 or later. What the
 server itself uses arrived earlier — `--vfs-load` in v26.10.0, and `node:vfs`,
-`ZipProvider` and the ZIP support in `node:zlib` in v26.9.0. See the root [README](../../README.md#requirements).
+`ZipProvider` and the ZIP support in `node:zlib` in v26.9.0. See the root [README](../../docs/design.md#what-it-needs-from-node).

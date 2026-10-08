@@ -500,7 +500,7 @@ A whole application in a file you can email — provided the recipient has a com
 asset, with the application appended as a signed archive. Running it verifies the whole
 file — runtime, verifier and application alike, since the signature covers all of it — and
 only then mounts the archive and runs what is inside. No Node on the target, no
-`node_modules`, no extraction to disk. See [Self-verifying the SEA](#self-verifying-the-sea).
+`node_modules`, no extraction to disk. See [Self-verifying the SEA](#4-the-self-validating-single-executable).
 
 Same application, same archive format, three shapes — one where the **runtime** enforces
 the signature (`.nzip`), one optimizing for **size** (reuse the user's Node), one for
