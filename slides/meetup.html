@@ -1,0 +1,861 @@
+<title>Your Node App, One File</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Single-theme by intent: a projected deck must not follow the room's OS theme. */
+:root{
+  --ground:#0E1420; --panel:#151D2B; --panel2:#1B2536; --rule:#26334C; --rule-hi:#37496B;
+  --ink:#E9EEF7; --ink-dim:#B6C2D6; --muted:#8595B0; --faint:#5C6B87;
+  --accent:#F0A93B; --accent-dim:#8C6220;
+  --ok:#4FBF8B; --warn:#E0B24A; --bad:#E5615B; --none:#7C8BA6;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Archivo",system-ui,-apple-system,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);margin:0;overflow:hidden;height:100vh}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:800;letter-spacing:-.02em;line-height:1.02}
+
+#fit{position:fixed;inset:0;display:grid;place-items:center}
+#stage{width:1280px;height:720px;position:relative;transform-origin:center center;flex:none}
+.slide{position:absolute;inset:0;display:none;padding:56px 72px 62px 116px}
+.qr{position:absolute;top:44px;right:56px;width:124px;height:124px;padding:9px;border-radius:10px;background:#F4F1EA;box-shadow:0 2px 14px rgba(0,0,0,.35);display:block}
+.qr svg{width:100%;height:100%;display:block}
+.slide.on{display:block;animation:in .32s cubic-bezier(.2,.7,.3,1) both}
+@keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.slide.on{animation:none}}
+
+.gutter{position:absolute;left:0;top:0;bottom:0;width:70px;border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:56px 0 60px;background:rgba(0,0,0,.16)}
+.gutter .off{font-family:var(--mono);font-size:13px;color:var(--faint);letter-spacing:.06em}
+.gutter .act{font-family:var(--mono);font-size:11px;color:var(--accent-dim);writing-mode:vertical-rl;
+  transform:rotate(180deg);letter-spacing:.32em;text-transform:uppercase}
+
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.3em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}
+.eyebrow.q{color:var(--muted)}
+.chapter{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:16px;display:flex;gap:14px;align-items:center}
+.chapter .yr{color:var(--accent)}
+.chapter .ln{flex:1;height:1px;background:var(--rule)}
+h1{font-size:74px}
+h2{font-size:48px;line-height:1.06}
+h3{font-size:25px;font-weight:700;letter-spacing:-.01em}
+.lead{font-size:24px;line-height:1.42;color:var(--ink-dim);max-width:30ch;font-weight:400}
+.sub{font-size:18.5px;line-height:1.5;color:var(--muted);max-width:60ch}
+.big{font-size:38px;line-height:1.16;font-weight:700;letter-spacing:-.02em;max-width:22ch}
+
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start;margin-top:30px}
+.cols.w{grid-template-columns:1.05fr .95fr}
+.cols.n{grid-template-columns:.85fr 1.15fr}
+.stack{display:flex;flex-direction:column;gap:16px}
+.stack.t{gap:12px}
+
+/* Per-chapter takeaways — each job teaches its own things. */
+.takes{display:flex;flex-direction:column;gap:11px;margin-top:22px}
+.take{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;
+  background:rgba(240,169,59,.06);border-left:2px solid var(--accent);border-radius:0 5px 5px 0;padding:11px 16px}
+.take .n{font-family:var(--mono);font-size:11.5px;color:var(--accent);padding-top:2px}
+.take .x{font-size:17.5px;line-height:1.38;color:var(--ink)}
+.take .x b{color:var(--accent);font-weight:700}
+
+.bullets{display:flex;flex-direction:column;gap:15px;margin-top:6px}
+.bullets li{list-style:none;font-size:19.5px;line-height:1.44;color:var(--ink-dim);
+  padding-left:22px;position:relative;max-width:46ch}
+.bullets li::before{content:"";position:absolute;left:0;top:.6em;width:9px;height:1px;background:var(--rule-hi)}
+.bullets li b{color:var(--ink);font-weight:600}
+ul{margin:0;padding:0}
+
+code,.mono{font-family:var(--mono)}
+.cmd{background:var(--panel);border:1px solid var(--rule);border-left:2px solid var(--accent);
+  border-radius:5px;padding:14px 17px;font-family:var(--mono);font-size:15px;line-height:1.7;
+  color:var(--ink-dim);overflow-x:auto;white-space:pre}
+.cmd .p{color:var(--accent);user-select:none}
+.cmd .c{color:var(--faint)}
+.cmd .o{color:var(--muted)}
+.cmd .g{color:var(--ok)} .cmd .r{color:var(--bad)} .cmd .y{color:var(--warn)}
+.cmd.sm{font-size:13.5px;line-height:1.64}
+
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:20px 22px}
+.card h3{margin-bottom:9px}
+.card p{margin:0;font-size:16px;line-height:1.5;color:var(--muted)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:26px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}
+
+.tag{display:inline-block;font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+  text-transform:uppercase;padding:4px 9px;border-radius:4px;border:1px solid var(--rule-hi);color:var(--muted)}
+.tag.ok{color:var(--ok);border-color:#2C6B51;background:rgba(79,191,139,.09)}
+.tag.warn{color:var(--warn);border-color:#6E5721;background:rgba(224,178,74,.09)}
+.tag.bad{color:var(--bad);border-color:#7A3330;background:rgba(229,97,91,.09)}
+.tag.none{color:var(--none);border-color:var(--rule-hi)}
+.tag.acc{color:var(--accent);border-color:var(--accent-dim);background:rgba(240,169,59,.09)}
+
+.shot{border:1px dashed var(--rule-hi);border-radius:8px;background:
+  repeating-linear-gradient(135deg,transparent 0 9px,rgba(55,73,107,.09) 9px 18px);
+  display:flex;flex-direction:column;justify-content:center;gap:8px;padding:20px;min-height:190px}
+.shot .k{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+.shot .w{font-size:15.5px;line-height:1.44;color:var(--ink-dim);font-weight:500}
+.shot .u{font-family:var(--mono);font-size:12px;color:var(--faint);word-break:break-all;line-height:1.5}
+
+table{border-collapse:collapse;width:100%;font-size:16.5px}
+th{text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);font-weight:500;padding:0 14px 10px 0;border-bottom:1px solid var(--rule)}
+td{padding:12px 14px 12px 0;border-bottom:1px solid var(--rule);color:var(--ink-dim);vertical-align:top}
+td b{color:var(--ink)} td .mono{font-size:14.5px}
+.tw{overflow-x:auto}
+.tw.tight td{padding:9px 14px 9px 0}
+
+/* Slides that carry more than the others: one notch tighter, so the content
+   still lands above the kicker on a 1280x720 stage. Everything here is
+   per-slide; the deck's own scale is unchanged. */
+#sigfmt .ev{padding:8px 0}
+#sigfmt .lead{font-size:20px;line-height:1.36}
+#sigfmt .bullets{gap:11px}
+#sigfmt .bullets li{font-size:17px;line-height:1.4}
+#sigfmt .stack{gap:12px}
+#provenance .ev{padding:9px 0}
+#tree .stack{gap:12px}
+#tree .card{padding:16px 19px}
+#baseoffset .bullets{gap:11px}
+#baseoffset .bullets li{font-size:18px;line-height:1.4}
+#demo1 .cmd.sm{font-size:11.5px;line-height:1.38}
+#demo1 .stack{gap:12px}
+#audit .lead{font-size:19px;line-height:1.36}
+#audit .cmd.sm{font-size:12px;line-height:1.5}
+#audit .stack{gap:11px}
+
+.timeline{display:flex;flex-direction:column;margin-top:20px}
+.ev{display:grid;grid-template-columns:100px 1fr;gap:18px;padding:11px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+.ev:last-child{border-bottom:0}
+.ev .d{font-family:var(--mono);font-size:13.5px;color:var(--accent)}
+.ev .t{font-size:17px;line-height:1.38;color:var(--ink-dim)}
+.ev .t b{color:var(--ink);font-weight:600}
+.ev.hot .t b{color:var(--bad)}
+
+figure{margin:0}
+svg{display:block;max-width:100%}
+.cap{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:11px;line-height:1.5}
+
+.kicker{position:absolute;left:116px;right:72px;bottom:24px;display:flex;justify-content:space-between;
+  align-items:center;font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.05em}
+
+#bar{position:fixed;left:0;bottom:0;height:3px;background:var(--accent);z-index:40;transition:width .3s}
+#hud{position:fixed;right:14px;bottom:14px;z-index:41;display:flex;gap:8px;align-items:center;
+  font-family:var(--mono);font-size:12px;color:var(--faint);background:rgba(14,20,32,.9);
+  border:1px solid var(--rule);border-radius:7px;padding:7px 11px;backdrop-filter:blur(6px)}
+#hud b{color:var(--ink-dim);font-weight:500}
+#clock{font-variant-numeric:tabular-nums}
+#clock.nzip{color:var(--ok)} #clock.late{color:var(--bad)} #clock.early{color:var(--ok)}
+#hud .sep{width:1px;height:13px;background:var(--rule)}
+#hud button{font:inherit;background:none;border:1px solid var(--rule);color:var(--muted);
+  border-radius:4px;padding:2px 7px;cursor:pointer}
+#hud button:hover{color:var(--ink);border-color:var(--rule-hi)}
+#hud button:focus-visible,.ov-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:44vh;overflow-y:auto;z-index:39;
+  background:#0A0F19;border-top:1px solid var(--rule);padding:18px 24px 40px}
+#notes[hidden]{display:none}
+#notes h4{margin:0 0 9px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--accent);font-weight:500}
+#notes .body{font-size:15px;line-height:1.6;color:var(--ink-dim);max-width:105ch}
+#notes .body p{margin:0 0 9px}
+#notes .body b{color:var(--ink)}
+#notes .body em{color:var(--accent);font-style:normal;font-family:var(--mono);font-size:13.5px}
+#notes .body .say{border-left:2px solid var(--accent-dim);padding-left:13px;color:var(--ink);margin:0 0 11px}
+#notes .body ul{margin:0 0 9px;padding-left:18px}
+#notes .body li{list-style:disc;margin-bottom:5px}
+
+#ov{position:fixed;inset:0;z-index:50;background:rgba(10,15,25,.97);overflow-y:auto;padding:32px;
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:15px;align-content:start}
+#ov[hidden]{display:none}
+.ov-card{background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:13px;
+  cursor:pointer;text-align:left;font:inherit;color:inherit;display:flex;flex-direction:column;gap:7px;min-height:100px}
+.ov-card:hover{border-color:var(--accent-dim)}
+.ov-card.cur{border-color:var(--accent)}
+.ov-card .i{font-family:var(--mono);font-size:11px;color:var(--faint);display:flex;justify-content:space-between}
+.ov-card .i .a{color:var(--accent-dim)}
+.ov-card .h{font-size:14.5px;line-height:1.32;font-weight:600;color:var(--ink)}
+
+#help{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(10,15,25,.94)}
+#help[hidden]{display:none}
+#help .box{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:28px 32px;max-width:460px}
+#help h4{margin:0 0 16px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);font-weight:500}
+#help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:10px 20px;font-size:15px;align-items:baseline}
+#help dt{font-family:var(--mono);color:var(--ink)}
+#help dd{margin:0;color:var(--muted)}
+#pack .cmd.sm{font-size:13px;line-height:1.6}
+#pack .stack{gap:14px}
+</style>
+
+<div id="fit"><div id="stage">
+
+<!-- ═══ title ═══ -->
+<section class="slide" data-act="" data-t="20">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
+    <div class="eyebrow">Node.js &middot; shipping &middot; supply chain</div>
+    <h1 style="font-size:96px;max-width:12ch">Your Node app, one file.</h1>
+    <p class="lead" style="margin-top:26px;max-width:40ch">Signed, inspectable, and run by plain <code>node</code>. No <code>npm install</code> on the other end.</p>
+    <div style="margin-top:34px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <span class="tag acc">@pipobscure/bundle</span>
+      <span class="tag">node 26.11+</span>
+      <span class="tag">experimental</span>
+    </div>
+    <p class="sub" style="margin-top:30px;font-size:17px">Philipp Dunkel &nbsp;&middot;&nbsp;
+      <span class="mono">@pipobscure.com</span> &nbsp;&middot;&nbsp; <span class="mono">pip@pip.fyi</span></p>
+  </div>
+  <div class="kicker"><span>github.com/pipobscure/bundles</span><span>press <b style="color:var(--ink-dim)">?</b> for controls</span></div>
+  <div class="notes" hidden>
+    <p class="say">"This is a talk about shipping Node apps, and about installing other people's, and about not having to cross your fingers while you do either."</p>
+    <p><b>Who this is for:</b> people who write JavaScript, ship tools or apps built on Node, and install CLIs from npm. Nobody needs to care about ZIP internals tonight, and the talk says so.</p>
+    <p><b>Set expectations in one sentence:</b> most of this runs live, and it is experimental, so it needs Node 26.11 and a flag. Say the flag now so nobody feels tricked at the end.</p>
+    <p><em>Press T</em> to start the pace timer.</p>
+  </div>
+</section>
+
+<!-- ═══ how do you ship ═══ -->
+<section class="slide" data-act="I · the problem" data-t="50">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Show of hands</div>
+  <h2>How do you ship a Node tool to someone?</h2>
+  <div class="grid2" style="margin-top:30px">
+    <div class="card"><h3 style="font-size:19px"><code>npm install -g your-tool</code></h3>
+      <p style="margin-top:8px">Their machine resolves your dependency ranges against the registry, today, and runs install scripts while it does.</p></div>
+    <div class="card"><h3 style="font-size:19px">A Docker image</h3>
+      <p style="margin-top:8px">Works. Ships an operating system to run one command-line tool.</p></div>
+    <div class="card"><h3 style="font-size:19px"><code>git clone &amp;&amp; npm ci</code></h3>
+      <p style="margin-top:8px">A README full of steps, and a support channel for when step four fails.</p></div>
+    <div class="card"><h3 style="font-size:19px">"Compile it to a binary"</h3>
+      <p style="margin-top:8px">One file, but an opaque one, often built for a different runtime, and you trust it whole.</p></div>
+  </div>
+  <p class="sub" style="margin-top:26px;font-size:19px;color:var(--ink-dim)">Every one of these works. None of them tells the person on the other end what they actually got.</p>
+  <div class="kicker"><span class="mono">the options you already know</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Hands up if you've published a CLI to npm. Keep it up if you've had a bug report that turned out to be someone's install, not your code."</p>
+    <p><b>50 seconds.</b> Don't trash any option: they all work, and the audience uses them. The point is the last line: none of them answers "what did I just get?".</p>
+    <p>If someone shouts "bun build --compile" or "Node SEA": good, that's the fourth card. Come back to it on the comparison slide.</p>
+  </div>
+</section>
+
+<!-- ═══ what runs ═══ -->
+<section class="slide" data-act="I · the problem" data-t="60">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">The awkward question</div>
+  <h2>What is actually running on that machine?</h2>
+  <div class="cols" style="margin-top:28px">
+    <ul class="bullets">
+      <li><b>Decided at install time,</b> not when you released. <code>^1.2.0</code> means "whatever the registry says today".</li>
+      <li><b>Install runs code.</b> <code>postinstall</code> scripts run before anyone has looked at anything.</li>
+      <li><b>Nothing records it.</b> Two installs of the same version can differ, and nobody can tell you how.</li>
+      <li><b>And it gets attacked.</b> Hijacked maintainer accounts and self-spreading install-script worms were both npm news in 2025.</li>
+    </ul>
+    <div class="stack">
+      <div class="cmd"><span class="p">$</span> npm install -g some-tool
+<span class="o">added 214 packages in 9s</span>
+<span class="c"># which 214? from where?</span>
+<span class="c"># what ran just now?</span></div>
+      <p class="sub" style="font-size:16px">You shipped <i>a version</i>. They got <i>whatever resolved</i>.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">version ≠ code</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"When you publish version 1.4, you think you shipped 1.4. What you actually shipped is a recipe, and the user's machine cooks it."</p>
+    <p><b>60 seconds.</b> Keep the supply-chain line short and factual. Don't name incidents unless you've checked the details recently; "hijacked accounts and install-script worms, both in 2025" is enough for this room and true.</p>
+    <p>The 214 packages line gets a laugh because everyone has seen it.</p>
+  </div>
+</section>
+
+<!-- ═══ the idea ═══ -->
+<section class="slide" data-act="I · the problem" data-t="45">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">The idea</div>
+  <p class="big" style="max-width:24ch">Freeze the whole tree into one file. Sign it. Let Node run it straight out of the file.</p>
+  <div class="grid3" style="margin-top:40px">
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">your app + node_modules</h3>
+      <p style="margin-top:7px">Exactly the files it reads. Nothing more.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">one signed file</h3>
+      <p style="margin-top:7px">Decided once, when you release. Can't change afterwards.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">plain node runs it</h3>
+      <p style="margin-top:7px">No install step, no registry, no extraction to disk.</p></div>
+  </div>
+  <div class="kicker"><span class="mono">@pipobscure/bundle</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"So: don't ship the recipe. Ship the meal. One file, decided when you release it, signed, and Node runs it as it is."</p>
+    <p><b>45 seconds.</b> This is the thesis. Everything after is "does it work" and "what does that get me".</p>
+  </div>
+</section>
+
+<!-- ═══ it's a zip ═══ -->
+<section class="slide" data-act="I · the problem" data-t="40">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">The only internals slide</div>
+  <h2>It's a zip.</h2>
+  <div class="cols" style="margin-top:26px">
+    <div class="cmd"><span class="p">$</span> unzip -Z1 greet.nzip
+<span class="o">index.js
+lib/hello.js
+package.json
+AUTHORITY.PEM</span>    <span class="c"># who signed it</span></div>
+    <ul class="bullets">
+      <li><b>A real ZIP.</b> Every tool you have can open it. Nothing hidden.</li>
+      <li><b>One signature over the whole file.</b> Change one byte, anywhere, and it no longer checks out.</li>
+      <li><b>Node runs it as a file system.</b> Since Node 26, <code style="white-space:nowrap">node --vfs-load=app.nzip</code> mounts a zip and runs the app inside, no extracting.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">that's all the format you need tonight</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"That's as deep as we're going into the format. It's a zip, it's signed as a whole, and Node can run straight out of it now."</p>
+    <p><b>40 seconds.</b> If anyone wants the byte layout, there's a whole other talk (<i>Ship the Tree</i>, same repo) and docs/design.md. Don't get pulled in here.</p>
+    <p>The Node piece, if asked: <em>--vfs-load</em> landed in 26.10, and the last piece for standalone executables in 26.11. Still behind <em>--experimental-vfs</em>.</p>
+  </div>
+</section>
+
+<!-- ═══ install the tool ═══ -->
+<section class="slide" data-act="II · does it work?" data-t="30">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Getting the tool</div>
+  <h2>One command.</h2>
+  <div class="cmd" style="margin-top:28px;font-size:17px"><span class="p">$</span> npx @pipobscure/bundle install
+<span class="o">* installing this package itself from https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip</span>
+<span class="g">bundle installed in ~/.local/bin</span>
+<span class="o">* add Tab completion, and a quiet daily re-check of what you install, to ~/.zshrc? [Y/n]</span></div>
+  <p class="sub" style="margin-top:24px;font-size:19px;color:var(--ink-dim)">And the thing it installed is itself a bundle: one signed file, checked before it lands on your PATH.</p>
+  <div class="kicker"><span class="mono">npx @pipobscure/bundle install</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Getting the tool is the tool demonstrating itself: npm fetches it once, it verifies its own release, and puts one signed file on your PATH."</p>
+    <p><b>30 seconds.</b> Have it installed already; don't run this live unless the network is good.</p>
+  </div>
+</section>
+
+<!-- ═══ demo 1 ═══ -->
+<section class="slide" id="pack" data-act="II · does it work?" data-t="150">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Demo 1</div>
+  <h2>Pack it, sign it, run it.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># 1. run it once, and write down what it reads</span>
+<span class="p">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs \
+    <span class="y">-r @pipobscure/bundle/record</span> --vfs-load=./app -- Ada
+<span class="g">hello, Ada</span>
+<span class="p">$</span> cat app.manifest
+<span class="o">package.json
+index.js
+lib/hello.js</span>        <span class="c"># lib/never-used.js? not read, not in</span></div>
+      <div class="cmd sm"><span class="c"># 2. pack exactly that</span>
+<span class="p">$</span> bundle create --base ./app -f app.manifest -o greet.run
+<span class="o">* unsigned archive (3 members, sha256 digests)</span></div>
+    </div>
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># 3. sign it</span>
+<span class="p">$</span> bundle sign <span class="y">--launcher</span> -o greet.nzip greet.run
+<span class="g">* signed: 5e8e6ade4ec94378ead2…</span>
+<span class="o">* wrote greet.nzip (1904 bytes)</span></div>
+      <div class="cmd sm" style="border-left-color:var(--ok)"><span class="c"># 4. it's a program</span>
+<span class="p">$</span> ./greet.nzip Grace
+<span class="g">hello, Grace</span>
+<span class="p">$</span> head -2 greet.nzip
+<span class="y">#!/bin/sh
+exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"</span></div>
+      <p class="sub" style="font-size:15px">Two kilobytes. No <code>node_modules</code> on the other end, no install step.</p>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">observe → create → sign → run</span><span></span></div>
+  <div class="notes" hidden>
+    <p><b>Beat 1, observe (40s).</b> "Static analysis gets dynamic requires and data files wrong. So we don't analyse, we run it and write down what it opened." Point at <em>lib/never-used.js</em>: in the source, not in the bundle, because nothing read it.</p>
+    <p><b>Beat 2, create (20s).</b> Fast. The <em>.run</em> extension means unsigned.</p>
+    <p><b>Beat 3, sign (30s).</b> "By default this signs with sigstore: your GitHub Actions identity in CI, a browser login on your laptop. No key file to keep or leak." Live, sign with whatever you rehearsed with; the output shape is the same.</p>
+    <p><b>Beat 4, run (40s). The beat people react to.</b> Show the first two lines: it's a two-line shell script, then a zip. Node mounts the file and runs the app inside it.</p>
+    <p><b>Fallback:</b> the artifacts from rehearsal are in the demo folder. Run <em>./greet.nzip Grace</em> and move on; never debug on stage.</p>
+  </div>
+</section>
+
+<!-- ═══ demo 2 ═══ -->
+<section class="slide" data-act="II · does it work?" data-t="90">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Demo 2</div>
+  <h2>Now break it.</h2>
+  <div class="cols" style="margin-top:24px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># change one byte in the middle</span>
+<span class="p">$</span> cp greet.nzip evil.nzip
+<span class="p">$</span> printf X | dd of=evil.nzip bs=1 seek=300 conv=notrunc
+
+<span class="p">$</span> bundle verify evil.nzip
+<span class="r">INVALID — archive hash does not match the recorded hash</span>
+
+<span class="p">$</span> bundle run evil.nzip Grace
+<span class="r">error: refusing to run 'evil.nzip': invalid — archive hash
+does not match the recorded hash</span></div>
+      <div class="cmd sm" style="border-left-color:var(--ok)"><span class="p">$</span> bundle verify greet.nzip
+<span class="g">VALID — trusted certificate chain</span></div>
+    </div>
+    <div class="stack">
+      <h3 style="font-size:21px">The honest part</h3>
+      <ul class="bullets">
+        <li><b><code>./evil.nzip</code> still runs.</b> A <code>#!</code> line can't check anything; it just starts Node.</li>
+        <li><b><code>bundle run</code> checks</b> before a single line of the app runs, and keeps checking every file as it's read.</li>
+        <li><b>A standalone executable checks itself.</b> That's the next demo.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="kicker"><span class="mono">one byte → refused</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"One byte. Not the code, not a file inside: one byte anywhere in the file."</p>
+    <p><b>Say the honest part out loud (30s).</b> Running the tampered file by name still runs it. A shebang script has no way to check anything, and the tool says so rather than pretending. If you want the check, run it through <em>bundle run</em>, or ship the standalone executable on the next slide, which can't skip it.</p>
+    <p>This candour earns trust for the rest of the talk. Don't rush it.</p>
+  </div>
+</section>
+
+<!-- ═══ demo 3 ═══ -->
+<section class="slide" data-act="II · does it work?" data-t="90">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Demo 3</div>
+  <h2>No Node on the other end?</h2>
+  <div class="cols" style="margin-top:24px">
+    <div class="cmd sm"><span class="p">$</span> bundle sea --output greet greet.run
+<span class="o">* building the SEA base (node runtime + verifier)
+* appending greet.run behind sea-base
+* wrote greet</span>
+
+<span class="p">$</span> ./greet Grace
+<span class="g">hello, Grace</span>
+
+<span class="c"># the same byte flip, inside the executable:</span>
+<span class="p">$</span> ./greet-tampered Grace
+<span class="r">refusing to run: … invalid</span></div>
+    <ul class="bullets">
+      <li><b>One executable:</b> Node, the verifier, and your app, signed as a whole.</li>
+      <li><b>It checks itself</b> before running anything, every time. There's no way to start it that skips the check.</li>
+      <li><b>It can carry its own rules,</b> such as "only run if signed by our release workflow".</li>
+      <li><b>Worker threads just work,</b> and they're checked too.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">bundle sea</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Same app, same build, but now Node itself is inside the file, and the file refuses to run if it's been touched."</p>
+    <p><b>Honest number if asked:</b> it's a copy of Node, so it's about 155 MB. The trade-off is "nothing to install".</p>
+    <p><b>Windows:</b> the executable gets <em>.exe</em> and runs the same way. The shell-launcher version uses a file association on Windows that <em>bundle install</em> sets up.</p>
+    <p><b>Fallback:</b> building the base takes a few seconds. Pre-build it before the talk and pass <em>--base</em>.</p>
+  </div>
+</section>
+
+<!-- ═══ it ships ═══ -->
+<section class="slide" data-act="II · does it work?" data-t="45">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Does it actually work?</div>
+  <h2>The tool ships this way.</h2>
+  <div class="grid3" style="margin-top:30px">
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">npm's <code>bundle</code> is a <code>.nzip</code></h3>
+      <p style="margin-top:7px">The package's command is the signed file itself. No wrapper script in between.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Released by CI</h3>
+      <p style="margin-top:7px">Tested on Linux and Windows, audited, signed with the workflow's own identity, published. No secrets.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Checkable by anyone</h3>
+      <p style="margin-top:7px"><code>unzip -l</code> shows what's in it. <code>bundle verify</code> shows who signed it.</p></div>
+  </div>
+  <div class="kicker"><span class="mono">eating our own cooking</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"The best evidence that this works is that the tool itself is shipped this way, release after release, from CI."</p>
+    <p><b>45 seconds.</b> No secrets in CI: npm trusted publishing and sigstore both use the GitHub Actions identity token.</p>
+  </div>
+</section>
+
+<!-- ═══ install apps ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="90">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Installing other people's apps</div>
+  <h2>See who vouches, then decide.</h2>
+  <div class="cmd sm" style="margin-top:24px"><span class="p">$</span> bundle install @alice.example/tool        <span class="c"># or a URL, or a domain</span>
+<span class="o">* tool: sha256:3f1a… (signed)</span>
+<span class="o">   1 signed by   https://github.com/acme/tool/.github/workflows/release.yml@refs/heads/main — </span><span class="y">new</span>
+<span class="o">   2 attested by audit.acme.com (did:web:audit.acme.com) as audited — </span><span class="g">trusted by policy</span>
+<span class="r">     WARNING     scanner.example (did:plc:…) as malware — marked it bad</span>
+<span class="o">* tool: … accept which? numbers (1,2), 'all', or Enter to decline:</span></div>
+  <ul class="bullets" style="margin-top:22px">
+    <li><b>Nothing runs to install it.</b> Fetch, check, move into place. No install scripts.</li>
+    <li><b>You decide whom to trust,</b> once. Your answer is remembered for every update.</li>
+    <li><b>Broken or tampered files never land.</b> Not even briefly.</li>
+  </ul>
+  <div class="kicker"><span class="mono">curl | sh, minus the scary parts</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Think of it as curl-pipe-sh with the two scary parts removed: nothing runs to install it, and nothing lands on disk unless it checks out."</p>
+    <p><b>Walk the prompt (40s):</b> a signer you haven't seen before is a question. An auditor your policy trusts goes straight through. A warning from a stranger is shown, not obeyed, because anyone can publish one. A warning from someone you block on refuses it outright.</p>
+    <p>Three ways to name an app: a URL, a domain (a TXT record says where), or a published name, which is the next slide.</p>
+  </div>
+</section>
+
+<!-- ═══ stay current ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="60">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">After the install</div>
+  <h2>Stay current, hear about problems.</h2>
+  <div class="cols" style="margin-top:26px">
+    <div class="cmd sm"><span class="p">$</span> bundle update
+<span class="o">1 of 4 updated: tool</span>
+
+<span class="c"># a new terminal, the next morning:</span>
+<span class="r">tool: WARNING — scanner.example (did:plc:…) as malware
+has marked it bad since it was last checked</span>
+
+<span class="p">$</span> bundle installed
+<span class="o">tool  </span><span class="r">CHANGED</span>
+<span class="o">  the file is not the bytes that were installed</span></div>
+    <ul class="bullets">
+      <li><b>Updates follow the publisher.</b> Moved releases, a new URL, a renamed domain: <code>update</code> finds them.</li>
+      <li><b>Bad news finds you.</b> A quiet check at shell start tells you when someone flags something you installed.</li>
+      <li><b>Changed files get noticed,</b> whoever changed them.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">update · validate · installed</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"The part I like most: if a scanner flags something you installed last week, your next terminal tells you."</p>
+    <p><b>60 seconds.</b> The shell check runs at most once a day, gives up quickly offline, and says nothing when there's nothing to say.</p>
+  </div>
+</section>
+
+<!-- ═══ publish & find ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="60">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Publishing, without a registry</div>
+  <h2>Your Bluesky handle is your publisher name.</h2>
+  <div class="cmd sm" style="margin-top:22px"><span class="p">$</span> bundle publish --as you.example --description 'preview markdown in the terminal' \
+    mdview https://github.com/you/mdview/releases/latest/download/mdview.nzip
+<span class="g">published mdview as did:plc:…</span>
+
+<span class="c"># anyone, anywhere:</span>
+<span class="p">$</span> bundle search markdown
+<span class="o">@you.example/mdview   preview markdown in the terminal</span>
+<span class="p">$</span> bundle install @you.example/mdview</div>
+  <div class="grid3" style="margin-top:18px">
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">A record in your account</h3>
+      <p style="margin-top:6px">atproto, the protocol behind Bluesky. It points at your release URL.</p></div>
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">Releases stay releases</h3>
+      <p style="margin-top:6px">A new version is a new GitHub release. The listing never changes.</p></div>
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">No registry to run</h3>
+      <p style="margin-top:6px">Nothing new to compromise. Search runs against a local index.</p></div>
+  </div>
+  <div class="kicker"><span class="mono">publish · search · install @you/name</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"There's no new registry here. If you have a Bluesky account, you already have a place to publish: the listing lives in your own account and says where the file is."</p>
+    <p><b>If asked "why atproto?":</b> accounts that already exist, records anyone can verify without trusting the server, and an open index (Constellation) that lets everyone find listings. A domain with a TXT record works too, for people who'd rather not.</p>
+  </div>
+</section>
+
+<!-- ═══ who vouches ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="70">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Trust, made visible</div>
+  <h2>Who vouches for this file?</h2>
+  <div class="grid3" style="margin-top:28px">
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">The signature</h3>
+      <p style="margin-top:7px">Who built it. With sigstore that's your CI workflow or your login. No keys to manage.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Attestations</h3>
+      <p style="margin-top:7px">Anyone can vouch for a file ("audited", "rebuilt it, same bytes") or warn against it, from their own account.</p></div>
+    <div class="card"><h3 style="font-size:18px;color:var(--accent)">Your policy</h3>
+      <p style="margin-top:7px">Whom you trust, what you require, whose warnings stop an install.</p></div>
+  </div>
+  <div class="cmd sm" style="margin-top:22px"><span class="p">$</span> bundle attest --as audit.acme.com --kind audited tool.nzip     <span class="c"># vouch</span>
+<span class="p">$</span> bundle attest --as scanner.example --verdict bad --kind malware tool.nzip   <span class="c"># warn</span></div>
+  <div class="kicker"><span class="mono">signatures · attestations · policy</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"A signature tells you who built it. It doesn't tell you it's safe: most npm compromises shipped perfectly signed packages from real, hijacked accounts. So other people get to say things about the file too."</p>
+    <p><b>70 seconds.</b> Attestations are one record per file in the attester's own account. Withdrawing is deleting the record. Checking them works offline from a cache.</p>
+  </div>
+</section>
+
+<!-- ═══ plugins ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="90">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">For app authors</div>
+  <h2>Plugins that are signed bundles too.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c">// in your app</span>
+import { use, list } from '@pipobscure/bundle/plugins';
+
+use('bled');                                  <span class="c">// this app's plugins</span>
+const gpio = await import('@alice/bled-gpio'); <span class="c">// plain import</span>
+
+<span class="c">// and, if you want, checked as they load:</span>
+use('bled', { verify: { attesters: ['audited@did:web:bled.dev'] } });</div>
+      <div class="cmd sm"><span class="c"># for your users</span>
+<span class="p">$</span> bundle search --for bled gpio
+<span class="p">$</span> bundle install --for bled @alice.example/bled-gpio</div>
+    </div>
+    <ul class="bullets">
+      <li><b>Ordinary <code>import</code> and <code>require</code>.</b> Your plugin code doesn't change.</li>
+      <li><b>A plugin can't replace your dependencies.</b> Yours always win; plugins only fill gaps.</li>
+      <li><b>Plugins get your app's modules,</b> the same instance your app has.</li>
+      <li><b>Installed per app,</b> reviewed like any install, removed with the app.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">use() · install --for · search --for</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"If your app takes plugins today, they're probably npm packages in node_modules. Same code, but now they're signed files, installed for your app, and you can require that they're audited."</p>
+    <p><b>Key safety property (say it):</b> plugins resolve <i>last</i>. A plugin called lodash can't swap out your lodash.</p>
+    <p><b>Judged as plugins:</b> your app's signing rules don't apply to plugins, because someone else wrote them. Attestation rules do. Don't go deeper unless asked.</p>
+  </div>
+</section>
+
+<!-- ═══ CI ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="60">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">In your pipeline</div>
+  <h2>Release from CI, with no secrets.</h2>
+  <div class="cmd sm" style="margin-top:22px"><span class="c"># .github/workflows/release.yml (the gist)</span>
+permissions:
+  id-token: write        <span class="c"># sigstore signs as this workflow</span>
+  contents: write
+steps:
+  - run: npm ci
+  - run: npx bundle create --base . --files app.manifest --output app.run
+  - run: npx bundle audit --check app.run     <span class="c"># the gate</span>
+  - run: npx bundle sign --launcher --output app.nzip app.run
+  - run: gh release upload "$TAG" app.nzip</div>
+  <div class="grid3" style="margin-top:18px">
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">No key to store</h3>
+      <p style="margin-top:6px">The workflow's own identity signs, and users can require exactly that workflow.</p></div>
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">A gate you choose</h3>
+      <p style="margin-top:6px"><code>audit --check</code> refuses unless a clean verdict covers these exact bytes.</p></div>
+    <div class="card"><h3 style="font-size:17px;color:var(--accent)">Reviewed by Claude, or you</h3>
+      <p style="margin-top:6px"><code>bundle skill</code> installs the review procedure.</p></div>
+  </div>
+  <div class="kicker"><span class="mono">create → audit → sign → release</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"In CI the signer is the workflow itself, so there's nothing to leak, and your users can say 'only accept it if it was signed by that workflow on main'."</p>
+    <p><b>60 seconds.</b> This repo's own publish workflow is the full real version: audit with Claude Code against the last release, gate, sign, publish to npm with trusted publishing.</p>
+  </div>
+</section>
+
+<!-- ═══ where it fits ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="45">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Where it fits</div>
+  <h2>Compared with what you use today.</h2>
+  <div class="tw tight" style="margin-top:22px">
+    <table>
+      <tr><th></th><th>npm i -g</th><th>Docker</th><th>compiled binary</th><th>bundle</th></tr>
+      <tr><td><b>Needs a registry at install</b></td><td>yes</td><td>yes</td><td>no</td><td><b style="color:var(--ok)">no</b></td></tr>
+      <tr><td><b>Runs code to install</b></td><td>can</td><td>no</td><td>no</td><td><b style="color:var(--ok)">no</b></td></tr>
+      <tr><td><b>Same bytes everywhere</b></td><td>no</td><td>yes</td><td>yes</td><td><b style="color:var(--ok)">yes</b></td></tr>
+      <tr><td><b>Open it, see what's inside</b></td><td>sort of</td><td>with effort</td><td>no</td><td><b style="color:var(--ok)">unzip</b></td></tr>
+      <tr><td><b>Checked before it runs</b></td><td>no</td><td>if you set it up</td><td>rarely</td><td><b style="color:var(--ok)">yes, signed whole</b></td></tr>
+      <tr><td><b>Size</b></td><td>small</td><td>an OS</td><td>a runtime</td><td>tiny, or a runtime</td></tr>
+    </table>
+  </div>
+  <div class="kicker"><span class="mono">not a replacement for npm; a way to ship what npm built</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"This doesn't replace npm. You still develop with npm. It changes what you hand to the person at the other end."</p>
+    <p><b>45 seconds.</b> Don't litigate the cells. "Compiled binary" means pkg-style, nexe, bun --compile and friends: great for one-file delivery, but you can't look inside, and they usually aren't signed over the whole file.</p>
+  </div>
+</section>
+
+<!-- ═══ limits ═══ -->
+<section class="slide" data-act="IV · wrapping up" data-t="50">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Honestly</div>
+  <h2>What this is not.</h2>
+  <ul class="bullets" style="margin-top:28px">
+    <li><b>Not stable yet.</b> It needs Node 26.11+ with <code>--experimental-vfs</code>, and both sides are experimental.</li>
+    <li><b>Not a sandbox.</b> Checked code runs with full access to your machine, like any Node program.</li>
+    <li><b>Not proof of safety.</b> A signature says who built it, not that it's harmless. That's what review and attestations are for.</li>
+    <li><b>Not checked when run by name.</b> Use <code>bundle run</code> or a standalone executable when you want the check every time.</li>
+  </ul>
+  <div class="kicker"><span class="mono">experimental, and saying so</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Before you go and use this for everything: four things it isn't."</p>
+    <p><b>50 seconds.</b> Being upfront here is what makes the rest credible.</p>
+  </div>
+</section>
+
+<!-- ═══ try it ═══ -->
+<section class="slide" data-act="IV · wrapping up" data-t="40">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Try it tonight</div>
+  <h2>Four commands.</h2>
+  <div class="cmd" style="margin-top:28px;font-size:15.5px"><span class="p">$</span> npx @pipobscure/bundle install
+<span class="p">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs -r @pipobscure/bundle/record --vfs-load=./app
+<span class="p">$</span> bundle create --base ./app --files app.manifest --output app.run
+<span class="p">$</span> bundle sign --launcher --output app.nzip app.run &amp;&amp; ./app.nzip</div>
+  <div class="grid3" style="margin-top:26px">
+    <div class="card"><h3 style="font-size:17px">Code &amp; docs</h3><p style="margin-top:6px" class="mono">github.com/pipobscure/bundles</p></div>
+    <div class="card"><h3 style="font-size:17px">Package</h3><p style="margin-top:6px" class="mono">npm: @pipobscure/bundle</p></div>
+    <div class="card"><h3 style="font-size:17px">Say hi</h3><p style="margin-top:6px" class="mono">@pipobscure.com</p></div>
+  </div>
+  <div class="kicker"><span class="mono">feedback very welcome, it's experimental</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"If you ship a CLI, try packing it tonight. I'd love to hear where it breaks."</p>
+    <p>The second line is the observe step: run the app once, the way it is normally used, and it writes down every file it reads. The README has the rest.</p>
+  </div>
+</section>
+
+<!-- ═══ questions ═══ -->
+<section class="slide" data-act="IV · wrapping up" data-t="30">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div style="display:flex;flex-direction:column;height:100%;justify-content:center">
+    <h1 style="font-size:100px">Questions?</h1>
+    <p class="lead" style="margin-top:24px;max-width:40ch">One file. Signed. Run by plain <code>node</code>.</p>
+  </div>
+  <div class="kicker"><span>github.com/pipobscure/bundles</span><span></span></div>
+  <div class="notes" hidden>
+    <p><b>Likely questions, short answers:</b></p>
+    <ul>
+      <li><b>"Native addons?"</b> Yes. Node loads them straight out of the archive.</li>
+      <li><b>"How big is a bundle?"</b> Only the files the app read. A small CLI is kilobytes. The standalone executable is a copy of Node, about 155 MB.</li>
+      <li><b>"Do I need Bluesky?"</b> No. Install by URL or domain, sign with sigstore or your own CA. Accounts are only for publishing names and attestations.</li>
+      <li><b>"Windows?"</b> Yes, tested in CI. <em>bundle install</em> sets up a <em>.nzip</em> file association so apps run by name.</li>
+      <li><b>"Isn't npm provenance enough?"</b> It's good, and it's about packages you're about to install from npm. This is about the finished app you hand over.</li>
+      <li><b>"Reproducible builds?"</b> Complementary. A "reproduced" attestation is someone saying "I rebuilt it and got these exact bytes".</li>
+      <li><b>"Bun or Deno?"</b> This builds on Node's own new features, so it's Node.</li>
+    </ul>
+  </div>
+</section>
+
+</div></div>
+
+<div id="bar"></div>
+<div id="hud">
+  <span id="pos"></span><span class="sep"></span>
+  <span id="clock" title="press T to start/pause">0:00</span><span class="sep"></span>
+  <button id="bN" type="button" title="speaker notes (S)">notes</button>
+  <button id="bO" type="button" title="overview (O)">grid</button>
+</div>
+
+<div id="notes" hidden><h4 id="nh">Speaker notes</h4><div class="body" id="nb"></div></div>
+<div id="ov" hidden></div>
+<div id="help" hidden><div class="box">
+  <h4>Controls</h4>
+  <dl>
+    <dt>&rarr; &nbsp;&darr; &nbsp;space</dt><dd>next slide</dd>
+    <dt>&larr; &nbsp;&uarr;</dt><dd>previous slide</dd>
+    <dt>Home / End</dt><dd>first / last</dd>
+    <dt>S</dt><dd>speaker notes</dd>
+    <dt>O</dt><dd>overview grid</dd>
+    <dt>T</dt><dd>start / pause the pace timer</dd>
+    <dt>R</dt><dd>reset the timer</dd>
+    <dt>F</dt><dd>fullscreen</dd>
+    <dt>?</dt><dd>this panel</dd>
+  </dl>
+  <p style="margin:18px 0 0;font-size:13.5px;color:var(--muted);line-height:1.5">
+    The timer turns <b style="color:var(--bad)">red</b> when you are behind the planned pace for the current slide and
+    <b style="color:var(--ok)">green</b> when you are ahead. Planned runtime is about 20 minutes, leaving room for questions in a 25-minute slot.</p>
+</div></div>
+
+<script>
+(function(){
+  // A slide marked `data-cut` is kept in the file but left out of the deck —
+  // parked rather than deleted. Add `?cut` to the URL to put them all back;
+  // everything else (offsets, act labels, kicker numbers, the timing plan) is
+  // derived from this list, so a cut slide costs nothing and leaves no gap.
+  var SHOW_CUT = /[?&](cut|all)\b/.test(location.search) || /[?&](cut|all)\b/.test(location.hash);
+  var slides = [].slice.call(document.querySelectorAll('.slide'))
+    .filter(function (s) { return SHOW_CUT || !s.hasAttribute('data-cut'); });
+  var stage = document.getElementById('stage');
+  var N = slides.length, cur = 0;
+
+  var plan = [], acc = 0;
+  slides.forEach(function(s){ plan.push(acc); acc += parseInt(s.dataset.t || '60', 10); });
+  var total = acc;
+
+  // Offsets, act labels and kicker numbers are derived from position, so
+  // inserting or moving a slide can never leave them inconsistent.
+  slides.forEach(function(s, i){
+    var hex = '0x' + i.toString(16).toUpperCase().padStart(2, '0');
+    var off = s.querySelector('.gutter .off'); if (off) off.textContent = hex;
+    var act = s.querySelector('.gutter .act'); if (act) act.textContent = s.dataset.act || '';
+    var k = s.querySelector('.kicker');
+    if (k && k.lastElementChild) k.lastElementChild.textContent = hex.slice(2);
+  });
+
+  function heading(s){
+    var h = s.querySelector('h1, h2');
+    return h ? h.textContent.replace(/\s+/g,' ').trim() : '—';
+  }
+
+  function fit(){
+    var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    stage.style.transform = 'scale(' + k + ')';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  var nb = document.getElementById('nb'), nh = document.getElementById('nh');
+  function show(i){
+    cur = Math.max(0, Math.min(N - 1, i));
+    slides.forEach(function(s, j){ s.classList.toggle('on', j === cur); });
+    document.getElementById('pos').textContent =
+      String(cur + 1).padStart(2,'0') + ' / ' + String(N).padStart(2,'0');
+    document.getElementById('bar').style.width = (cur / (N - 1) * 100) + '%';
+    var n = slides[cur].querySelector('.notes');
+    nb.innerHTML = n ? n.innerHTML : '<p style="color:var(--faint)">No notes for this slide.</p>';
+    var m = Math.floor(plan[cur] / 60), sec = plan[cur] % 60;
+    nh.textContent = 'Speaker notes — slide ' + (cur+1) + ' of ' + N +
+      ' · planned start ' + m + ':' + String(sec).padStart(2,'0') +
+      ' · this slide ' + slides[cur].dataset.t + 's';
+    history.replaceState(null, '', '#' + (cur + 1));
+    tick();
+  }
+
+  var running = false, elapsed = 0, last = 0;
+  var clock = document.getElementById('clock');
+  function fmt(s){
+    var neg = s < 0; s = Math.abs(Math.round(s));
+    return (neg ? '-' : '') + Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  }
+  function tick(){
+    clock.textContent = fmt(elapsed) + ' / ' + fmt(total);
+    clock.className = '';
+    if (!running && elapsed === 0) return;
+    var drift = elapsed - plan[cur];
+    clock.className = drift > 45 ? 'late' : (drift < -45 ? 'early' : 'run');
+    clock.title = drift > 0 ? Math.round(drift) + 's behind plan' : Math.round(-drift) + 's ahead of plan';
+  }
+  setInterval(function(){
+    if (!running) return;
+    var now = Date.now(); elapsed += (now - last) / 1000; last = now; tick();
+  }, 500);
+
+  var ov = document.getElementById('ov');
+  function buildOv(){
+    ov.innerHTML = '';
+    slides.forEach(function(s, i){
+      var b = document.createElement('button');
+      b.className = 'ov-card' + (i === cur ? ' cur' : '');
+      b.type = 'button';
+      b.innerHTML = '<span class="i"><span>' + String(i+1).padStart(2,'0') +
+        '</span><span class="a"></span></span><span class="h"></span>';
+      b.querySelector('.a').textContent = s.dataset.act || '';
+      b.querySelector('.h').textContent = heading(s);
+      b.addEventListener('click', function(){ ov.hidden = true; show(i); });
+      ov.appendChild(b);
+    });
+  }
+  function toggleOv(){
+    if (ov.hidden) { buildOv(); ov.hidden = false; } else { ov.hidden = true; }
+  }
+
+  var notes = document.getElementById('notes'), help = document.getElementById('help');
+  document.getElementById('bN').addEventListener('click', function(){ notes.hidden = !notes.hidden; });
+  document.getElementById('bO').addEventListener('click', toggleOv);
+
+  document.addEventListener('keydown', function(e){
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'Escape') { ov.hidden = true; help.hidden = true; return; }
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === ' ' || k === 'PageDown') { e.preventDefault(); show(cur+1); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { e.preventDefault(); show(cur-1); }
+    else if (k === 'Home') { e.preventDefault(); show(0); }
+    else if (k === 'End') { e.preventDefault(); show(N-1); }
+    else if (k === 's' || k === 'S') { notes.hidden = !notes.hidden; }
+    else if (k === 'o' || k === 'O') { toggleOv(); }
+    else if (k === 't' || k === 'T') { running = !running; last = Date.now(); tick(); }
+    else if (k === 'r' || k === 'R') { running = false; elapsed = 0; tick(); }
+    else if (k === 'f' || k === 'F') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    }
+    else if (k === '?') { help.hidden = !help.hidden; }
+  });
+
+  var start = parseInt((location.hash || '#1').slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+})();
+</script>

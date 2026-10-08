@@ -1,12 +1,17 @@
-# Ship the Tree — talk deck
+# Talks
 
-A self-contained conference deck. `index.html` is the whole thing: open it in a browser,
-no build step, no server, no dependencies. The only thing it fetches from the network is
-two Google Fonts (Archivo and JetBrains Mono); everything else — layout, diagrams, the
-chart, the speaker notes — is in the file.
+Two self-contained decks. Each is one HTML file: open it in a browser, no build step, no
+server, no dependencies. The only thing either fetches is two Google Fonts (Archivo and
+JetBrains Mono); everything else, layout, diagrams, speaker notes, is in the file. Both use
+the same controls (below).
+
+| Deck | For | Length |
+|---|---|---|
+| [`meetup.html`](meetup.html), *Your Node app, one file* | a JS meetup: developers who ship and install Node tools, and want to know whether it works and what it does for them | ~20 min, 20 slides, plus questions |
+| [`index.html`](index.html), *Ship the Tree* | a technical conference: file formats, signatures, and the Node changes behind them | ~26 min, 22 slides |
 
 ```sh
-xdg-open index.html          # or just drag it into a browser
+xdg-open meetup.html          # or just drag it into a browser
 ```
 
 ## Controls
@@ -24,22 +29,48 @@ xdg-open index.html          # or just drag it into a browser
 | <kbd>?</kbd> | controls |
 
 The pace timer turns **red** when you are behind the plan for the current slide and
-**green** when you are ahead. Planned runtime is **25:45** of content across 22 slides —
-29:15 across 25 with the cut ones put back (see below).
-That is tight for a 30-minute slot with questions, so decide your cuts in advance rather
-than discovering them on stage: `0x13` (the tool as a bundle of itself) goes first — it is
-the most satisfying beat in Act III and the least load-bearing — then `0x11` (open it with
-`unzip`), which makes a point the audit slide makes again. Per-slide budgets live in each
-`<section data-t="seconds">`; the notes panel shows the planned start time for the slide
-you are on.
+**green** when you are ahead. Per-slide budgets live in each `<section data-t="seconds">`;
+the notes panel shows the planned start time for the slide you are on.
 
-The deck deep-links by slide number (`index.html#12`), so you can resume where you left off.
+Each deck deep-links by slide number (`meetup.html#12`), so you can resume where you left off.
 
 Everything is laid out on a fixed 1280×720 stage that is scaled to fit the window, so type
 is identical on any projector. It is deliberately single-theme dark — a presented deck
 should not follow the room's OS theme.
 
-## Refreshing the npm chart before you present
+## The meetup deck
+
+Four parts: the problem the audience already has (how do you ship a Node tool, and what
+actually runs on the other end), three live demos (pack, sign and run; tamper and be refused;
+a standalone executable), what it does for them (installing other people's apps, staying
+current, publishing without a registry, attestations, plugins, CI), and honest limits. There
+is exactly one internals slide, and it says so.
+
+**Before you present:**
+
+- **Rehearse the demos in a scratch directory** with a tiny app (`index.js` importing
+  `lib/hello.js`, plus an unused `lib/never-used.js` for the manifest point). The slides show
+  real output from such a run; your hashes will differ, so don't read them out.
+- **Sign the way you rehearsed.** Sigstore needs a browser sign-in on stage. A local test
+  CA (`--key`, `--chain`) avoids that, and the output looks the same.
+- **Pre-build the SEA base** (`bundle sea --output base` with no archive) and pass
+  `--base` in demo 3, so it doesn't spend seconds copying Node on stage.
+- **Have `bundle` installed already.** Slide 6 shows the install; don't depend on the
+  venue's network for it.
+- **Check the CI and install-prompt slides** against the current tool if a release has
+  changed their wording.
+
+## The technical deck
+
+Everything from here on is about *Ship the Tree*.
+
+Planned runtime is **25:45** of content across 22 slides — 29:15 across 25 with the cut
+ones put back. That is tight for a 30-minute slot with questions, so decide your cuts in
+advance rather than discovering them on stage: `0x13` (the tool as a bundle of itself) goes
+first — it is the most satisfying beat in Act III and the least load-bearing — then `0x11`
+(open it with `unzip`), which makes a point the audit slide makes again.
+
+### Refreshing the npm chart before you present
 
 Slide `0x02` charts npm's own published incident record and makes a specific claim in the
 caption ("one every N days"). That window moves, so re-derive it near the talk rather than
@@ -59,7 +90,7 @@ It is idempotent. Don't hand-edit between the markers.
 **Caveat worth knowing:** the API returns only the 50 most recent incidents, so this is a
 moving window over the recent past, not a complete history. The caption says so.
 
-## Before you present — checklist
+### Before you present — checklist
 
 - **Re-run the chart** (above) so the cadence figure is current.
 - **Check the status slide** (the "This is in Node" table). It lists seven work packages, and as of
