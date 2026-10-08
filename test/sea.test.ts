@@ -121,7 +121,7 @@ test('a signed container verifies itself and runs the application inside it', ne
     });
     assert.equal(res.signed, true);
     assert.match(res.hash!, /^[0-9a-f]{64}$/);
-    assert.ok(FS.statSync(output).mode & 0o111);
+    if (process.platform !== 'win32') assert.ok(FS.statSync(output).mode & 0o111);
 
     // The whole file — runtime, verifier and application alike — is what the
     // signature covers, so the same verification the CLI does applies to it.
