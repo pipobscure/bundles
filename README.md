@@ -1407,52 +1407,213 @@ copy of the verifier anywhere.
 
 ## Plugins
 
-A plugin is a bundle an app loads by package name, rather than runs: created, audited and
-signed like any other, installed for one app with `bundle install --for`, and loaded with
+A plugin is a bundle an app *loads* rather than runs: code someone else wrote for that app,
+found by package name, through ordinary `import` and `require`. It is created, audited and
+signed exactly like an app, installed for one app with `bundle install --for`, and loaded with
 `@pipobscure/bundle/plugins`:
+
+```js
+import { use } from '@pipobscure/bundle/plugins';
+
+use('bled');                                   // this app's plugins, in this thread
+const gpio = await import('@alice/bled-gpio'); // ordinary import and require from here on
+```
+
+Three people are involved: whoever writes the plugin, whoever writes the app that loads it,
+and whoever installs both. Each part below is for one of them.
+
+### Writing a plugin
+
+A plugin is a package. Its `package.json` `name` is what the app imports, and its `exports`
+(or `main`) are its entry points, subpaths included. Whatever it depends on is bundled inside
+it. What it needs from the app, it imports by the app's package names, and gets the app's own
+instance (see [Resolution](#resolution)).
+
+```json
+{ "name": "@alice/bled-gpio", "type": "module", "exports": { ".": "./index.js", "./pins/*": "./lib/pins/*.js" } }
+```
+
+It goes through [the four steps](#the-four-steps) like an app: work out its files, `create`,
+`audit`, `sign`. It is signed as a plain archive, without `--launcher`, because nothing runs a
+plugin by name:
+
+```sh
+bundle create --base ./bled-gpio --files gpio.manifest --output bled-gpio.run
+bundle audit --check bled-gpio.run && bundle sign --output bled-gpio.nzip bled-gpio.run
+```
+
+To make it findable, list it against the app's listing, so that it shows up for that app and
+never among apps:
+
+```sh
+bundle publish --as alice.example --for @pipobscure.com/bled bled-gpio https://…/bled-gpio.nzip
+```
+
+### Installing plugins
+
+```sh
+bundle search --for bled gpio                         # plugins listed for bled
+bundle install --for bled @alice.example/bled-gpio    # from a listing
+bundle install --for bled https://example.com/x.nzip  # or a URL, or a domain, as for any install
+bundle installed                                      # plugins are listed as bled:@alice/bled-gpio
+```
+
+`--for` takes the app as it is installed, or its package name. That package name is the
+app's **scope**: a directory of the app's own, where its plugins live as
+`<package name>.nzip`, laid out as in `node_modules`:
+
+```
+~/.local/share/bundle/plugins/bled/@alice/bled-gpio.nzip
+```
+
+(`~/Library/Application Support/bundle/plugins/` on macOS, `%LOCALAPPDATA%\bundle\plugins\`
+on Windows; `BUNDLE_PLUGINS` moves them.) A plugin is never executable and never on the PATH.
+
+It is reviewed like any install, under the policy's global rules and its `scopes` section for
+that app, never the app's `apps` section:
+
+```jsonc
+{ "scopes": { "bled": { "require": { "attesters": ["audited@did:web:bled.dev"] }, "block": ["did:web:scanner.example"] } } }
+```
+
+`update`, `installed`, `validate` and `uninstall` take a plugin by its record name,
+`bled:@alice/bled-gpio`, and `update` follows its source as for any install. Uninstalling the
+app removes its plugins too, unless another install of the same app still loads them. See
+[`install`](#install), [`uninstall`](#uninstall) and [`publish`](#publish).
+
+### Loading plugins
 
 ```js
 import { use, list } from '@pipobscure/bundle/plugins';
 
-use('bled');                                   // this app's plugins, in this thread
-const gpio = await import('@alice/bled-gpio'); // ordinary import and require from here on
-for (const name of list('bled')) await import(name);   // or everything installed
+use('bled');                                          // the scope: this app's package name
+for (const name of list('bled')) await import(name);  // everything installed
+use('/opt/bled/plugins');                             // or any directory of plugins
+```
 
-use('bled', { verify: {                        // checked as they load, on top of what the
-    attesters: ['audited@did:web:bled.dev'],   // runtime and the policy require
-    ca: certificatePem,                        // also: identity, issuer, quorum, block
+**`use(scope, options?)`** makes one scope's plugins resolvable in the calling thread. The
+scope is the app's own package name, which is where `install --for` put its plugins. An
+absolute path is also accepted, for plugins laid out the same way anywhere else.
+
+- `use()` reads the scope's directory and each archive's `package.json` name. It runs nothing
+  and, unless verifying, checks nothing.
+- Two archives claiming one name, or an archive with no name, is an error.
+- Calling it again for the same scope does nothing. Calling it again with other options throws.
+- An app can `use()` several scopes: its own, and a suite's shared one.
+
+**`list(scope)`** returns the package names installed in a scope, for an app that loads
+whatever is installed.
+
+A plugin is mounted the first time something imports it, with node's own ZIP provider, so
+the app runs with `--experimental-vfs`, as every bundle does. The loader itself needs nothing
+of the sort to load, and imports nothing heavy. It goes into every host's bundle, so a host
+that never verifies carries only it.
+
+#### Resolution
+
+Plugins come **last**. A bare name resolves as it always would, and only a name nothing else
+finds is looked for among the plugins:
+
+1. **Builtins, and the app's own dependencies.** A plugin named `lodash` can never stand in for
+   the app's `lodash`, and one named `fs` never for `node:fs`.
+2. **Inside a plugin, its own bundled dependencies.**
+3. **Inside a plugin, the app.** A name the plugin does not carry is resolved as the app
+   module that imported the plugin would resolve it. So a plugin that imports the app's API
+   package gets the same instance the app has, not a copy.
+4. **The scopes**, in the order `use()` was called. The rest of the specifier is resolved
+   against the plugin's `exports`, with the importer's conditions (`import`, `require`,
+   `node`, `default`), or against `main` and plain files for a package without `exports`.
+
+`import` and `require` both work, for CommonJS and ES module plugins alike, and a subpath the
+plugin does not export fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`, as it would in
+`node_modules`.
+
+#### Workers
+
+Mounts and module hooks belong to a thread, so **each worker calls `use()` itself**, with the
+same options. How the worker reaches the app's own files depends on how the app runs:
+
+- under `bundle run` or the `register` preload, node mounts the `--vfs-load` source in every
+  thread, at the same path, after the preload has run;
+- in a SEA, the executable sets every worker up as its main thread before the worker's script
+  loads (see [Executables that verify before they run](#executables-that-verify-before-they-run)).
+
+Either way, the worker's own plugins are verified exactly as the main thread's are.
+
+### Verifying plugins
+
+Plugins are checked when they are installed, and `installed` and `validate` check them again,
+as they do apps. Checking them **as they load** is opt-in, as it is for apps:
+
+```js
+use('bled', { verify: true });                 // under what the runtime and the policy require
+use('bled', { verify: {                        // and these as well
+    identity: 'https://github.com/bled-dev/plugins/.github/workflows/release.yml@refs/heads/main',
+    issuer: 'https://token.actions.githubusercontent.com',
+    attesters: ['audited@did:web:bled.dev'], quorum: 1,
+    block: ['did:web:scanner.example'],
+    ca: certificatePem,
 } });
 ```
 
-`use(scope)` takes the app's package name, which is the scope `install --for` put the plugins
-in, or an absolute path to a directory of plugins. Each plugin is found by the `name` in its
-`package.json`, and its entry points are its `exports` (or `main`).
+| `verify` | |
+|---|---|
+| `identity` | the sigstore identity every plugin must be signed with |
+| `issuer` | the sigstore OIDC issuer every plugin must be signed through |
+| `attesters`, `quorum` | attesters (`[kind@]did`) that must have vouched for every plugin, and how many of them |
+| `block` | DIDs whose bad verdict refuses a plugin |
+| `ca` | a certificate (PEM text, or a path) every plugin's chain must lead to. A requirement, not an extra trusted root |
 
-- **Plugins resolve last.** Builtins and the app's own dependencies always come first, so a
-  plugin can never stand in for them. What a plugin imports and does not carry is resolved as
-  the host would, so it gets the app's API as the same instance the app has.
-- **Every thread calls `use()` itself.** Mounts and module hooks are per thread.
-- **Checking at load is opt-in, as it is for apps.** The full review happens at install, and
-  `installed` and `validate` repeat it. `use(scope, { verify })` checks every plugin before
-  it returns, and a verifying runtime (`bundle run`, `register`, a SEA) always does.
-- **A plugin is judged as a plugin.** The app's signer, roots and `apps` section never apply
-  to it. What carries over from the runtime is attestations, blocks, and that a signature is
-  needed. The policy's `scopes` section and the host's own rules in code add to that, and
-  nothing can take any of it away. With verification, `use()` checks every plugin before it
-  returns. If any is refused, none is loaded, and the `ERR_BUNDLE_UNTRUSTED` it throws names
-  every plugin, every reason, and where each rule came from.
-- **The loader is light, and the verifier comes only when needed.** The loader goes into every
-  host's bundle, so it imports nothing heavy, and loads without `--experimental-vfs`. Under a
-  verifying runtime, the runtime's own verifier checks plugins, so the code and policy that
-  checked the app check its plugins too. Otherwise this package's verifier is loaded the first
-  time `use()` verifies. `bundle create` bundles what the recording run read, so record a host
-  that verifies its plugins from a run that does.
+**A verifying runtime always verifies.** Under `bundle run`, the `register` preload or a SEA,
+`use()` verifies whether it is asked to or not. Whoever chose a verifying runtime asked for
+nothing unverified to be mounted in that process, and there is no `verify: false`.
 
-Shared code for a suite of apps works the same way: install it into a scope the suite's apps
-share (`--for @acme/suite`), and have each app `use()` that scope too. Each name has one
-version per scope, there is no dependency resolution, and bundles in a scope are meant to be
-loaded, never re-wrapped npm packages. [proposals/plugins.md](proposals/plugins.md) has the
-reasoning.
+**A plugin is judged as a plugin, not as the app.** It is, almost by definition, written by
+someone other than the app's author, so a check that describes the app's author never applies
+to it. Its rules come from three places, and all of them hold at once:
+
+| From | What applies to plugins |
+|---|---|
+| the runtime that verified the app | that a signature is needed (unless attestations vouch); its `attesters` and `quorum`; its `block`. Never its signer identity, its issuer, its extra roots or `--untrusted`: those are about the app's author |
+| the policy files' `scopes` section for this app | all of it |
+| the app's code: `use(scope, { verify })` | all of it |
+
+Attester groups add up, so each must be met, and blocks add up. A signer required by two
+sources must satisfy both, and values that conflict mean nothing loads. Nothing can loosen
+another source's rules. Plugins are anchored against the default trust store and any `ca`,
+never against the roots the app was checked against. Attestations are checked offline,
+against the cache `bundle trust` keeps fresh, so loading never reaches for the network.
+
+**`use()` is where it fails.** With verification, every plugin in the scope is checked before
+`use()` returns. If any is refused, none is loaded, and `use()` throws `ERR_BUNDLE_UNTRUSTED`,
+whose `refused` lists each plugin's `name`, `file` and `reasons`:
+
+```
+ERR_BUNDLE_UNTRUSTED: 2 of 5 plugins for 'bled' were refused, so none are loaded:
+  @alice/bled-gpio (…/plugins/bled/@alice/bled-gpio.nzip):
+    0 of 1 required attestation: did:web:bled.dev as audited — no attestation of this file (required by this app)
+  gpio-mock (…/plugins/bled/gpio-mock.nzip):
+    unsigned, and a trusted signature is required (carried over from the runtime)
+```
+
+**Where the verifier comes from.** Under a verifying runtime, it is the runtime's own, so the
+code and policy that checked the app check its plugins too. Otherwise the loader loads this
+package's verifier the first time `use()` verifies. `bundle create` bundles what the recording
+run read, so record a host that verifies its plugins from a run that does.
+
+### Shared libraries
+
+Shared code for a suite of apps works the same way. Install it into a scope the suite's apps
+share (`bundle install --for @acme/suite …`), and have each app `use()` that scope as well as
+its own. Since plugins resolve last, every app gets the one installed copy, and nothing can
+replace it.
+
+That is as far as it goes, deliberately. Each name has one version per scope, with no ranges
+and no dependency resolution. A bundle in a scope is meant to be loaded, a plugin or a library
+with an API of its own, never a re-wrapped npm package: third-party code stays bundled inside
+whatever uses it. A missing shared bundle is a failed import naming what to install.
+
+[proposals/plugins.md](proposals/plugins.md) has the reasoning behind all of this.
 
 ## How it works
 
@@ -1516,6 +1677,10 @@ Other limits, stated plainly:
   line can drop the `-r`, and the mount falls back to the built-in provider, which checks
   nothing. Registration is a userland opt-in, not a runtime policy. A SEA closes this for
   itself by carrying its own bootstrap.
+- **A plugin runs with the full authority of its host.** Loading it is no more contained than
+  any other `import`. What vouches for it is the review at install and, when asked for, the
+  check at load. Without that check, a plugin is what `bundle install` accepted, and
+  `installed` and `validate` are what notice it changed since.
 - **A shebang archive does not self-verify.** The kernel gives it no preload flag to carry a
   provider. Mount it with the preload, or use a SEA.
 - **A sigstore signature is public.** Signing puts your identity, the archive's hash and the
