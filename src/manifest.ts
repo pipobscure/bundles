@@ -612,6 +612,23 @@ export function signatureOf(source: ArchiveSource): SignatureMarker | null {
     }
 }
 
+/**
+ * Whether `source` ends in a ZIP archive: one whose end-of-central-directory
+ * record, comment included, runs exactly to the end of the file. A file can
+ * contain an archive without ending in one — a SEA's own embedded file system
+ * sits inside its blob, with more of the executable after it — and only an
+ * archive at the very end is one that was appended.
+ */
+export function endsInArchive(source: ArchiveSource): boolean {
+    try {
+        const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
+        locateEocd(io.tail(), io.size);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Where the bytes come from, abstracted over "a path" and "a Buffer": a
 // statable size, a tail read for the EOCD, a chunked hash feed for the signed
 // region, and an archive opener.

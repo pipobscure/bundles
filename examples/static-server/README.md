@@ -42,7 +42,7 @@ reasons worth knowing:
 
 - **There is no flag for it.** `--vfs-load` mounts exactly one source, the
   program. v26.10.0 also carried `--vfs-mount`, which mounted without running,
-  and the next patch release removes it
+  and v26.11.0 removed it
   ([nodejs/node#66162](https://github.com/nodejs/node/pull/66162)): a program
   that wants more mounts makes them through `node:vfs`.
 - **Nothing enumerates the mounts.** A mount lives at a reserved path node
@@ -286,6 +286,6 @@ enumeration page instead — every mounted source, in precedence order.
 
 ## Requirements
 
-The same Node the rest of this repository needs: 26.10 or later, the first
-release with `--vfs-load`. Everything else the server uses — `node:vfs`,
-`ZipProvider`, the ZIP support in `node:zlib` — was in v26.9.0 already. See the root [README](../../README.md#requirements).
+The same Node the rest of this repository needs: 26.11.1 or later. What the
+server itself uses arrived earlier — `--vfs-load` in v26.10.0, and `node:vfs`,
+`ZipProvider` and the ZIP support in `node:zlib` in v26.9.0. See the root [README](../../README.md#requirements).

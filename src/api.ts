@@ -302,9 +302,13 @@ async function produce(
     };
 }
 
+// A file is done when its descriptor is closed, not when its data is flushed:
+// 'finish' comes first, and an executable started in between is one still
+// open for writing, which the kernel refuses to run (ETXTBSY).
 function close(out: Writable): Promise<void> {
     return new Promise((resolve, reject) => {
         if (out === process.stdout) return void out.end(() => resolve());
-        out.on('error', reject).on('finish', () => resolve()).end();
+        const done = out instanceof FS.WriteStream ? 'close' : 'finish';
+        out.on('error', reject).on(done, () => resolve()).end();
     });
 }

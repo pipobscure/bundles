@@ -311,10 +311,18 @@ function selftest(output: string): void {
         { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf-8' });
     if (res.error) throw res.error;
     if (res.status !== 0 || !/bundle/.test(res.stdout)) {
-        throw new Error(
-            `the built executable does not run (exit ${res.status}): ${(res.stderr || res.stdout || '').trim()}\n` +
-            'A node whose --build-sea does not understand "vfsArchive" builds exactly this: ' +
-            'the configuration key is ignored, nothing is mounted, and the stub has nothing to require.');
+        const said = (res.stderr || res.stdout || '').trim();
+        // Only one failure means the node is missing a feature: the stub
+        // finding nothing to require, because nothing was mounted. Anything
+        // else is a fault here, and is reported as one — not explained away.
+        if (/Cannot find module|ERR_MODULE_NOT_FOUND/.test(said) && /launch/.test(said)) {
+            throw Object.assign(new Error(
+                `the built executable does not run (exit ${res.status}): ${said}\n` +
+                'A node whose --build-sea does not understand "vfsArchive" builds exactly this: ' +
+                'the configuration key is ignored, nothing is mounted, and the stub has nothing to require.'),
+            { code: 'ERR_BUNDLE_NO_VFS_ARCHIVE' });
+        }
+        throw new Error(`the built executable does not run (exit ${res.status}): ${said}`);
     }
 }
 

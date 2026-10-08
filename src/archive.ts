@@ -196,8 +196,18 @@ async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
 }): Promise<EmitResult> {
     const hasher = signer ? CRYPTO.createHash(hashAlg) : null;
 
-    // 1. Stream the prefix straight to `out`, feeding the whole-file hash.
-    if (prefix) await prepend(prefix, out, hasher);
+    // 1. Stream the prefix straight to `out`, feeding the whole-file hash —
+    //    and after it, if it needs one, a run of zeros that keeps an archive
+    //    inside the prefix out of a ZIP reader's sight (see `separation()`).
+    const padding = prefix ? separation(prefix) : 0;
+    if (prefix) {
+        await prepend(prefix, out, hasher);
+        if (padding) {
+            const zeros = Buffer.alloc(padding);
+            hasher?.update(zeros);
+            await write(out, zeros);
+        }
+    }
 
     // 2. Build the archive (small) with an empty EOCD comment, in memory. The
     //    chain has to be embedded here, before anything is hashed — which is
@@ -206,7 +216,7 @@ async function emit({ members, prefix, hashAlg = 'sha256', signer, out }: {
         members, hashAlg,
         signAlg: signer?.signAlg,
         chain: signer?.chain,
-        baseOffset: prefix ? FS.statSync(prefix).size : 0,
+        baseOffset: prefix ? FS.statSync(prefix).size + padding : 0,
     }));
 
     if (!signer || !hasher) {
@@ -287,6 +297,43 @@ export function members(source: string): string[] {
         zip.closeSync();
     }
 }
+
+/**
+ * How far back from the end of a file node's ZIP reader looks for the end of
+ * an archive (`TAIL_LENGTH` in node's lib/internal/zip/constants.js): the
+ * record, a maximal comment, the Zip64 locator and record, and some slack.
+ */
+export const READER_WINDOW = 22 + 0xffff + 20 + 56 + 4096;
+
+/**
+ * How many zero bytes to put between `prefix` and the archive after it, so
+ * that no archive end inside the prefix is within the reader's window of the
+ * end of the file.
+ *
+ * A prefix can carry an archive of its own: a SEA's file system is a ZIP in
+ * its blob, near the end of the executable. With a small archive appended, the
+ * reader looking back from the end finds two plausible archive ends, and
+ * refuses the file as ambiguous — rightly, since two readers could disagree on
+ * which archive it is. Moving the prefix's archive end out of the window,
+ * however small what follows, leaves exactly one. The zeros are part of the
+ * prefix, inside the signed region; a prefix with no archive end near its own
+ * end gets none.
+ */
+export function separation(prefix: string): number {
+    const size = FS.statSync(prefix).size;
+    const length = Math.min(size, READER_WINDOW);
+    const tail = Buffer.alloc(length);
+    const fd = FS.openSync(prefix, 'r');
+    try {
+        FS.readSync(fd, tail, 0, length, size - length);
+    } finally {
+        FS.closeSync(fd);
+    }
+    const last = tail.lastIndexOf(EOCD_SIGNATURE);
+    return last < 0 ? 0 : Math.max(0, READER_WINDOW - (length - last));
+}
+
+const EOCD_SIGNATURE = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
 
 function prepend(file: string, out: Writable, sink: CRYPTO.Hash | null): Promise<void> {
     return new Promise((resolve, reject) => {

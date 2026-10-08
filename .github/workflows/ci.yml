@@ -1,7 +1,7 @@
 # Build, typecheck and test, on every push to main and every pull request.
 #
 # It tests exactly the floor package.json promises: `engines` says
-# node >=26.10.0, so 26.10.0 itself is what runs — that is what stops a newer
+# node >=26.11.1, so 26.11.1 itself is what runs — that is what stops a newer
 # API creeping in unnoticed. A pinned version, so a red run means this
 # repository changed, never that a release moved underneath it.
 #
@@ -11,8 +11,8 @@
 # completing successfully, so nothing is released until both have passed.
 #
 # The executable tests need a node whose --build-sea understands "vfsArchive"
-# (nodejs/node#65810). On one that does not, they skip themselves and say why
-# rather than fail, and they start running on the first node that has it.
+# (nodejs/node#65810), which 26.11.0 is the first release to ship — so here
+# they run. On a node without it they skip themselves and say why.
 #
 # Every action is pinned to a full commit SHA, as in the release workflow: a
 # tag is a mutable pointer, and this project is about not trusting those.
@@ -40,8 +40,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, name: 'linux · node 26.10.0' }
-          - { os: windows-latest, name: 'windows · node 26.10.0' }
+          - { os: ubuntu-latest, name: 'linux · node 26.11.1' }
+          - { os: windows-latest, name: 'windows · node 26.11.1' }
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,7 +51,7 @@ jobs:
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
 
       # The test PKI is minted with openssl, which node has no equivalent of —
       # it can verify certificates but not issue them. Git for Windows ships

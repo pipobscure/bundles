@@ -1,12 +1,11 @@
 import * as VFS from 'node:vfs';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
-import * as ZLIB from 'node:zlib';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { open as openBundle, settings as providerSettings, type ProviderOptions } from './provider.ts';
 import { enforce, carriedFrom } from './plugin-verifier.ts';
-import { message, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
+import { endsInArchive, message, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
 import { attestersFrom, parseDuration } from './attestation.ts';
 
 // Verifying a container, mounting it, and running what is inside — the one path
@@ -159,14 +158,12 @@ export function verify(container: string, options: LaunchOptions = {}): Verifica
  */
 export function appended(container: string): 'signed' | 'unsigned' | 'none' {
     if (signatureOf(container) !== null) return 'signed';
-    try {
-        // An archive at the tail with no marker is the one case worth naming:
-        // somebody appended an application and never signed it.
-        ZLIB.ZipFile.openSync(container).closeSync();
-        return 'unsigned';
-    } catch {
-        return 'none';
-    }
+    // An archive at the tail with no marker is the one case worth naming:
+    // somebody appended an application and never signed it. "At the tail"
+    // means ending exactly at the end of the file: a SEA's own file system is
+    // an archive too, inside its blob, and a ZIP reader that looks back from
+    // the end can find it — but it has the rest of the executable after it.
+    return endsInArchive(container) ? 'unsigned' : 'none';
 }
 
 // --------------------------------------------------------- the command line ---

@@ -99,7 +99,7 @@ jobs:
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
 
       # `npm view` exits non-zero for a package that does not exist at all and
       # prints nothing for a version that does not; both mean "publish".
@@ -140,7 +140,7 @@ jobs:
       - name: Set up node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
           registry-url: https://registry.npmjs.org
 
       # `npm install` rather than `npm ci`: package-lock.json is not committed.
@@ -269,7 +269,7 @@ jobs:
 
       # prepublishOnly refuses a package whose signed CLI is missing, unsigned,
       # or stale relative to this tree. Trusted publishing needs npm 11.5.1 or
-      # later; node 26.10.0 ships with one.
+      # later; node 26.11.1 ships with one (11.20.0).
       # --loglevel verbose shows the trusted-publishing exchange (npm redacts
       # tokens), which is the only place a refused publish says why: the
       # registry itself answers an unauthorized PUT with a bare 404.
@@ -308,7 +308,7 @@ jobs:
           cat > notes.md <<EOF
           \`@pipobscure/bundle\` $VERSION — the same release as [npm](https://www.npmjs.com/package/@pipobscure/bundle/v/$VERSION).
 
-          **\`bundle.nzip\`** is the whole CLI in one signed file. It needs Node 26.10 or later and nothing else:
+          **\`bundle.nzip\`** is the whole CLI in one signed file. It needs Node 26.11.1 or later and nothing else:
 
           \`\`\`sh
           chmod +x bundle.nzip

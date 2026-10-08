@@ -33,7 +33,7 @@ let SKIP: string | false = false;
 try {
     base = await createSeaBase({ output: BASE, sigstore: false, bootstrap: { roots: [ROOT_PEM] } });
 } catch (err) {
-    if (!(err instanceof Error) || !/vfsArchive/.test(err.message)) throw err;
+    if ((err as { code?: string }).code !== 'ERR_BUNDLE_NO_VFS_ARCHIVE') throw err;
     SKIP = `node ${process.versions.node} cannot build an executable: no "vfsArchive" (nodejs/node#65810)`;
 }
 const needsSea = { skip: SKIP };
@@ -54,7 +54,10 @@ if (!SKIP) await createSeaBase({ output: OPEN_BASE, sigstore: false });
 
 
 function run(executable: string, args: string[] = [], env: NodeJS.ProcessEnv = {}) {
-    return spawnSync(executable, args, { encoding: 'utf-8', env: { ...process.env, ...env } });
+    const res = spawnSync(executable, args, { encoding: 'utf-8', env: { ...process.env, ...env } });
+    // A spawn that never started has no output to report; say why instead.
+    if (res.error) throw res.error;
+    return res;
 }
 
 test('the verifier file list is what the container needs to check itself', () => {

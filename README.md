@@ -15,10 +15,9 @@ filesystem, so an archive that does not check out never becomes one and its entr
 never runs. Every member is re-hashed against its signed digest as it is read, for the life
 of the process.
 
-> **Requires Node 26.10 or later**, run with `--experimental-vfs`. Every piece this needs is
-> in a released Node; the last, the `--vfs-load` loader, shipped in v26.10.0. Building a
-> single executable additionally needs one open pull request. See
-> [Requirements](#requirements). Everything here is experimental.
+> **Requires Node 26.11.1 or later**, run with `--experimental-vfs`. Every piece this needs is
+> in a released Node; the last, a SEA's file system as a ZIP archive, shipped in v26.11.0.
+> See [Requirements](#requirements). Everything here is experimental.
 
 ---
 
@@ -42,7 +41,7 @@ bundle update                       # later, when there is a new release
 
 That is the whole install: npm fetches the package once, and what stays behind is the signed
 archive itself, on your PATH and keeping itself current. Or take it from the release page and
-skip npm altogether — Node 26.10 or later is all it needs:
+skip npm altogether — Node 26.11.1 or later is all it needs:
 
 ```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
@@ -1524,7 +1523,8 @@ Everything here sits on Node's experimental `node:vfs` (by Matteo Collina) and r
 | **Native addons loaded from a mount** | released, v26.9.0 — [nodejs/node#65680](https://github.com/nodejs/node/pull/65680) |
 | **`"useVfs"`**, a SEA's assets behind a VFS mount | released, v26.9.0 — [nodejs/node#65675](https://github.com/nodejs/node/pull/65675) |
 | **`--vfs-load`**, and `vfs.registerProvider()` | released, v26.10.0 — [nodejs/node#65748](https://github.com/nodejs/node/pull/65748) |
-| **`"vfsArchive"`**, a ZIP as a SEA's file system — `bundle sea` only | open — [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) |
+| **`"vfsArchive"`**, a ZIP as a SEA's file system — `bundle sea` only | released, v26.11.0 — [nodejs/node#65810](https://github.com/nodejs/node/pull/65810) |
+| **The `--vfs-load` source at the same mount point in every thread** | released, v26.11.0 — [nodejs/node#66162](https://github.com/nodejs/node/pull/66162) |
 
 v26.9.0 already had everything a program needs to *be* an archive: it reads ZIP archives,
 turns one into a file system, resolves modules out of it, and loads native addons from it.
@@ -1535,7 +1535,7 @@ preload decide what backs a mount, and therefore the one that makes a *verifying
 possible from userland at all.
 
 **`--vfs-load` is the only flag.** v26.10.0 also shipped `--vfs-mount`, which mounted a source
-without running it, and the next patch release removes it
+without running it, and v26.11.0 removes it
 ([nodejs/node#66162](https://github.com/nodejs/node/pull/66162)): nothing needs more than one
 mount from the command line, and a program that wants more mounts them through `node:vfs`,
 where it also holds the instance. The same change reserves layer 0 for the `--vfs-load`
@@ -1545,10 +1545,11 @@ mount points stay node's to assign: named mounts
 ([nodejs/node#66119](https://github.com/nodejs/node/pull/66119)) were closed rather than
 merged.
 
-[nodejs/node#65810](https://github.com/nodejs/node/pull/65810) is needed only to build an
-executable. It lets a SEA's file system *be* a ZIP archive rather than a list of assets, which
-is how this package gets inside one: `bundle sea` embeds the verifier bundle whole and node
-mounts it. It is still open; everything else here works without it.
+[nodejs/node#65810](https://github.com/nodejs/node/pull/65810), in v26.11.0, is what building an
+executable needs. It lets a SEA's file system *be* a ZIP archive rather than a list of assets,
+which is how this package gets inside one: `bundle sea` embeds the verifier bundle whole and
+node mounts it. The reserved mount point of #66162 is what lets a worker thread reach the
+`--vfs-load` source at the path its main thread uses, and so start a script from it.
 
 Native addons out of a mount shipped in v26.9.0, as
 [nodejs/node#65680](https://github.com/nodejs/node/pull/65680), which closed the last gap in
@@ -1573,10 +1574,9 @@ npm test               # the whole suite; generates a throwaway PKI into build/c
 npm run typecheck
 ```
 
-The suite needs Node 26.10 or later. The sixteen tests that build an executable also need
-[nodejs/node#65810](https://github.com/nodejs/node/pull/65810); on a Node without it they skip
-themselves and say why, and they run on the first Node that has it. [CI](.github/workflows/ci.yml)
-runs the suite on every push to `main` and every pull request, on 26.10.0 — the floor
+The suite needs Node 26.11.1 or later, including the tests that build an executable. On a Node
+whose `--build-sea` lacks `vfsArchive` those skip themselves and say why. [CI](.github/workflows/ci.yml)
+runs the suite on every push to `main` and every pull request, on 26.11.1 — the floor
 `package.json` promises.
 
 Tests import the sources rather than the build, so they run under Node's type stripping. The
