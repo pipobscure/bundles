@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { buildSea, createSeaBase, verifierFiles, stubSource, type SeaBaseResult } from '../src/sea.ts';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
 import { APP, CHAIN_PEM, LEAF_KEY, ROOT_PEM, scratch, testSigner, tree } from './helpers.ts';
@@ -380,4 +381,47 @@ test('the same base becomes a self-validating executable by appending an app', n
     assert.equal(ignored.status, 0, ignored.stderr);
     assert.match(ignored.stdout, /hello from a signed bundle/);
     FS.rmSync(output);
+});
+
+test('a worker thread runs from the application as its main thread does, verified the same way', needsSea, async () => {
+    // A worker of a SEA starts with nothing mounted; the executable's preload
+    // sets it up before the worker's own script — a path into the app — loads.
+    const threaded = tree(tmp, {
+        'package.json': '{ "name": "threaded", "type": "module", "main": "index.js" }',
+        'index.js': [
+            "import { Worker } from 'node:worker_threads';",
+            "const worker = new Worker(new URL('./worker.js', import.meta.url));",
+            "worker.on('message', (message) => console.log(JSON.stringify(message)));",
+            "worker.on('error', (err) => { console.log(JSON.stringify({ error: err.message })); process.exitCode = 1; });",
+        ].join('\n'),
+        'worker.js': [
+            "import { parentPort } from 'node:worker_threads';",
+            "import { greeting } from './greet.js';",
+            "const verifier = globalThis[Symbol.for('@pipobscure/bundle.plugins.verifier')];",
+            "parentPort.postMessage({ greeting, from: import.meta.url, plugins: Boolean(verifier?.enforcing) });",
+        ].join('\n'),
+        'greet.js': "export const greeting = 'hello from a worker';",
+    }, 'threaded');
+    const files = ['package.json', 'index.js', 'worker.js', 'greet.js'];
+    const archive = PATH.join(tmp, 'threaded.run');
+    await createBundle({ base: threaded, files, output: archive });
+
+    // A self-validating executable: the application is its own tail.
+    const output = PATH.join(tmp, 'threaded.sea');
+    await buildSea({ app: archive, output, base: BASE, signer: testSigner(), bootstrap: { roots: [ROOT_PEM] } });
+    const ran = run(output);
+    assert.equal(ran.status, 0, ran.stderr + ran.stdout);
+    const said = JSON.parse(ran.stdout) as { greeting: string; from: string; plugins: boolean };
+    assert.equal(said.greeting, 'hello from a worker');
+    assert.ok(said.from.endsWith('/worker.js') && !said.from.startsWith(pathToFileURL(tmp).href), said.from);
+    assert.equal(said.plugins, true, 'plugins the worker loads are verified, as in the main thread');
+    FS.rmSync(output);
+
+    // A verifying node: the application comes from its command line, which a
+    // worker never sees — it gets what its main thread mounted.
+    const signed = PATH.join(tmp, 'threaded.signed.nzip');
+    await signBundle({ source: archive, output: signed, signer: testSigner() });
+    const named = run(base!.output, [signed]);
+    assert.equal(named.status, 0, named.stderr + named.stdout);
+    assert.equal((JSON.parse(named.stdout) as { greeting: string }).greeting, 'hello from a worker');
 });

@@ -1,6 +1,6 @@
 # Plugins: signed bundles an app loads
 
-**Status:** implemented (first cut). Workers under a SEA are still to do (see [Under a SEA](#under-a-sea)).
+**Status:** implemented (first cut).
 **Author:** Philipp Dunkel
 
 ## Summary
@@ -241,12 +241,36 @@ error saying exactly that, rather than an unverified mount.
 
 ### Under a SEA
 
-A SEA's bootstrap is what loads the verifying mounter, so in its main thread plugins are
-verified with no extra work. A worker starts without that bootstrap, so the SEA needs to
-pass it on: a flag the bootstrap sets on the workers it starts (`execArgv`), so each worker
-loads the verifying mounter before any of the host's code runs. This is the one change on
-the SEA side, and it is not built yet. Under `bundle run` and the `register` preload,
-workers inherit the preload through `execArgv` already.
+A SEA's bootstrap is what loads the verifying mounter, so plugins in its main thread are
+verified with no extra work. Workers turned out to need more than the flag this section first
+proposed, because node starts a SEA's worker with nothing mounted. That means neither the
+executable's own file system nor the application the main thread mounted, so the worker's
+script, a path into that application, does not even resolve. Nothing of ours runs in the
+worker unless the executable arranges it.
+
+It does, with node's own means. The executable's `execArgv` carries an `--import` preload,
+and every thread inherits `execArgv`. In the main thread the preload does nothing. In a
+worker it:
+
+1. mounts this package out of the executable (`node:sea` hands any thread the embedded
+   archive),
+2. verifies and mounts the container the main thread did, under the same policy, at the same
+   path, which also installs the plugin verifier,
+
+before the worker's script loads. The main thread passes on what it mounted in
+`BUNDLE_SEA_THREAD`, a copy of which every worker inherits. A self-validating executable's
+workers run only its own application, whatever that says, and a sealed runtime's policy holds
+over it.
+
+Classic inline workers (`new Worker(code, { eval: true })`) are the gap. Node runs them
+without the ESM loader, so without preloads. They get nothing mounted, which means they can't
+load the application's modules or this loader, so nothing unverified runs through them. If
+node mounted a SEA's archive in every thread, as it does the `--vfs-load` source since
+nodejs/node#66162, the preload could live in that archive, and this gap would close too.
+
+Under `bundle run` and the `register` preload, workers need none of this. They inherit the
+preload, and node re-mounts the `--vfs-load` source in them at the same path after it has
+run.
 
 ## Listing plugins
 

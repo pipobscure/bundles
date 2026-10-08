@@ -1184,6 +1184,7 @@ session.
 |---|---|
 | `BUNDLE_INSTALL_DIR` | where `install` puts programs |
 | `BUNDLE_PLUGINS` | where plugin scopes are, for `install --for` and the plugin loader alike |
+| `BUNDLE_SEA_THREAD` | set by an executable's main thread for its workers: what it verified and mounted. Not something to set yourself |
 | `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. |
 | `BUNDLE_NO_WINDOWS_SETUP` | do not register `.nzip` or touch `PATHEXT` on Windows |
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file |
@@ -1379,13 +1380,27 @@ takes no policy from its command line, because a binary that demands a signing i
 not one whose user can ask it to stop. Build without one and the flags above work, falling
 back to `BUNDLE_ROOTS` and friends, so one build can be decided about later.
 
+**Worker threads run from the application too.** Node starts a SEA's worker with nothing
+mounted: not the executable's own file system, and not the application its main thread
+verified. So the executable carries a preload that every thread runs first. In the main
+thread it does nothing. In a worker it mounts this package out of the executable, then
+verifies and mounts what the main thread did, at the same path, before the worker's script
+loads. `new Worker(new URL('./worker.js', import.meta.url))` then works as it would anywhere,
+and plugins the worker loads are verified as in the main thread. The main thread passes what
+it mounted on in `BUNDLE_SEA_THREAD`, the one thing a worker inherits on its own. A worker
+given an `env` of its own has to carry it over. The record is not trusted: a self-validating
+executable's workers run only its own application, and a sealed runtime's policy holds over
+anything the record says. One kind of worker is not covered: classic inline code
+(`new Worker(code, { eval: true })`), which node runs without preloads. It has nothing
+mounted, so it can't load anything from the application either.
+
 From code, `createSeaBase()` and `buildSea()` split the expensive half (a ~155 MB copy of
 Node) from the cheap one, `@pipobscure/bundle/launch` is the entry point all of this runs
 through — `run()`, `runSelf()`, `verify()`, `main()` — and `verifySelf()` lets an application
 report on its own provenance. The package rides inside the executable as an archive that node
 mounts for itself: `"useVfs": true` ([nodejs/node#65675](https://github.com/nodejs/node/pull/65675),
 released in v26.9.0) with `"vfsArchive"` ([nodejs/node#65810](https://github.com/nodejs/node/pull/65810),
-still open), which is why the generated stub is a handful of lines and why there is no second
+released in v26.11.0), which is why the generated stub is a handful of lines and why there is no second
 copy of the verifier anywhere.
 
 ---

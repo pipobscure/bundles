@@ -3,6 +3,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { isMainThread } from 'node:worker_threads';
 import { open as openBundle, settings as providerSettings, type ProviderOptions } from './provider.ts';
 import { enforce, carriedFrom } from './plugin-verifier.ts';
 import { endsInArchive, message, signatureOf, verifySync, type VerificationResult } from './manifest.ts';
@@ -107,6 +108,7 @@ export function mount(container: string, options: LaunchOptions = {}): Mounted {
     // What runs from here may load plugins; they are verified too, with what
     // carries over from this runtime to code someone else wrote.
     enforce(carriedFrom(providerSettings(settings)));
+    if (isMainThread && isSea()) remember(container, options, root);
     return { root, vfs, entry: entryPoint(root, options.entry) };
 }
 
@@ -118,6 +120,69 @@ export function mount(container: string, options: LaunchOptions = {}): Mounted {
 export async function start({ root, entry }: Mounted): Promise<void> {
     if (isModule(root, entry)) await import(pathToFileURL(entry).href);
     else createRequire(PATH.join(root, 'package.json'))(entry);
+}
+
+// -------------------------------------------------------------- workers ---
+//
+// A worker thread of a SEA starts with nothing mounted: neither the file
+// system node gives the SEA's main thread, nor the application the launcher
+// mounted there. So a worker's own script — a path into that application —
+// would not resolve, and nothing it loaded would be verified.
+//
+// The executable runs a preload in every thread for this (see
+// `workerPreloadSource()` in sea.ts). In a worker it mounts this package out
+// of the executable and calls `worker()`, which verifies and mounts what the
+// main thread did, before the worker's script is loaded. What the main thread
+// mounted is passed on through the one thing a worker inherits implicitly: a
+// copy of the environment.
+
+/** Where a SEA's main thread records what it mounted, for its workers. */
+export const THREAD_ENV = 'BUNDLE_SEA_THREAD';
+
+interface Remembered {
+    container: string;
+    options: LaunchOptions;
+    root: string;
+}
+
+function isSea(): boolean {
+    return Boolean((process.getBuiltinModule('node:sea') as { isSea?: () => boolean } | undefined)?.isSea?.());
+}
+
+function remember(container: string, options: LaunchOptions, root: string): void {
+    const { onRefuse: _, ...plain } = options;
+    process.env[THREAD_ENV] = JSON.stringify({ container, options: plain, root } satisfies Remembered);
+}
+
+/**
+ * Set up a worker thread of a SEA as its main thread is: the same container,
+ * verified again under the same policy, mounted at the same path — so the
+ * worker's script, a path into it, resolves — with plugins verified as they
+ * are there.
+ *
+ * What the main thread mounted comes from the environment, which the
+ * application itself can change, so it is not taken on trust. A container
+ * with an application appended runs only that application, whatever the
+ * record says; and a sealed runtime's own policy holds over the recorded one,
+ * as it does over a command line.
+ */
+export function worker(baked: Baked = {}): Mounted {
+    const text = process.env[THREAD_ENV];
+    if (!text) {
+        throw new Error(`bundle: this worker cannot tell what its main thread mounted — ${THREAD_ENV} is not in its environment. ` +
+            'A Worker given an env of its own must carry it over.');
+    }
+    const recorded = JSON.parse(text) as Remembered;
+    const container = appended(process.execPath) === 'none' ? recorded.container : process.execPath;
+    const options: LaunchOptions = baked.sealed
+        ? { ...recorded.options, ...baked, block: [...new Set([...(baked.block ?? []), ...(recorded.options.block ?? [])])] }
+        : recorded.options;
+    const mounted = mount(container, options);
+    if (mounted.root !== recorded.root) {
+        throw new Error(`bundle: this worker has the application at ${mounted.root}, not at ${recorded.root} where its main thread has it — ` +
+            'something mounted a file system first');
+    }
+    return mounted;
 }
 
 /** Verify a container, mount it, and run the application inside. */
