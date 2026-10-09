@@ -216,10 +216,14 @@ import { use, list } from '@pipobscure/bundle/plugins';
 
 use('bled');                                          // this app's plugins
 const gpio = await import('@alice/bled-gpio');        // ordinary import from here on
-for (const name of list('bled')) await import(name);  // or everything installed
+for (const [, pkg] of list('bled')) await import(pkg.name);  // or everything installed
 
 use('bled', { verify: { attesters: ['audited@did:web:bled.dev'] } });   // and check them as they load
 ```
+
+`list()` gives `[name, package]` for each plugin: the name it was installed as, and what its
+`package.json` says about it (name, version, description, license and the like, never its
+scripts, entry points or dependencies). That is enough to tell your users what is installed.
 
 A plugin can never replace something your app already has, and it gets your app's own
 modules when it imports them. Each worker thread calls `use()` itself. The full API is in

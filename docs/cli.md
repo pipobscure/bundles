@@ -67,8 +67,8 @@ bundle --help          bundle -v, --version
   hands. With a kind, only attestations of that kind count.
 - **Installs are named** by the name they were installed under (`tool`), by the URL they came
   from, by the domain whose `nzip:` record named them, or by the listing they were installed
-  from, as `@<did>/<name>`. A plugin is named `<app's package>:<plugin's package>`
-  (`bled:@alice/bled-gpio`).
+  from, as `@<did>/<name>`. A plugin is named `<app's package>:<the name it was installed as>`
+  (`bled:gpio`).
 - **Errors go to stderr**, results to stdout. `--json`, where offered, prints a machine-readable
   result on stdout and nothing else there.
 - **Nothing is done without asking that is not yours to decide.** A signer or attester nobody
@@ -645,13 +645,16 @@ the app loads by package name, with `@pipobscure/bundle/plugins` (see [Plugins](
 `--for` takes the app as it is installed (`bled`, mapped to its package name) or its package
 name. The plugin goes into that app's **scope**: a directory of the app's own
 (`~/.local/share/bundle/plugins/<scope>/`; see [Files and directories](#files-and-directories)),
-under the package name inside it. It is not made executable and is never on the PATH.
+named as any install is (a listing's name, a domain's first label, the server's file name, or
+`--name`), as `<name>.nzip`. It is not made executable and is never on the PATH. A name is one
+plugin and a plugin has one name: another package under a name already taken is refused, and
+so is a package already installed for that app under a second name.
 
 It is reviewed like any install, under the policy's global rules and its `scopes` section for
 that app, never the app's own `apps` section, because a plugin's author is not the app's.
 A listing that says it is a plugin for an app (see [`publish`](#publish)) installs only with
 `--for`. If that app was installed from its listing, it installs only into that app's scope.
-Its record is `<scope>:<package>`, which `update`, `installed`, `validate` and `uninstall`
+Its record is `<scope>:<name>`, which `update`, `installed`, `validate` and `uninstall`
 take like any other name. An update that carries another package name is refused, because it
 is a different plugin.
 

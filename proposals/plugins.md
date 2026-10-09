@@ -77,21 +77,23 @@ split:
   | macOS | `~/Library/Application Support/bundle/plugins/bled/` |
   | Windows | `%LOCALAPPDATA%\bundle\plugins\bled\` |
 
-  Inside it, each plugin is stored under its package name, laid out as in `node_modules`:
-  `@alice/bled-gpio.nzip`, `gpio-mock.nzip`. The installer reads the package name from
-  the archive after review. A second archive with the same name in the same scope is an
-  update of the first, never a second copy.
+  Inside it, each plugin is stored under the name it is installed as, chosen as for any
+  install (a listing's name, a domain's first label, the server's file name, or `--name`):
+  `gpio.nzip`, `gpio-mock.nzip`. The installer reads the package name from the archive after
+  review. A name is one plugin and a plugin has one name: another package under a taken name
+  is refused, and so is the same package under a second name. The loader goes by the
+  package name inside, whatever the file is called.
 - **A plugin is not a command.** It keeps its `.nzip` extension and is not made executable.
   Nothing is added to the PATH, and Windows file associations are not touched.
 - **Everything else is reused.** The review is the same, and so is what is remembered as
-  accepted. Records are keyed `<scope>:<package name>` (`bled:@alice/bled-gpio`).
+  accepted. Records are keyed `<scope>:<name>` (`bled:gpio`).
   `update` follows each plugin's source (URL, domain or listing). `installed`,
   `validate` and `uninstall` all work on plugins. Uninstalling a host takes its plugins
   with it, since nothing can load them any more, unless another install of the same app
   (the same package, under another name) still loads that scope. A scope no app is
   installed as, such as a suite's shared one, is only ever emptied plugin by plugin.
-- **A plugin is installed as its package name.** An update that carries another package
-  name is refused: it is a different plugin, not a new version of this one.
+- **A plugin keeps its package name.** An update that carries another package name is
+  refused: it is a different plugin, not a new version of this one.
 
 ## Loading
 
@@ -99,8 +101,11 @@ split:
 again for the same scope does nothing. A host can use several scopes: its own, and a suite's
 shared one (see [Shared libraries](#shared-libraries)).
 
-`list(scope)` returns the package names installed in a scope, so a host that loads
-everything installed can `import()` each one.
+`list(scope)` returns `[name, package]` for each plugin in a scope: the name it was
+installed as, and its `package.json` reduced to what describes it (name, version,
+description, license and the like, without scripts, entry points or dependencies). A host
+that loads everything installed imports each `package.name`. One that shows its users what
+is installed has what it needs to say so.
 
 ### Resolution order
 

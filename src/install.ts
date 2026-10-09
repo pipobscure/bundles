@@ -9,7 +9,7 @@ import { STATES, message, type VerificationState } from './manifest.ts';
 import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
 import * as ZLIB from 'node:zlib';
 import { loadPolicy, type Policy, type Signer } from './policy.ts';
-import { isScope, scopeDir, pluginFile, pluginsDir } from './scopes.ts';
+import { isScope, scopeDir, pluginsDir } from './scopes.ts';
 import {
     gather, gatherSync, judge, accept, noneAccepted, refusal,
     type Accepted, type Demands, type Review, type ReviewItem, type Gathered,
@@ -81,7 +81,7 @@ export function self(): { url: string; identity: string; issuer: string } {
 export interface InstallRecord {
     /**
      * The key in the record: the file name an app was installed as, or for a
-     * plugin `<scope>:<package name>` (`bled:@alice/bled-gpio`).
+     * plugin `<scope>:<installed name>` (`bled:gpio`).
      */
     name: string;
     /** For a plugin: the scope it was installed into — the package name of the app it is for. */
@@ -261,7 +261,7 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const { scope } = options;
     if (scope !== undefined) {
         if (!isScope(scope)) throw new Error(`'${scope}' is not a scope: plugins are installed for an app by its package name`);
-        if (options.name || options.dir) throw new Error('a plugin goes where its scope says, under its own package name: --name and --dir do not apply');
+        if (options.dir) throw new Error('a plugin goes where its scope says: --dir does not apply');
     }
     const dir = scope !== undefined ? scopeDir(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
 
@@ -272,13 +272,22 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
 
-    // A plugin is found by the package name inside it, so that is what it is
-    // installed as. The name is read before the review only to say what is
-    // being reviewed; nothing in the archive runs, and the review decides.
+    // A plugin is installed under a name, as an app is: the one it was
+    // published as, the domain's, the server's, or --name. Apps import it by
+    // the package name inside it, read here before the review only to say what
+    // is being installed; nothing in the archive runs, and the review decides.
     const pkg = packageName(bytes);
-    if (scope !== undefined && !pkg) throw new Error(`${url} is not a plugin: it carries no package.json with a name`);
-    const name = scope !== undefined ? `${scope}:${pkg}` : options.name ?? named ?? fileName(response, url);
-    const file = scope !== undefined ? pluginFile(pkg!) : undefined;
+    let name: string;
+    let file: string | undefined;
+    if (scope !== undefined) {
+        if (!pkg) throw new Error(`${url} is not a plugin: it carries no package.json with a name`);
+        const installed = pluginName(options.name ?? named ?? fileName(response, url));
+        name = `${scope}:${installed}`;
+        file = `${installed}.nzip`;
+        plugInto(scope, installed, pkg);
+    } else {
+        name = options.name ?? named ?? fileName(response, url);
+    }
     const record = await place(bytes, { name, dir, file, scope, pkg, source, url, response, options, log });
 
     log(`* installed ${pathOf(record)}`);
@@ -286,6 +295,30 @@ export async function install(target: string, options: InstallOptions = {}): Pro
         log(`! ${dir} is not on your PATH — add it, or set BUNDLE_INSTALL_DIR to somewhere that is`);
     }
     return record;
+}
+
+// The name a plugin is installed under, which is also its file in the scope
+// (with `.nzip`): one plain file name, as a listing's is.
+function pluginName(chosen: string): string {
+    const name = chosen.replace(/\.nzip$/i, '');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._~-]{0,213}$/.test(name)) {
+        throw new Error(`'${chosen}' cannot name a plugin: letters, digits, '.', '_', '~' and '-' only — pass --name`);
+    }
+    return name;
+}
+
+// One scope, one plugin per package and one package per name: `list()` hands
+// an app both, and each has to say which plugin it means.
+function plugInto(scope: string, installed: string, pkg: string): void {
+    const all = records();
+    const taken = all[`${scope}:${installed}`];
+    if (taken && taken.package !== pkg) {
+        throw new Error(`${scope} already has a plugin called '${installed}', which is ${taken.package} — install this one under another --name, or uninstall that one first`);
+    }
+    const twin = Object.values(all).find((each) => each.scope === scope && each.package === pkg && each.name !== `${scope}:${installed}`);
+    if (twin) {
+        throw new Error(`${pkg} is already installed for ${scope}, as '${twin.name.slice(scope.length + 1)}' — 'bundle update ${twin.name}' brings it up to date`);
+    }
 }
 
 // A listing that says it is a plugin for an app is installed as one, and for

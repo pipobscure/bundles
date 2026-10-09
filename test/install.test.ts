@@ -11,6 +11,7 @@ import { selectable, type Review } from '../src/review.ts';
 import { UNDECIDED, main } from '../src/cli.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 import { scopeDir } from '../src/scopes.ts';
+import { list } from '../src/plugins.ts';
 
 // Installing from a URL, and keeping it current.
 //
@@ -553,13 +554,13 @@ test('the install directory is this tool\'s own, and says so when it is not on P
 
 // ------------------------------------------------------------------ plugins ---
 
-test('install --for puts a plugin in its app\'s scope, under its package name, and keeps it current', async () => {
+test('install --for puts a plugin in its app\'s scope, under the name it is installed as, and keeps it current', async () => {
     served.bytes = await archive('plugin-one', '@alice/gpio');
     served.etag = '"plugin-one"';
     const record = await install(URL_, { ...options, scope: 'bled' });
-    assert.equal(record.name, 'bled:@alice/gpio');
+    assert.equal(record.name, 'bled:tool', 'named as any install is: here, by the file the server sends');
     assert.deepEqual({ scope: record.scope, package: record.package }, { scope: 'bled', package: '@alice/gpio' });
-    const file = PATH.join(scopeDir('bled'), '@alice', 'gpio.nzip');
+    const file = PATH.join(scopeDir('bled'), 'tool.nzip');
     assert.deepEqual(FS.readFileSync(file), served.bytes, 'where the plugin loader looks for it');
     if (!WINDOWS) assert.equal(FS.statSync(file).mode & 0o111, 0, 'data, not a command');
     assert.equal(FS.existsSync(PATH.join(BIN, 'gpio')) || FS.existsSync(PATH.join(BIN, 'gpio.nzip')), false, 'never on the PATH');
@@ -579,8 +580,35 @@ test('install --for puts a plugin in its app\'s scope, under its package name, a
     assert.match(refused!.reason ?? '', /now carries @mallory\/gpio, not @alice\/gpio/);
     assert.notDeepEqual(FS.readFileSync(file), renamed);
 
-    assert.equal(uninstall('bled:@alice/gpio').name, 'bled:@alice/gpio');
+    assert.equal(uninstall('bled:tool').name, 'bled:tool');
     assert.equal(FS.existsSync(file), false);
+});
+
+test('in a scope, a name is one plugin and a plugin has one name, and list() tells the two apart', async () => {
+    served.bytes = await archive('gpio-one', '@alice/gpio');
+    served.etag = '"gpio-one"';
+    const gpio = await install(URL_, { ...options, scope: 'bled', name: 'pins' });
+    assert.equal(gpio.name, 'bled:pins');
+    assert.ok(FS.existsSync(PATH.join(scopeDir('bled'), 'pins.nzip')));
+    await assert.rejects(install(URL_, { ...options, scope: 'bled', name: '../pins' }), /'..\/pins' cannot name a plugin/);
+
+    // Another package cannot take the name; the same package cannot take a second one.
+    served.bytes = await archive('other-one', '@bob/other');
+    served.etag = '"other-one"';
+    await assert.rejects(install(URL_, { ...options, scope: 'bled', name: 'pins' }), /bled already has a plugin called 'pins', which is @alice\/gpio/);
+    const other = await install(URL_, { ...options, scope: 'bled', name: 'other.nzip' });
+    assert.equal(other.name, 'bled:other', 'the extension is the file\'s, not the name\'s');
+    served.bytes = await archive('gpio-two', '@alice/gpio');
+    served.etag = '"gpio-two"';
+    await assert.rejects(install(URL_, { ...options, scope: 'bled', name: 'gpio' }), /@alice\/gpio is already installed for bled, as 'pins' — 'bundle update bled:pins'/);
+    assert.equal((await install(URL_, { ...options, scope: 'bled', name: 'pins' })).name, 'bled:pins', 'installing it again under its own name is fine');
+
+    assert.deepEqual(list('bled'), [
+        ['other', { name: '@bob/other' }],
+        ['pins', { name: '@alice/gpio' }],
+    ], 'what the user calls it, and what the app imports');
+    uninstall('bled:pins');
+    uninstall('bled:other');
 });
 
 test('a plugin answers to its scope\'s policy, never the app\'s, and must name its package', async () => {
@@ -589,15 +617,15 @@ test('a plugin answers to its scope\'s policy, never the app\'s, and must name i
     const policy = process.env['BUNDLE_POLICY']!;
     FS.writeFileSync(policy, JSON.stringify({
         discovery: false,
-        apps: { 'bled:checked-plugin': { require: { attesters: ['did:web:apps-section.example'] } } },
+        apps: { 'bled:tool': { require: { attesters: ['did:web:apps-section.example'] } } },
         scopes: { bled: { require: { attesters: ['did:web:scope-section.example'] } } },
     }));
     try {
         await assert.rejects(install(URL_, { ...options, scope: 'bled' }), /did:web:scope-section\.example/);
         // Without the scope's rule, the app's section does not apply to it.
-        FS.writeFileSync(policy, JSON.stringify({ discovery: false, apps: { 'bled:checked-plugin': { require: { attesters: ['did:web:apps-section.example'] } } } }));
-        assert.equal((await install(URL_, { ...options, scope: 'bled' })).name, 'bled:checked-plugin');
-        uninstall('bled:checked-plugin');
+        FS.writeFileSync(policy, JSON.stringify({ discovery: false, apps: { 'bled:tool': { require: { attesters: ['did:web:apps-section.example'] } } } }));
+        assert.equal((await install(URL_, { ...options, scope: 'bled' })).name, 'bled:tool');
+        uninstall('bled:tool');
     } finally {
         FS.writeFileSync(policy, JSON.stringify({ discovery: false }));
     }
@@ -612,7 +640,7 @@ test('a plugin answers to its scope\'s policy, never the app\'s, and must name i
     })();
     await assert.rejects(install(URL_, { ...options, scope: 'bled' }), /not a plugin: it carries no package\.json with a name/);
     await assert.rejects(install(URL_, { ...options, scope: 'Not A Scope' }), /not a scope/);
-    await assert.rejects(install(URL_, { ...options, scope: 'bled', name: 'x' }), /--name and --dir do not apply/);
+    await assert.rejects(install(URL_, { ...options, scope: 'bled', dir: tmp }), /--dir does not apply/);
 });
 
 test('bundle install --for takes an installed app by name, and uninstalling the app takes its plugins along', async () => {
@@ -628,13 +656,13 @@ test('bundle install --for takes an installed app by name, and uninstalling the 
     served.etag = '"cli-plugin"';
     const io = collector();
     assert.equal(await main(['install', ...roots, '--for', 'my-demo', URL_], io), 0, io.stderr.join('\n'));
-    assert.match(io.stdout.join('\n'), /demo-plugin installed for cli-host, in /);
-    const file = PATH.join(scopeDir('cli-host'), 'demo-plugin.nzip');
+    assert.match(io.stdout.join('\n'), /^tool \(demo-plugin\) installed for cli-host, in /m);
+    const file = PATH.join(scopeDir('cli-host'), 'tool.nzip');
     assert.ok(FS.existsSync(file));
 
     const listed = collector();
     await main(['installed'], listed);
-    assert.match(listed.stdout.join('\n'), /^cli-host:demo-plugin {2}OK\n {2}plugin: demo-plugin, for cli-host$/m);
+    assert.match(listed.stdout.join('\n'), /^cli-host:tool {2}OK\n {2}plugin: demo-plugin, for cli-host$/m);
 
     // The same app installed twice: removing one leaves the plugins the other loads.
     served.bytes = host;
@@ -648,10 +676,10 @@ test('bundle install --for takes an installed app by name, and uninstalling the 
     // The last one: nothing can load them now, so they go too, and the scope with them.
     const last = collector();
     assert.equal(await main(['uninstall', 'my-demo'], last), 0);
-    assert.match(last.stdout.join('\n'), /removed its plugin demo-plugin from /);
+    assert.match(last.stdout.join('\n'), /removed its plugin tool \(demo-plugin\) from /);
     assert.equal(FS.existsSync(file), false);
     assert.equal(FS.existsSync(scopeDir('cli-host')), false, 'the empty scope goes too');
-    assert.equal(records()['cli-host:demo-plugin'], undefined);
+    assert.equal(records()['cli-host:tool'], undefined);
     assert.equal(await main(['install', '--for', 'my-demo'], collector()), 70, 'a plugin to install is needed');
 });
 
@@ -664,7 +692,7 @@ test('a shared scope belongs to no single app, and stays until its plugins are r
     const app = await install(URL_, { ...options, name: 'suite-app' });
     const removed = uninstall(app.name);
     assert.deepEqual(removed.plugins, [], 'the suite\'s scope is not this app\'s');
-    assert.ok(FS.existsSync(PATH.join(scopeDir('@acme/suite'), '@acme', 'suite-core.nzip')));
+    assert.ok(FS.existsSync(PATH.join(scopeDir('@acme/suite'), 'tool.nzip')));
     uninstall(core.name);
     assert.equal(FS.existsSync(scopeDir('@acme/suite')), false);
 });

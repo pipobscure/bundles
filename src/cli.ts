@@ -306,12 +306,14 @@ install options:                    usage: install [options] [url | domain | @ac
 
   --for installs a plugin: a bundle an app loads by its package name, with
   '@pipobscure/bundle/plugins'. It goes into the app's scope — a directory of
-  that app's own (BUNDLE_PLUGINS overrides where those are) — under the
-  package name inside it, is not made executable, and is never on the PATH.
-  It is reviewed like any install, under the policy's global rules and its
-  'scopes' section for that app, never the app's own 'apps' section: a
-  plugin's author is not the app's. Its record is '<scope>:<package>', which
-  update, installed, validate and uninstall take like any other name.
+  that app's own (BUNDLE_PLUGINS overrides where those are) — under a name
+  chosen as for any install (or --name), keeps its .nzip, is not made
+  executable, and is never on the PATH. A scope holds one plugin per package,
+  and one package per name. It is reviewed like any install, under the
+  policy's global rules and its 'scopes' section for that app, never the
+  app's own 'apps' section: a plugin's author is not the app's. Its record is
+  '<scope>:<name>', which update, installed, validate and uninstall take like
+  any other name.
 
   with neither, this package installs itself from its own published release,
   whose publish workflow's signature is accepted without asking — so
@@ -919,7 +921,7 @@ async function install(args: string[], io: Console): Promise<number> {
             log: (line) => io.err(line),
         });
         io.out(record.scope !== undefined
-            ? `${record.package} installed for ${record.scope}, in ${record.dir}`
+            ? `${record.name.slice(record.scope.length + 1)} (${record.package}) installed for ${record.scope}, in ${record.dir}`
             : `${record.name} installed in ${record.dir}`);
         // Installing itself is setting up a machine, so it offers the rest of
         // the setup too: the shell hook, for the shell this is being run from.
@@ -1595,7 +1597,7 @@ async function uninstall(args: string[], io: Console): Promise<number> {
     io.err(`  it came from ${record.url}`);
     // Its plugins went with it — unless another install of the same app
     // still loads them.
-    for (const plugin of record.plugins) io.out(`removed its plugin ${plugin.package} from ${plugin.dir}`);
+    for (const plugin of record.plugins) io.out(`removed its plugin ${plugin.name.slice(plugin.scope!.length + 1)} (${plugin.package}) from ${plugin.dir}`);
     if (record.sharedWith.length) {
         io.err(`  its plugins stay: ${record.sharedWith.join(', ')} ${record.sharedWith.length === 1 ? 'is' : 'are'} the same app, and ${record.sharedWith.length === 1 ? 'loads' : 'load'} them too`);
     }

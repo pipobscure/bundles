@@ -69,7 +69,7 @@ const ESM = {
     'node_modules/tiny-dep/index.js': "export const tiny = 'bundled inside the plugin';",
 };
 const CJS = {
-    'package.json': JSON.stringify({ name: 'cjs-thing', main: 'main.js' }),
+    'package.json': JSON.stringify({ name: 'cjs-thing', version: '1.2.0', description: 'a thing', license: 'MIT', main: 'main.js', scripts: { postinstall: 'evil' }, dependencies: { 'host-api': '*' } }),
     'main.js': "module.exports = { hello: 'cjs', api: require('host-api') };",
     'lib/x.js': "module.exports = 'x';",
 };
@@ -84,7 +84,10 @@ test('a scope is a directory of its own, by package name, or any absolute path',
 test('use() makes a scope resolvable: import and require, subpaths, a plugin\'s own dependencies, the host\'s API', async () => {
     place('bled', '@alice/gpio', await plugin(ESM));
     place('bled', 'cjs-thing', await plugin(CJS));
-    assert.deepEqual(list('bled'), ['@alice/gpio', 'cjs-thing']);
+    assert.deepEqual(list('bled'), [
+        ['@alice/gpio', { name: '@alice/gpio' }],
+        ['cjs-thing', { name: 'cjs-thing', version: '1.2.0', description: 'a thing', license: 'MIT' }],
+    ], 'the installed name, and what describes the package: never its scripts, entry points or dependencies');
 
     use('bled');
     const main = host('bled', `
@@ -173,7 +176,7 @@ test('the loader needs no --experimental-vfs to load, and loads the verifier onl
         const seen = [];
         registerHooks({ resolve: (specifier, context, next) => { const found = next(specifier, context); seen.push(found.url); return found; } });
         const { use, list } = await import(${JSON.stringify(pathToFileURL(LOADER).href)});
-        const names = list(${JSON.stringify(dir)});
+        const names = list(${JSON.stringify(dir)}).map(([name]) => name);
         const before = seen.some((url) => url.includes('plugin-verifier'));
         let refused = false;
         if (${verify}) try { use(${JSON.stringify(dir)}, { verify: true }); } catch (err) { refused = err.code === 'ERR_BUNDLE_UNTRUSTED'; }

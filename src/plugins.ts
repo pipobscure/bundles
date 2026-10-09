@@ -64,7 +64,10 @@ export interface UseOptions {
 
 /** One plugin `use()` refused, and every reason why. */
 export interface Refused {
+    /** The name it was installed as. */
     name: string;
+    /** The package name inside it. */
+    package: string;
     file: string;
     reasons: string[];
 }
@@ -84,10 +87,41 @@ interface PackageJson {
     name?: unknown;
     main?: unknown;
     exports?: unknown;
+    [field: string]: unknown;
 }
 
-interface Plugin {
+/**
+ * What `list()` says about a plugin: its `package.json`, reduced to what
+ * describes it. `name` is what to import. What only matters for running it —
+ * scripts, entry points, dependencies — is left out.
+ */
+export interface PluginPackage {
     name: string;
+    version?: string | undefined;
+    description?: string | undefined;
+    keywords?: string[] | undefined;
+    license?: string | undefined;
+    author?: unknown;
+    contributors?: unknown;
+    maintainers?: unknown;
+    homepage?: string | undefined;
+    repository?: unknown;
+    bugs?: unknown;
+    funding?: unknown;
+    engines?: Record<string, string> | undefined;
+}
+
+/** The `package.json` fields `list()` passes on: an allowlist, so nothing new leaks out when packages grow fields. */
+export const PACKAGE_FIELDS = [
+    'name', 'version', 'description', 'keywords', 'license', 'author', 'contributors', 'maintainers',
+    'homepage', 'repository', 'bugs', 'funding', 'engines',
+] as const;
+
+interface Plugin {
+    /** The package name inside it: what apps import. */
+    name: string;
+    /** The name it was installed as: its file in the scope, without `.nzip`. */
+    installed: string;
     file: string;
     manifest: PackageJson;
     /** Where it is mounted, once it is. */
@@ -139,11 +173,16 @@ export function use(scope: string, options: UseOptions = {}): void {
                 plugin.root = verifier.mountPlugin(plugin.file, { scope, rules }).root;
             } catch (err) {
                 const reasons = (err as { reasons?: unknown }).reasons;
-                refused.push({ name: plugin.name, file: plugin.file, reasons: Array.isArray(reasons) ? reasons.map(String) : [message(err)] });
+                refused.push({
+                    name: plugin.installed, package: plugin.name, file: plugin.file,
+                    reasons: Array.isArray(reasons) ? reasons.map(String) : [message(err)],
+                });
             }
         }
         if (refused.length) {
-            const lines = refused.flatMap(({ name, file, reasons }) => [`  ${name} (${file}):`, ...reasons.map((reason) => `    ${reason}`)]);
+            const lines = refused.flatMap(({ name, package: pkg, file, reasons }) => [
+                `  ${name}${pkg === name ? '' : `, ${pkg},`} (${file}):`, ...reasons.map((reason) => `    ${reason}`),
+            ]);
             throw Object.assign(new Error(
                 `${refused.length} of ${plugins.size} plugin${plugins.size === 1 ? '' : 's'} for '${scope}' ${refused.length === 1 ? 'was' : 'were'} refused, so none are loaded:\n${lines.join('\n')}`),
             { code: 'ERR_BUNDLE_UNTRUSTED', refused });
@@ -154,17 +193,37 @@ export function use(scope: string, options: UseOptions = {}): void {
     hook();
 }
 
-/** The package names of the plugins in a scope, so a host can load everything installed. */
-export function list(scope: string): string[] {
+/**
+ * The plugins installed in a scope, by the name each was installed as, with
+ * what its `package.json` says about it — so a host can tell its user what is
+ * installed, and import each by `package.name`:
+ *
+ *   for (const [name, pkg] of list('bled')) console.log(`${name}: ${pkg.description}`);
+ *   for (const [, pkg] of list('bled')) await import(pkg.name);
+ *
+ * Sorted by installed name. Nothing is verified or run to answer it.
+ */
+export function list(scope: string): [name: string, pkg: PluginPackage][] {
     const used = scopes.find((each) => each.scope === scope);
-    return [...(used?.plugins ?? index(scopeDir(scope))).keys()].sort();
+    return [...(used?.plugins ?? index(scopeDir(scope))).values()]
+        .map((plugin): [string, PluginPackage] => [plugin.installed, describe(plugin.manifest)])
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function describe(manifest: PackageJson): PluginPackage {
+    const described: Record<string, unknown> = {};
+    for (const field of PACKAGE_FIELDS) {
+        if (manifest[field] !== undefined) described[field] = structuredClone(manifest[field]);
+    }
+    return described as unknown as PluginPackage;
 }
 
 // ------------------------------------------------------------------ indexing ---
 
 // Every archive in a scope, by the package name inside it: `*.nzip` at the top,
-// and in `@scope/` directories as node_modules lays scoped names out. Nothing
-// is verified or run here — the name is read, and that is all.
+// and — as plugins were installed before they had names of their own — in
+// `@scope/` directories, as node_modules lays scoped names out. Nothing is
+// verified or run here; the package.json is read, and that is all.
 function index(dir: string): Map<string, Plugin> {
     const plugins = new Map<string, Plugin>();
     const files: string[] = [];
@@ -188,7 +247,8 @@ function index(dir: string): Map<string, Plugin> {
         if (typeof manifest.name !== 'string' || !manifest.name) throw new Error(`${file} is not a plugin: its package.json names no package`);
         const other = plugins.get(manifest.name);
         if (other) throw new Error(`two plugins in ${dir} are both '${manifest.name}': ${other.file} and ${file} — remove one`);
-        plugins.set(manifest.name, { name: manifest.name, file, manifest });
+        const installed = PATH.relative(dir, file).replace(/\.nzip$/, '').split(PATH.sep).join('/');
+        plugins.set(manifest.name, { name: manifest.name, installed, file, manifest });
     }
     return plugins;
 }

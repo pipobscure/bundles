@@ -94,7 +94,7 @@ by X at Y").
 import { use, list } from '@pipobscure/bundle/plugins';
 
 use('bled');                                          // the scope: this app's package name
-for (const name of list('bled')) await import(name);  // everything installed
+for (const [, pkg] of list('bled')) await import(pkg.name);  // everything installed
 use('/opt/bled/plugins');                             // or any directory of plugins
 ```
 
@@ -108,8 +108,23 @@ absolute path is also accepted, for plugins laid out the same way anywhere else.
 - Calling it again for the same scope does nothing. Calling it again with other options throws.
 - An app can `use()` several scopes: its own, and a suite's shared one.
 
-**`list(scope)`** returns the package names installed in a scope, for an app that loads
-whatever is installed.
+**`list(scope)`** returns a `[name, package]` pair for each plugin in a scope, sorted by name:
+
+```js
+list('bled');
+// [ ['gpio', { name: '@alice/bled-gpio', version: '1.2.0', description: 'GPIO pins for bled', license: 'MIT' }],
+//   ['mock', { name: 'gpio-mock', version: '0.3.1' }] ]
+```
+
+- `name` is what it was installed as: the name `bundle install --for` gave it, which is what
+  `bundle update bled:gpio` and `bundle uninstall bled:gpio` take.
+- `package` is its `package.json`, reduced to what describes it: `name`, `version`,
+  `description`, `keywords`, `license`, `author`, `contributors`, `maintainers`, `homepage`,
+  `repository`, `bugs`, `funding` and `engines` (`PACKAGE_FIELDS`), as far as it has them. Its
+  scripts, entry points and dependencies are left out. `package.name` is what to import.
+
+An app uses it to load whatever is installed, or to tell its users what that is. Nothing is
+mounted or run to answer it.
 
 A plugin is mounted the first time something imports it, with node's own ZIP provider, so
 the app runs with `--experimental-vfs`, as every bundle does. The loader itself needs nothing

@@ -1366,11 +1366,11 @@ test('a plugin is listed against its app: found with --for, never among apps, an
     await assert.rejects(install(`@${extender.did}/host-extra`, { scope: 'other-app', decide: async (review) => selectable(review) }),
         /whose plugins go in 'demo', not 'other-app'/);
     const installedPlugin = await install(`@${extender.did}/host-extra`, { scope: 'demo', decide: async (review) => selectable(review) });
-    assert.equal(installedPlugin.name, 'demo:demo');
+    assert.equal(installedPlugin.name, 'demo:host-extra', 'named by its listing');
     assert.equal(installedPlugin.source, listedPlugin.uri);
 
     const { uninstall: remove } = await import('../src/install.ts');
-    remove('demo:demo');
+    remove('demo:host-extra');
     remove(host.name);
 });
 
