@@ -217,6 +217,24 @@ export function writeDocument(cache: string, doc: DidDocument): void {
     writeAtomic(PATH.join(didDir(cache, doc.id), 'did.json'), `${JSON.stringify(doc, null, 2)}\n`);
 }
 
+/**
+ * The repository head — the latest commit's CID — at which the cache last
+ * held everything `did` had attested, or null. While the repository is still
+ * there, nothing it attested has changed, and nothing needs fetching.
+ */
+export function readHead(cache: string, did: string): string | null {
+    try {
+        const { commit } = JSON.parse(FS.readFileSync(PATH.join(didDir(cache, did), 'head.json'), 'utf-8')) as { commit?: unknown };
+        return typeof commit === 'string' ? commit : null;
+    } catch {
+        return null;
+    }
+}
+
+export function writeHead(cache: string, did: string, commit: string): void {
+    writeAtomic(PATH.join(didDir(cache, did), 'head.json'), `${JSON.stringify({ commit })}\n`);
+}
+
 /** The cached proof for `did`'s record at `rkey`, or null. */
 export function readProof(cache: string, did: string, rkey: string): CachedProof | null {
     try {

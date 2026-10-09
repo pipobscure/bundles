@@ -1,6 +1,6 @@
 import * as DNS from 'node:dns';
 import {
-    COLLECTION, cacheDir, readDocument, writeDocument, readProof, writeProof, removeProof, cachedKeys,
+    COLLECTION, cacheDir, readDocument, writeDocument, readProof, writeProof, removeProof, cachedKeys, readHead, writeHead,
     parseAttester, isDid, readRecord, recordUri,
     type Attester, type AttestationRecord, type Verdict,
 } from './attestation.ts';
@@ -190,12 +190,43 @@ const WALK_FROM = 4;
  */
 export async function fetchAttestations(did: string, wanted: { hashAlg: string | null; hex: string }[], options: NetworkOptions = {}): Promise<Map<string, 'present' | 'absent'>> {
     const cache = options.cache ?? cacheDir();
+    const known = readHead(cache, did);
+    const previous = readDocument(cache, did);
     const doc = await resolveDid(did, options);
     const result = new Map<string, 'present' | 'absent'>();
     const unique = [...new Map(wanted.map((each) => [each.hex, each])).values()];
-    const proofs = await fetchProofs(doc, unique.map(({ hex }) => hex), options);
+
+    // An attester `trust` has caught up with completely, whose repository is
+    // still at that head: the cache already knows all they have attested.
+    let head: string | undefined;
+    if (known && !rotatedFrom(previous, doc)) {
+        head = await latestCommit(doc, options);
+        if (head === known) {
+            const now = (options.now ?? (() => new Date()))();
+            for (const { hex } of unique) {
+                const cached = readProof(cache, did, hex);
+                if (cached) writeProof(cache, did, hex, { checkedAt: now, car: cached.car });
+                result.set(hex, cached ? 'present' : 'absent');
+            }
+            return result;
+        }
+    }
+    const proofs = await fetchProofs(doc, unique.map(({ hex }) => hex), options, head);
     for (const { hashAlg, hex } of unique) result.set(hex, storeProof(doc, hashAlg, hex, proofs.get(hex) ?? null, cache, options));
     return result;
+}
+
+// The CID of the latest commit to `doc`'s repository, as its PDS says.
+async function latestCommit(doc: DidDocument, options: NetworkOptions): Promise<string> {
+    const latest = await xrpcJson(pdsEndpoint(doc), 'com.atproto.sync.getLatestCommit', { did: doc.id }, options) as { cid?: unknown };
+    if (typeof latest.cid !== 'string') throw new Error(`${pdsEndpoint(doc)} names no latest commit for ${doc.id}`);
+    return latest.cid;
+}
+
+// Whether `did`'s signing key is other than it was: what was cached under the
+// old one is not taken on trust.
+function rotatedFrom(previous: DidDocument | null, doc: DidDocument): boolean {
+    return !previous || JSON.stringify(previous.verificationMethod) !== JSON.stringify(doc.verificationMethod);
 }
 
 /**
@@ -211,7 +242,7 @@ export async function fetchAttestations(did: string, wanted: { hashAlg: string |
  * it, or a repository that moves on in the middle — its old nodes gone — are
  * fetched a record at a time instead.
  */
-export async function fetchProofs(doc: DidDocument, rkeys: string[], options: NetworkOptions = {}): Promise<Map<string, Buffer | null>> {
+export async function fetchProofs(doc: DidDocument, rkeys: string[], options: NetworkOptions = {}, head?: string | undefined): Promise<Map<string, Buffer | null>> {
     const did = doc.id;
     const pds = pdsEndpoint(doc);
     const proofs = new Map<string, Buffer | null>();
@@ -237,8 +268,7 @@ export async function fetchProofs(doc: DidDocument, rkeys: string[], options: Ne
     };
 
     try {
-        const latest = await xrpcJson(pds, 'com.atproto.sync.getLatestCommit', { did }, options) as { cid?: string };
-        const commit = CID.parse(String(latest.cid));
+        const commit = CID.parse(head ?? await latestCommit(doc, options));
         await fetchBlocks([commit]);
         const data = (decode(blocks.get(commit.toString())!) as Record<string, Value>)['data'];
         if (!(data instanceof CID)) throw new Error('commit carries no data root');
@@ -288,8 +318,22 @@ export async function refreshAttester(did: string, options: NetworkOptions = {})
     const cache = options.cache ?? cacheDir();
     const previous = readDocument(cache, did);
     const doc = await resolveDid(did, options);
-    const rotated = !previous || JSON.stringify(previous.verificationMethod) !== JSON.stringify(doc.verificationMethod);
+    const rotated = rotatedFrom(previous, doc);
     const key = signingKey(doc);
+    const now = (options.now ?? (() => new Date()))();
+
+    // The repository where it was when this cache last caught up with it all:
+    // nothing has been attested or withdrawn since, so what is cached is
+    // re-confirmed as it is, and nothing is listed or fetched.
+    const head = await latestCommit(doc, options);
+    if (!rotated && readHead(cache, did) === head) {
+        const present = cachedKeys(cache, did);
+        for (const rkey of present) {
+            const cached = readProof(cache, did, rkey);
+            if (cached) writeProof(cache, did, rkey, { checkedAt: now, car: cached.car });
+        }
+        return { present: present.length, fetched: 0, removed: 0 };
+    }
 
     const listed = new Map<string, string>();
     let cursor: string | undefined;
@@ -307,7 +351,6 @@ export async function refreshAttester(did: string, options: NetworkOptions = {})
 
     let fetched = 0;
     let removed = 0;
-    const now = (options.now ?? (() => new Date()))();
     for (const rkey of cachedKeys(cache, did)) {
         if (!listed.has(rkey)) {
             removeProof(cache, did, rkey);
@@ -322,10 +365,12 @@ export async function refreshAttester(did: string, options: NetworkOptions = {})
         if (cached && sameRecord(cached.car, did, key, rkey, cid)) writeProof(cache, did, rkey, { checkedAt: now, car: cached.car });
         else needed.push(rkey);
     }
-    const proofs = await fetchProofs(doc, needed, options);
+    const proofs = await fetchProofs(doc, needed, options, head);
     for (const rkey of needed) {
         if (storeProof(doc, null, rkey, proofs.get(rkey) ?? null, cache, options) === 'present') fetched++;
     }
+    // Caught up: until the repository moves on from here, there is nothing to fetch.
+    writeHead(cache, did, head);
     return { present: cachedKeys(cache, did).length, fetched, removed };
 }
 

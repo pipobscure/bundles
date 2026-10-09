@@ -817,7 +817,9 @@ Then it remembers what it saw, so each change is reported once. It is made to ru
 at login or on a timer; [`shell`](#shell) sets that up.
 
 It asks attester by attester, not install by install: what one attester said about every
-install is fetched together, as [`trust`](#trust) fetches it, and each DID document once.
+install is fetched together, as [`trust`](#trust) fetches it, and each DID document once. For
+an attester `trust` has caught up with, whose repository is still at that head, one request
+answers for every install: the cache already holds all they have attested.
 
 | Option | |
 |---|---|
@@ -877,6 +879,10 @@ material it checks against is fetched ahead of time, here:
   here, in `BUNDLE_ATTESTERS` or `BUNDLE_BLOCK`, in either policy file, accepted for an
   install, or already in the cache. For each one it lists their attestations, fetches and
   verifies new ones, drops withdrawn ones, and re-confirms the rest.
+- **An attester whose repository has not moved is not asked again.** Each refresh remembers
+  the head it caught up with: the latest commit, which changes whenever anything in the
+  repository does. While the head is the same and the DID's key unchanged, the cached proofs
+  are re-confirmed as they are, from one `getLatestCommit`, and nothing is listed or fetched.
 - **New ones come together.** Each proof is the signed commit, the tree nodes on the path to
   the record, and the record. Rather than a request per record, the tree is walked toward all
   of them at once, one level per request (`com.atproto.sync.getBlocks`), so the request count

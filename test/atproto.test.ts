@@ -685,26 +685,43 @@ test('many attestations are fetched together: the tree walked a level to a reque
     const asked = () => requests.filter((line) => line.startsWith(`GET ${eve.pds}/`) || line.startsWith('GET https://plc.test/'))
         .map((line) => line.slice(line.lastIndexOf('/') + 1));
 
-    // trust: listed, then the nine proofs from one walk — commit, root, leaves,
-    // records — and not a request each.
+    // trust: the head, the listing, then the nine proofs from one walk —
+    // commit, root, leaves, records — and not a request each.
     requests.length = 0;
     assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 9, fetched: 9, removed: 0 });
-    assert.deepEqual(asked(), [encodeURIComponent(eve.did), 'com.atproto.repo.listRecords', 'com.atproto.sync.getLatestCommit',
+    assert.deepEqual(asked(), [encodeURIComponent(eve.did), 'com.atproto.sync.getLatestCommit', 'com.atproto.repo.listRecords',
         'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks']);
     for (const archive of archives) assert.equal(verifySync(archive, { attesters: [{ did: eve.did }] }).state, 'valid');
 
-    // validate: what one attester said about several archives, together — the
-    // one never attested proven absent by the same walk — and each DID
-    // document fetched once, however often it is asked for.
+    // Nothing has changed since: the head says so, and nothing is listed or fetched.
+    requests.length = 0;
+    assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 9, fetched: 0, removed: 0 });
+    assert.deepEqual(asked(), [encodeURIComponent(eve.did), 'com.atproto.sync.getLatestCommit']);
+
+    // validate, for an attester the cache is caught up with: the same head is
+    // enough to know — what is cached is there, the hash never attested is
+    // not — and each DID document is fetched once however often it is asked for.
     const stranger = await version();
     const documents = new Map();
     requests.length = 0;
-    const found = await ATPROTO.fetchAttestations(eve.did, [...hashes.slice(0, 4), wholeFileHash(stranger)!]
+    const known = await ATPROTO.fetchAttestations(eve.did, [...hashes.slice(0, 4), wholeFileHash(stranger)!]
         .map(({ hashAlg, hash }) => ({ hashAlg, hex: hash })), { documents });
-    assert.deepEqual([...found.values()], ['present', 'present', 'present', 'present', 'absent']);
-    assert.equal(asked().filter((method) => method === 'com.atproto.sync.getRecord').length, 0);
+    assert.deepEqual([...known.values()], ['present', 'present', 'present', 'present', 'absent']);
+    assert.deepEqual(asked(), [encodeURIComponent(eve.did), 'com.atproto.sync.getLatestCommit']);
     await ATPROTO.fetchAttestations(eve.did, [{ hashAlg: hashes[5]!.hashAlg, hex: hashes[5]!.hash }], { documents });
     assert.equal(asked().filter((method) => method === encodeURIComponent(eve.did)).length, 1, 'the DID document, once');
+
+    // Once the repository moves on, they are walked for — the one never
+    // attested proven absent by the same walk.
+    const later = await version();
+    const laterHash = wholeFileHash(later)!;
+    await ATPROTO.attest(session, { hashAlg: laterHash.hashAlg, hex: laterHash.hash });
+    requests.length = 0;
+    const moved = await ATPROTO.fetchAttestations(eve.did, [...hashes.slice(0, 3), laterHash, wholeFileHash(stranger)!]
+        .map(({ hashAlg, hash }) => ({ hashAlg, hex: hash })));
+    assert.deepEqual([...moved.values()], ['present', 'present', 'present', 'present', 'absent']);
+    assert.ok(asked().includes('com.atproto.sync.getBlocks'));
+    assert.equal(asked().filter((method) => method === 'com.atproto.sync.getRecord').length, 0);
 
     // A PDS that will not hand out blocks is asked a record at a time instead.
     THROTTLE.set('/xrpc/com.atproto.sync.getBlocks', [new Response('{}', { status: 500 })]);
@@ -717,7 +734,7 @@ test('many attestations are fetched together: the tree walked a level to a reque
     // Withdrawn elsewhere — straight on the PDS, not through this cache —
     // they are gone on the next refresh.
     for (const { hash } of hashes.slice(0, 2)) eve.records.delete(`${COLLECTION}/${hash}`);
-    assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 7, fetched: 0, removed: 2 });
+    assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 8, fetched: 0, removed: 2 }, 'the later one too, fetched since');
     assert.equal(verifySync(archives[0]!, { attesters: [{ did: eve.did }] }).state, 'unsigned');
 });
 
