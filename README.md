@@ -138,6 +138,18 @@ bundle audit --check app.unsigned.nzip && bundle sign app.unsigned.nzip     # ->
   exactly those bytes. Or read it yourself and `bundle audit --approve`.
 - **Signing uses sigstore by default**: your CI's identity, or a browser sign-in. There is
   no key to keep or lose. Your own certificate authority works too (`--key`, `--chain`).
+- **The same files make the same archive**, so anyone can rebuild yours and compare. Each
+  member is dated with its file's own time, never the time of the build. For a rebuild that
+  matches anywhere, give every member one date, and build in UTC, because ZIP times are
+  written in local time:
+
+  ```sh
+  TZ=UTC bundle create --date 2024-05-01T12:00:00Z --base ./app --files app.manifest --launcher --output app.unsigned.nzip
+  ```
+
+  `--date` takes ISO 8601 only, and says so when the timezone is not UTC. From a fresh
+  checkout, `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)` works too: no member is dated
+  later than the last commit.
 
 Each way of shipping is its own archive, created in its shape, reviewed, then signed:
 

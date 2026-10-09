@@ -128,7 +128,9 @@ moment of the checkout, so set `SOURCE_DATE_EPOCH` (seconds, e.g.
 `--date` gives every member one time instead, whatever the files say: what a rebuild passes
 to make the archive it made before. [`sign`](#sign) keeps every member's time. Build with
 `TZ=UTC` too: node writes ZIP times in
-local time, so the same files built in two timezones differ in those bytes.
+local time, so the same files built in two timezones differ in those bytes. With `--date`,
+`create` warns when the timezone is not UTC. Another timezone is fine if every rebuild uses
+it, and then the warning is only a reminder.
 
 The result is **unsigned**, and that is a bundle in its own right: one that attestations can
 vouch for, or that [`sign`](#sign) signs. Every bundle is an `.nzip`. While both an unsigned

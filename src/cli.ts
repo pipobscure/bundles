@@ -69,7 +69,8 @@ create options:                     usage: create [options]
 
   each member is dated with its file's own time (never the time of the
   build), no later than SOURCE_DATE_EPOCH when that is set; --date gives
-  them all one time instead. So the same files make the same archive.
+  them all one time instead. So the same files make the same archive — in
+  the same timezone, since ZIP times are local: build with TZ=UTC.
 
 sign options:                       usage: sign [options] <archive>
   -o, --output <file>   write the signed archive here; '-' for stdout. By
@@ -579,6 +580,14 @@ async function create(args: string[], io: Console): Promise<number> {
 
     // Read before the file list, so a mistyped date fails before anything is read.
     const date = values.date !== undefined ? parseDate(values.date) : undefined;
+    // node writes a ZIP entry's time in local time, so one --date makes the
+    // same bytes only in the same timezone. Any timezone is fine for anyone
+    // who means it; UTC is the one every rebuild can agree on.
+    const here = Temporal.Now.zonedDateTimeISO();
+    if (date && !here.equals(here.withTimeZone('UTC'))) {
+        io.err(`! the timezone here is ${here.timeZoneId}, not UTC: ZIP times are written in local time, so only a build in ${here.timeZoneId} ` +
+            'with the same --date makes this same archive — build with TZ=UTC for one that is the same anywhere');
+    }
     const listing = values.files ? FS.readFileSync(values.files, 'utf-8') : await readStdin();
     const files = [...new Set(listing.split(/\r?\n/).filter(Boolean))].sort();
     if (!files.length) throw new Error('create: the file list is empty');

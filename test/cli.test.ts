@@ -64,13 +64,28 @@ test('create builds an archive from a file list and names its members', async ()
     assert.match(io.stderr.join('\n'), /unsigned archive \(4 members/);
 });
 
-test('create --date dates every member alike, and takes nothing but ISO 8601', async () => {
+test('create --date dates every member alike, says when the timezone is not UTC, and takes nothing but ISO 8601', async () => {
     const dated = (n: number) => PATH.join(tmp, `dated-${n}.nzip`);
-    const io = collector();
-    assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T12:00:00Z', '--output', dated(1)], io), 0);
-    assert.match(io.stderr.join('\n'), /every member dated 2024-05-01T12:00:00Z/);
-    assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T14:00:00+02:00', '--output', dated(2)], collector()), 0);
-    assert.deepEqual(FS.readFileSync(dated(2)), FS.readFileSync(dated(1)), 'the same moment, the same archive');
+    const zone = process.env['TZ'];
+    try {
+        process.env['TZ'] = 'UTC';
+        const io = collector();
+        assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T12:00:00Z', '--output', dated(1)], io), 0);
+        assert.match(io.stderr.join('\n'), /every member dated 2024-05-01T12:00:00Z/);
+        assert.doesNotMatch(io.stderr.join('\n'), /not UTC/, 'in UTC, nothing to warn about');
+        assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T14:00:00+02:00', '--output', dated(2)], collector()), 0);
+        assert.deepEqual(FS.readFileSync(dated(2)), FS.readFileSync(dated(1)), 'the same moment, the same archive');
+
+        // In another timezone the same --date makes other bytes, and that is said.
+        process.env['TZ'] = 'Asia/Tokyo';
+        const tokyo = collector();
+        assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T12:00:00Z', '--output', dated(4)], tokyo), 0);
+        assert.match(tokyo.stderr.join('\n'), /! the timezone here is Asia\/Tokyo, not UTC: .* build with TZ=UTC for one that is the same anywhere/);
+        assert.notDeepEqual(FS.readFileSync(dated(4)), FS.readFileSync(dated(1)));
+    } finally {
+        if (zone === undefined) delete process.env['TZ'];
+        else process.env['TZ'] = zone;
+    }
 
     const refused = collector();
     assert.equal(await main(['create', '--base', source, '--files', list, '--date', '05/01/2024', '--output', dated(3)], refused), 70);
