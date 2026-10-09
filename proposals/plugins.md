@@ -92,6 +92,13 @@ split:
   installed as, such as a suite's shared one, is only ever emptied plugin by plugin.
 - **A plugin is installed as its package name.** An update that carries another package
   name is refused: it is a different plugin, not a new version of this one.
+- **A folder is linked, for development.** `bundle install --for bled ./bled-gpio` notes
+  the folder in the scope (`@alice/bled-gpio.link`) rather than copying anything, and the
+  loader loads the plugin from it as it is. A developer can then write and debug a plugin
+  against the installed app, without the app's source, by running it with plain node. A
+  folder has nothing to verify, so anything that verifies plugins refuses it, which keeps
+  links out of every verified run. Installing the plugin replaces the link, and linking
+  replaces the installed plugin.
 
 ## Loading
 

@@ -40,6 +40,14 @@ export function pluginFile(name: string): string {
 }
 
 /**
+ * Where in its scope a plugin linked for development is noted: a text file
+ * naming the folder it is loaded from, `@alice/bled-gpio.link`.
+ */
+export function linkFile(name: string): string {
+    return PATH.join(...`${name}.link`.split('/'));
+}
+
+/**
  * Where the name a plugin was installed as is kept: beside its archive, as
  * text (`@alice/bled-gpio.nzip.name`), so the loader can say it without
  * reading the installer's records.

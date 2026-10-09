@@ -105,6 +105,9 @@ absolute path is also accepted, for plugins laid out the same way anywhere else.
 - `use()` reads the scope's directory and each archive's `package.json` name. It runs nothing
   and, unless verifying, checks nothing.
 - Two archives claiming one name, or an archive with no name, is an error.
+- A folder linked for development (`bundle install --for <app> ./folder`) is loaded from where
+  it is, as it is. Verifying refuses it, whoever asked for the verification: a folder has no
+  signature to check.
 - Calling it again for the same scope does nothing. Calling it again with other options throws.
 - An app can `use()` several scopes: its own, and a suite's shared one.
 

@@ -656,6 +656,15 @@ take like any other name. What was typed to install it is kept beside it, and is
 `list()` tells the app it goes by. An update that carries another package name is refused, because it
 is a different plugin.
 
+**`--for` with a folder links it**, for developing a plugin: `./bled-gpio`, `../x`, an absolute
+path, `~/…` or a `file:` URL (a bare word is never taken for a folder). The scope notes the
+folder (`@alice/bled-gpio.link`), and the app loads the plugin from it as it is, so a change is
+there on its next run. Nothing is reviewed or verified, and anything that verifies plugins
+refuses it, so run the app with plain node (`node --experimental-vfs --vfs-load <app>`) to use
+it. `installed` reports it as linked, and as `changed` if the folder stops being that package.
+`update` leaves it alone. Installing the plugin replaces the link, and linking replaces the
+installed plugin. `uninstall` removes the link and never the folder.
+
 **With neither, it installs this package itself**, from its own GitHub release, accepting
 the identity its [publish workflow](../.github/workflows/publish.yml) signs with. `npx
 @pipobscure/bundle install` is therefore the whole bootstrap. It then offers to set up the

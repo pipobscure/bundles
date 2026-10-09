@@ -134,6 +134,46 @@ test('a plugin cannot stand in for a builtin, or for anything the host already r
     assert.equal(seen.required, createRequire(import.meta.url)('node:fs'));
 });
 
+test('a folder linked for development is loaded from where it is, and refused by anything that verifies', async () => {
+    const folder = tree(tmp, {
+        'package.json': JSON.stringify({ name: '@dev/live', version: '0.0.1', type: 'module', exports: './index.js' }),
+        'index.js': "import { api } from 'host-api'; import { own } from 'own-dep'; export const live = 'from the folder'; export { api, own };",
+        'node_modules/own-dep/package.json': JSON.stringify({ name: 'own-dep', type: 'module', exports: './index.js' }),
+        'node_modules/own-dep/index.js': "export const own = 'its own dependency';",
+    }, 'live-folder');
+    const linkIn = (dir: string) => {
+        const file = PATH.join(dir, '@dev', 'live.link');
+        FS.mkdirSync(PATH.dirname(file), { recursive: true });
+        FS.writeFileSync(file, `${folder}\n`);
+        FS.writeFileSync(`${file}.name`, './live-folder\n');
+    };
+    const dir = PATH.join(tmp, 'linked');
+    linkIn(dir);
+    assert.deepEqual(list(dir), [['./live-folder', { name: '@dev/live', version: '0.0.1' }]]);
+
+    use(dir);
+    const main = host('linked', `
+        import { api } from 'host-api';
+        import * as live from '@dev/live';
+        export const seen = { api, live, url: import.meta.resolve('@dev/live') };
+    `);
+    const { seen } = await import(pathToFileURL(main).href) as { seen: { api: unknown; live: Record<string, unknown>; url: string } };
+    assert.equal(seen.live['live'], 'from the folder');
+    assert.equal(seen.live['own'], 'its own dependency');
+    assert.equal(seen.live['api'], seen.api, 'the host\'s API, as from any plugin');
+    assert.equal(seen.url, pathToFileURL(PATH.join(FS.realpathSync(folder), 'index.js')).href, 'the file itself: edit it, run again');
+
+    const verifying = PATH.join(tmp, 'linked-verified');
+    linkIn(verifying);
+    assert.throws(() => use(verifying, { verify: true }), (err: Error & { code?: string }) =>
+        err.code === 'ERR_BUNDLE_UNTRUSTED' && /linked for development, from .*: a folder has no signature to check — run the app with plain node/.test(err.message));
+
+    const broken = PATH.join(tmp, 'broken-scope');
+    FS.mkdirSync(broken, { recursive: true });
+    FS.writeFileSync(PATH.join(broken, 'gone.link'), `${PATH.join(tmp, 'no-such-folder')}\n`);
+    assert.throws(() => use(broken), /links .*no-such-folder, which is not a plugin .* link it again, or 'bundle uninstall' it/);
+});
+
 test('a scope that cannot be indexed fails use(), and says why', async () => {
     const twice = PATH.join(tmp, 'twice');
     const archive = await plugin({ 'package.json': JSON.stringify({ name: 'same' }), 'index.js': '' });

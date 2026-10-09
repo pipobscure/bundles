@@ -124,6 +124,8 @@ interface Plugin {
     installed: string;
     file: string;
     manifest: PackageJson;
+    /** Linked for development: the folder it is loaded from, as it is, never verified. */
+    link?: string | undefined;
     /** Where it is mounted, once it is. */
     root?: string | undefined;
     /** The host module that first imported it: where its unresolved imports are resolved. */
@@ -169,6 +171,13 @@ export function use(scope: string, options: UseOptions = {}): void {
         const rules = typeof verify === 'object' ? verify : undefined;
         const refused: Refused[] = [];
         for (const plugin of plugins.values()) {
+            if (plugin.link !== undefined) {
+                refused.push({
+                    name: plugin.installed, package: plugin.name, file: plugin.file,
+                    reasons: [`linked for development, from ${plugin.link}: a folder has no signature to check — run the app with plain node to load it`],
+                });
+                continue;
+            }
             try {
                 plugin.root = verifier.mountPlugin(plugin.file, { scope, rules }).root;
             } catch (err) {
@@ -223,8 +232,9 @@ function describe(manifest: PackageJson): PluginPackage {
 
 // ------------------------------------------------------------------ indexing ---
 
-// Every archive in a scope, by the package name inside it: `*.nzip` at the top,
-// and in `@scope/` directories, as node_modules lays scoped names out. Each is
+// Every plugin in a scope, by its package name: archives (`*.nzip`) and
+// folders linked for development (`*.link`, naming the folder), at the top and
+// in `@scope/` directories, as node_modules lays scoped names out. Each is
 // called what `bundle install` noted beside it, or — copied in by hand — its
 // package name. Nothing is verified or run here; the package.json is read,
 // and that is all.
@@ -239,22 +249,39 @@ function index(dir: string): Map<string, Plugin> {
         throw err;
     }
     for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.nzip')) files.push(PATH.join(dir, entry.name));
+        if (entry.isFile() && PLUGIN.test(entry.name)) files.push(PATH.join(dir, entry.name));
         if (entry.isDirectory() && entry.name.startsWith('@')) {
             for (const inner of FS.readdirSync(PATH.join(dir, entry.name), { withFileTypes: true })) {
-                if (inner.isFile() && inner.name.endsWith('.nzip')) files.push(PATH.join(dir, entry.name, inner.name));
+                if (inner.isFile() && PLUGIN.test(inner.name)) files.push(PATH.join(dir, entry.name, inner.name));
             }
         }
     }
     for (const file of files.sort()) {
-        const manifest = readManifest(file);
+        const link = file.endsWith('.link') ? linked(file) : undefined;
+        const manifest = link !== undefined ? readFolderManifest(file, link) : readManifest(file);
         if (typeof manifest.name !== 'string' || !manifest.name) throw new Error(`${file} is not a plugin: its package.json names no package`);
         const other = plugins.get(manifest.name);
         if (other) throw new Error(`two plugins in ${dir} are both '${manifest.name}': ${other.file} and ${file} — remove one`);
         const installed = labelOf(file) ?? manifest.name;
-        plugins.set(manifest.name, { name: manifest.name, installed, file, manifest });
+        plugins.set(manifest.name, { name: manifest.name, installed, file, manifest, link });
     }
     return plugins;
+}
+
+const PLUGIN = /\.(?:nzip|link)$/;
+
+function linked(file: string): string {
+    const folder = FS.readFileSync(file, 'utf-8').trim();
+    if (!PATH.isAbsolute(folder)) throw new Error(`${file} does not name a folder to load a plugin from`);
+    return folder;
+}
+
+function readFolderManifest(file: string, folder: string): PackageJson {
+    try {
+        return JSON.parse(FS.readFileSync(PATH.join(folder, 'package.json'), 'utf-8')) as PackageJson;
+    } catch (err) {
+        throw new Error(`${file} links ${folder}, which is not a plugin (${message(err)}) — link it again, or 'bundle uninstall' it`);
+    }
 }
 
 function labelOf(file: string): string | undefined {
@@ -365,7 +392,7 @@ function resolve(specifier: string, context: ResolveContext, nextResolve: NextRe
         const plugin = find(name);
         if (!plugin) throw err;
         plugin.host ??= owner ? owner.host : context.parentURL;
-        plugin.root ??= mountPlain(plugin);
+        plugin.root ??= plugin.link !== undefined ? FS.realpathSync(plugin.link) : mountPlain(plugin);
         const target = exported(plugin, `.${specifier.slice(name.length)}`, context.conditions);
         return { url: pathToFileURL(target).href, shortCircuit: true };
     }

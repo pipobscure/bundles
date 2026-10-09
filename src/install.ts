@@ -5,11 +5,12 @@ import * as CRYPTO from 'node:crypto';
 import * as DNS from 'node:dns';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { STATES, message, type VerificationState } from './manifest.ts';
 import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
 import * as ZLIB from 'node:zlib';
 import { loadPolicy, type Policy, type Signer } from './policy.ts';
-import { isScope, scopeDir, pluginFile, pluginsDir, labelFile } from './scopes.ts';
+import { isScope, scopeDir, pluginFile, linkFile, pluginsDir, labelFile } from './scopes.ts';
 import {
     gather, gatherSync, judge, accept, noneAccepted, refusal,
     type Accepted, type Demands, type Review, type ReviewItem, type Gathered,
@@ -96,6 +97,12 @@ export interface InstallRecord {
     label?: string | undefined;
     /** Where in `dir` the file is, when that is not `name` — a plugin's `@alice/bled-gpio.nzip`. */
     file?: string | undefined;
+    /**
+     * For a plugin linked for development: the folder it is loaded from, as
+     * it is. Nothing is fetched, reviewed or verified, and anything that
+     * verifies plugins refuses it.
+     */
+    link?: string | undefined;
     /**
      * How it was installed, which is what an update asks again: a URL; a
      * domain, whose `nzip:` TXT record names the URL; or the `at://` address of
@@ -270,6 +277,10 @@ export async function install(target: string, options: InstallOptions = {}): Pro
         if (options.name || options.dir) throw new Error('a plugin goes where its scope says, under its own package name: --name and --dir do not apply');
     }
     const dir = scope !== undefined ? scopeDir(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
+    if (isFolder(target)) {
+        if (scope === undefined) throw new Error(`${target} is a folder: a folder is only ever linked as a plugin, for development — with --for <app>`);
+        return link(target, scope, log);
+    }
 
     const { source, url, name: named, app } = await locate(target, options, log);
     if (app !== undefined) forApp(target, app, scope);
@@ -286,13 +297,58 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const name = scope !== undefined ? `${scope}:${pkg}` : options.name ?? named ?? fileName(response, url);
     const file = scope !== undefined ? pluginFile(pkg!) : undefined;
     const label = scope !== undefined ? target : undefined;
+    const before = records()[name];
     const record = await place(bytes, { name, dir, file, scope, pkg, label, source, url, response, options, log });
+    // Installed over the same plugin linked for development: the link goes.
+    if (before && pathOf(before) !== pathOf(record)) remove(before);
 
     log(`* installed ${pathOf(record)}`);
     if (scope === undefined && !onPath(dir)) {
         log(`! ${dir} is not on your PATH — add it, or set BUNDLE_INSTALL_DIR to somewhere that is`);
     }
     return record;
+}
+
+// A local folder: `./`, `../`, an absolute path, `~`, or a `file:` URL. Only
+// these: a bare word is a domain or a mistake, never quietly a folder.
+function isFolder(target: string): boolean {
+    return /^(?:\.{1,2}(?:[\\/]|$)|[\\/~]|[A-Za-z]:[\\/]|file:)/i.test(target);
+}
+
+// A plugin under development, linked rather than installed: the scope notes
+// the folder, and the loader loads from it as it is, so a change is there on
+// the next run. Nothing is reviewed — it is the developer's own — and nothing
+// that verifies plugins will load it: run the app with plain node to use it.
+function link(target: string, scope: string, log: (line: string) => void): InstallRecord {
+    const folder = PATH.resolve(target.startsWith('file:') ? fileURLToPath(target) : target.replace(/^~(?=$|[\\/])/, OS.homedir()));
+    let pkg: string | undefined;
+    try {
+        const name = (JSON.parse(FS.readFileSync(PATH.join(folder, 'package.json'), 'utf-8')) as { name?: unknown }).name;
+        pkg = typeof name === 'string' && isScope(name) ? name : undefined;
+    } catch (err) {
+        throw new Error(`${folder} is not a plugin: ${(err as { code?: string }).code === 'ENOENT' ? 'it has no package.json' : message(err)}`);
+    }
+    if (!pkg) throw new Error(`${folder} is not a plugin: its package.json gives no package name`);
+
+    const name = `${scope}:${pkg}`;
+    const before = records()[name];
+    const dir = scopeDir(scope);
+    const file = linkFile(pkg);
+    const noted = PATH.join(dir, file);
+    FS.mkdirSync(PATH.dirname(noted), { recursive: true });
+    const temporary = `${noted}.incoming-${process.pid}`;
+    FS.writeFileSync(temporary, `${folder}\n`);
+    FS.renameSync(temporary, noted);
+    FS.writeFileSync(temporary, `${target}\n`);
+    FS.renameSync(temporary, labelFile(noted));
+    const record: InstallRecord = {
+        name, scope, package: pkg, label: target, file, link: folder,
+        source: folder, url: pathToFileURL(folder).href, sha256: '', at: new Date().toISOString(), dir,
+    };
+    // Linked over the same plugin installed: the archive goes until it is installed again.
+    if (before && pathOf(before) !== noted) remove(before);
+    log(`* linked ${noted} to ${folder}: loaded as it is, never verified`);
+    return remember(record);
 }
 
 /**
@@ -383,6 +439,10 @@ export async function update(name: string | undefined, options: InstallOptions =
 // fetch, and — if something new came back — give it the same review an install
 // gets, against what this install has accepted.
 async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult> {
+    if (previous.link !== undefined) {
+        log(`* ${previous.name}: linked to ${previous.link}, which is always as it is`);
+        return { record: previous, state: 'unchanged' };
+    }
     const source = sourceOf(previous);
     let url = previous.url;
     if (source !== previous.url) {
@@ -526,7 +586,7 @@ async function locate(target: string, options: InstallOptions, log: (line: strin
         return { source: found.uri, url, name: commandName(found.name), app: LISTING.appOf(found.record) };
     }
     if (hasScheme(target)) return { source: target, url: target };
-    if (!isDomain(target)) throw new Error(`'${target}' is neither a URL, a domain name, nor a listing (@<handle>/<name>)`);
+    if (!isDomain(target)) throw new Error(`'${target}' is neither a URL, a domain name, a listing (@<handle>/<name>), nor a folder (./<path>)`);
     const resolved = await resolveAlias(target, options.resolveTxt);
     log(`* ${resolved.domain} names ${resolved.name} at ${resolved.url}`);
     return { source: resolved.domain, url: resolved.url, name: resolved.name };
@@ -676,6 +736,20 @@ export async function validate(which: string[] = [], { roots = [], network = {},
     return results;
 }
 
+// A linked folder has nothing to verify: it is there, and is still the
+// package it was linked as, or it is not.
+function checkLink(record: InstallRecord, path: string): InstalledCheck {
+    let named: unknown;
+    try {
+        named = (JSON.parse(FS.readFileSync(PATH.join(record.link!, 'package.json'), 'utf-8')) as { name?: unknown }).name;
+    } catch (err) {
+        return { record, path, state: 'missing', reason: `the folder it links is not a plugin any more (${message(err)})` };
+    }
+    if (!FS.existsSync(path)) return { record, path, state: 'missing', reason: 'the link is not there any more' };
+    if (named !== record.package) return { record, path, state: 'changed', reason: `${record.link} is now ${String(named)}, not ${record.package}` };
+    return { record, path, state: 'ok', reason: `linked to ${record.link}, for development: loaded as it is, never verified` };
+}
+
 /** The attestations a review saw, as an install remembers them. */
 function seenIn(review: Review): Seen[] {
     return review.items.flatMap(({ evidence }) => evidence.type === 'attestation'
@@ -685,6 +759,7 @@ function seenIn(review: Review): Seen[] {
 
 function check(record: InstallRecord, roots: string[]): InstalledCheck {
     const path = pathOf(record);
+    if (record.link !== undefined) return checkLink(record, path);
 
     let bytes: Buffer;
     try {

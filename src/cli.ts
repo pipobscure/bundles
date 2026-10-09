@@ -253,7 +253,7 @@ listings options:                   usage: listings [options]
 
   every listing in the index, synced first as for 'search'.
 
-install options:                    usage: install [options] [url | domain | @account/name]
+install options:                    usage: install [options] [url | domain | @account/name | ./folder]
   -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -314,6 +314,14 @@ install options:                    usage: install [options] [url | domain | @ac
   update, installed, validate and uninstall take like any other name. It is
   also known by what was given to install it, as typed: that is what the app
   is told it is called.
+
+  --for with a folder (./my-plugin, an absolute path, a file: URL) links it,
+  for developing a plugin: the scope notes the folder, and the app loads the
+  plugin from it as it is, so a change is there on its next run. Nothing is
+  reviewed or verified, and anything that verifies plugins refuses it — run
+  the app with plain node (node --experimental-vfs --vfs-load ./app.nzip) to
+  use it. Installing the plugin again replaces the link, and the other way
+  round; uninstall removes the link and never the folder.
 
   with neither, this package installs itself from its own published release,
   whose publish workflow's signature is accepted without asking — so
@@ -889,7 +897,7 @@ async function install(args: string[], io: Console): Promise<number> {
     });
     const INSTALL = await import('./install.ts');
     const demands = await policy(values);
-    if (values.for !== undefined && !positionals[0]) throw new Error('install: --for needs a plugin to install: a url, a domain or @account/name');
+    if (values.for !== undefined && !positionals[0]) throw new Error('install: --for needs a plugin to install: a url, a domain, @account/name, or a folder to link');
     const scope = values.for !== undefined ? await scopeFor(values.for, INSTALL) : undefined;
 
     // With no URL, this package installs itself: the published release, signed
@@ -920,7 +928,9 @@ async function install(args: string[], io: Console): Promise<number> {
             decide: decider(Boolean(values.yes), io),
             log: (line) => io.err(line),
         });
-        io.out(record.scope !== undefined
+        io.out(record.link !== undefined
+            ? `${record.label} (${record.package}) linked for ${record.scope}: loaded from ${record.link} as it is, and refused by anything that verifies plugins`
+            : record.scope !== undefined
             ? `${record.label} (${record.package}) installed for ${record.scope}, in ${record.dir}`
             : `${record.name} installed in ${record.dir}`);
         // Installing itself is setting up a machine, so it offers the rest of
@@ -1128,12 +1138,13 @@ async function installed(args: string[], io: Console): Promise<number> {
             if (record.scope !== undefined) io.out(`  plugin: ${INSTALL.labelOf(record)} (${record.package}), for ${record.scope}`);
             io.out(`  at:     ${path}`);
             const source = INSTALL.sourceOf(record);
-            if (source !== record.url) io.out(`  source: ${source}`);
-            io.out(`  from:   ${record.url}`);
+            if (record.link !== undefined) io.out(`  linked: ${record.link}`);
+            else if (source !== record.url) io.out(`  source: ${source}`);
+            if (record.link === undefined) io.out(`  from:   ${record.url}`);
             if (record.identity) io.out(`  signer: ${record.identity}${record.issuer ? ` via ${record.issuer}` : ''}`);
             else if (record.subject) io.out(`  signer: ${record.subject.replace(/\n/g, ', ')}`);
             if (record.attestedBy?.length) io.out(`  attested by: ${record.attestedBy.join(', ')}`);
-            io.out(`  sha256: ${record.sha256}`);
+            if (record.link === undefined) io.out(`  sha256: ${record.sha256}`);
             io.out(`  since:  ${record.at}`);
             if (state !== 'ok') io.out(`  ${reason}`);
             for (const warning of review ? INSTALL.warningsOf(review) : []) io.out(`  ${warning}`);

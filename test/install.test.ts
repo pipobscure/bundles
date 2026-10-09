@@ -427,7 +427,7 @@ test('install takes a domain, and uninstall finds it again by that domain', asyn
         served.disposition = undefined;
     }
 
-    await assert.rejects(() => install('not a domain', options), /neither a URL, a domain name, nor a listing/);
+    await assert.rejects(() => install('not a domain', options), /neither a URL, a domain name, a listing .*, nor a folder/);
 });
 
 test('install with no url means this package, from its own release', async () => {
@@ -607,6 +607,43 @@ test('two plugins may share a name: it identifies, the package name is what is u
     assert.deepEqual(list('twins'), [[URL_, { name: '@alice/one' }], [URL_, { name: '@bob/two' }]]);
     uninstall('twins:@alice/one');
     uninstall('twins:@bob/two');
+});
+
+test('install --for a folder links it for development: loaded as it is, and swapped with the installed plugin both ways', async () => {
+    const folder = tree(PATH.join(tmp, 'dev-gpio'), { 'package.json': JSON.stringify({ name: '@alice/gpio', version: '9.9.9-dev' }), 'index.js': '' }, 'plugin');
+    const linkAt = PATH.join(scopeDir('devscope'), '@alice', 'gpio.link');
+    const archiveAt = PATH.join(scopeDir('devscope'), '@alice', 'gpio.nzip');
+
+    await assert.rejects(install(folder, options), /is a folder: a folder is only ever linked as a plugin, for development — with --for <app>/);
+    await assert.rejects(install(tmp, { ...options, scope: 'devscope' }), /is not a plugin: it has no package\.json/);
+
+    const linked = await install(folder, { ...options, scope: 'devscope' });
+    assert.deepEqual({ name: linked.name, link: linked.link, label: linked.label }, { name: 'devscope:@alice/gpio', link: folder, label: folder });
+    assert.equal(FS.readFileSync(linkAt, 'utf-8'), `${folder}\n`);
+    assert.deepEqual(list('devscope'), [[folder, { name: '@alice/gpio', version: '9.9.9-dev' }]]);
+    assert.equal(installedChecks().find((each) => each.record.name === linked.name)?.state, 'ok');
+    const [updated] = await update(linked.name, options);
+    assert.equal(updated!.state, 'unchanged', 'a folder is always as it is');
+
+    // Installing the plugin replaces the link; linking it again replaces the archive.
+    served.bytes = await archive('dev-gpio-release', '@alice/gpio');
+    served.etag = '"dev-gpio-release"';
+    const released = await install(URL_, { ...options, scope: 'devscope' });
+    assert.equal(released.link, undefined);
+    assert.ok(FS.existsSync(archiveAt));
+    assert.equal(FS.existsSync(linkAt), false);
+    assert.equal(FS.existsSync(labelFile(linkAt)), false);
+    await install(folder, { ...options, scope: 'devscope' });
+    assert.equal(FS.existsSync(archiveAt), false);
+    assert.ok(FS.existsSync(linkAt));
+
+    // A folder that is no longer that package is reported, not trusted.
+    FS.writeFileSync(PATH.join(folder, 'package.json'), JSON.stringify({ name: '@alice/other' }));
+    assert.equal(installedChecks().find((each) => each.record.name === linked.name)?.state, 'changed');
+
+    uninstall(linked.name);
+    assert.equal(FS.existsSync(linkAt), false);
+    assert.ok(FS.existsSync(PATH.join(folder, 'index.js')), 'the folder is the developer\'s, and stays');
 });
 
 test('a plugin answers to its scope\'s policy, never the app\'s, and must name its package', async () => {

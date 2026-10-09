@@ -235,6 +235,21 @@ Build and sign it like an app, but as a plain archive, without `--launcher`, and
 for the app it extends:
 `bundle publish --for @pipobscure.com/bled bled-gpio <url>`.
 
+**Developing a plugin**, even for an app whose source you do not have: link its folder into
+the app's scope, and run the installed app with plain node.
+
+```sh
+bundle install --for bled ./bled-gpio                 # a link to the folder, not a copy
+node --experimental-vfs --vfs-load ~/.local/bin/bled  # edit, debug, run again
+```
+
+The app loads the plugin straight from the folder, so every change is there on the next run,
+and a debugger sees the real files. Nothing about a folder is reviewed or verified, so anything
+that verifies plugins (`use(…, { verify })`, `bundle run`, a SEA) refuses it. That is on
+purpose: a link is for development only. `bundle install --for bled <url>` replaces the link
+with the released plugin, and `bundle uninstall bled:@alice/bled-gpio` removes the link,
+never the folder.
+
 ## Commands at a glance
 
 | Building and signing | |
