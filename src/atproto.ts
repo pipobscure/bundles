@@ -4,6 +4,7 @@ import {
     parseAttester, isDid, readRecord, recordUri,
     type Attester, type AttestationRecord, type Verdict,
 } from './attestation.ts';
+import { patientFetch, type Patience } from './ratelimit.ts';
 import { verifyRecordProof, signingKey, pdsEndpoint, claimedHandle, CID, readCar, type DidDocument, type Value } from './repo.ts';
 
 // The online half of attestations: resolving who someone is, fetching the
@@ -24,7 +25,8 @@ import { verifyRecordProof, signingKey, pdsEndpoint, claimedHandle, CID, readCar
 export const DEFAULT_PLC_DIRECTORY = 'https://plc.directory';
 
 /** What every network call here accepts: where the cache is, and how to fetch. */
-export interface NetworkOptions {
+/** How the network is reached; a server that says to slow down is waited for, as `Patience` says. */
+export interface NetworkOptions extends Patience {
     cache?: string | undefined;
     fetch?: typeof globalThis.fetch | undefined;
     /** How TXT records are looked up, for handle resolution (default: `node:dns`). */
@@ -49,7 +51,7 @@ export async function resolveDid(did: string, options: NetworkOptions = {}): Pro
  * holds — so a lookup made for any other reason stays out of it.
  */
 export async function fetchDidDocument(did: string, options: NetworkOptions = {}): Promise<DidDocument> {
-    const fetch = options.fetch ?? globalThis.fetch;
+    const fetch = net(options);
     let url: string;
     if (did.startsWith('did:plc:')) {
         const plc = options.plc ?? process.env['BUNDLE_PLC_DIRECTORY'] ?? DEFAULT_PLC_DIRECTORY;
@@ -95,7 +97,7 @@ export async function resolveHandle(handle: string, options: NetworkOptions = {}
         // No TXT record: try the well-known file.
     }
     if (!did) {
-        const fetch = options.fetch ?? globalThis.fetch;
+        const fetch = net(options);
         try {
             const response = await fetch(`https://${name}/.well-known/atproto-did`, { redirect: 'error' });
             if (response.ok) did = (await response.text()).trim();
@@ -277,7 +279,7 @@ export interface Backlink {
  * generator, so a caller that has seen enough can stop asking.
  */
 export async function* backlinks(subject: string, source: string, { index, ...options }: NetworkOptions & { index: string }): AsyncGenerator<Backlink> {
-    const fetch = options.fetch ?? globalThis.fetch;
+    const fetch = net(options);
     let cursor: string | null | undefined;
     do {
         const params = new URLSearchParams({ subject, source, limit: '100' });
@@ -329,7 +331,7 @@ export async function login(identifier: string, password: string, options: Netwo
     };
     if (session.did !== did || !session.accessJwt) throw new Error(`${pds} logged in as ${String(session.did)}, not ${did}`);
     const token = session.accessJwt;
-    const fetch = options.fetch ?? globalThis.fetch;
+    const fetch = net(options);
     return {
         did, pds, how: 'an app password',
         request: (url, init) => fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` } }),
@@ -396,6 +398,11 @@ export async function revoke(session: Session, hex: string, options: NetworkOpti
 
 // ------------------------------------------------------------------- XRPC ---
 
+/** The fetch every request here is made with: the one given, or the global one, waiting when told to. */
+export function net(options: NetworkOptions): typeof globalThis.fetch {
+    return patientFetch(options.fetch ?? globalThis.fetch, options);
+}
+
 function xrpcUrl(pds: string, method: string, params: Record<string, string>): string {
     return `${pds}/xrpc/${method}?${new URLSearchParams(params).toString()}`;
 }
@@ -404,7 +411,7 @@ function xrpcUrl(pds: string, method: string, params: Record<string, string>): s
 // missing record with `RecordNotFound` rather than a proof of absence, so that
 // is treated as absence too.
 async function xrpcBytes(pds: string, method: string, params: Record<string, string>, options: NetworkOptions): Promise<Buffer | null> {
-    const response = await (options.fetch ?? globalThis.fetch)(xrpcUrl(pds, method, params), { redirect: 'follow' });
+    const response = await net(options)(xrpcUrl(pds, method, params), { redirect: 'follow' });
     if (!response.ok) {
         const error = await errorOf(response);
         if (error.name === 'RecordNotFound') return null;
@@ -415,7 +422,7 @@ async function xrpcBytes(pds: string, method: string, params: Record<string, str
 
 /** A query answered in JSON, from `pds` (or any XRPC host). */
 export async function xrpcJson(pds: string, method: string, params: Record<string, string>, options: NetworkOptions): Promise<unknown> {
-    const response = await (options.fetch ?? globalThis.fetch)(xrpcUrl(pds, method, params), { redirect: 'follow' });
+    const response = await net(options)(xrpcUrl(pds, method, params), { redirect: 'follow' });
     if (!response.ok) throw new Error(`${method} at ${pds}: ${(await errorOf(response)).text}`);
     return await response.json();
 }
@@ -423,7 +430,7 @@ export async function xrpcJson(pds: string, method: string, params: Record<strin
 async function xrpcPost(pds: string, method: string, body: unknown, session: Session | undefined, options: NetworkOptions): Promise<unknown> {
     const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
     const url = `${pds}/xrpc/${method}`;
-    const response = session ? await session.request(url, init) : await (options.fetch ?? globalThis.fetch)(url, init);
+    const response = session ? await session.request(url, init) : await net(options)(url, init);
     if (!response.ok) throw new Error(`${method} at ${pds}: ${(await errorOf(response)).text}`);
     const text = await response.text();
     return text ? JSON.parse(text) as unknown : {};

@@ -4,6 +4,7 @@ import * as OS from 'node:os';
 import * as FS from 'node:fs';
 import { createRequire } from 'node:module';
 import { identityToken, FULCIO_AUDIENCE } from './oidc.ts';
+import { patientFetch } from './ratelimit.ts';
 import type { Signer } from './archive.ts';
 
 import type * as SigstoreBundle from '@sigstore/bundle';
@@ -200,7 +201,7 @@ async function certify(token: string, keypair: KeyPair, fulcioURL: string): Prom
     const publicKey = keypair.publicKey.export({ format: 'pem', type: 'spki' }).toString();
     const proof = CRYPTO.sign('sha256', Buffer.from(String(subject)), keypair.privateKey);
 
-    const res = await fetch(`${fulcioURL.replace(/\/+$/, '')}/api/v2/signingCert`, {
+    const res = await patientFetch()(`${fulcioURL.replace(/\/+$/, '')}/api/v2/signingCert`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -270,8 +271,13 @@ async function witness({ artifact, signature, certificate, rekorURL, tsaURL, log
     });
 
     const witnesses: [string, SigstoreSign.Witness][] = [];
-    if (rekorURL) witnesses.push(['transparency log', new RekorWitness({ rekorBaseURL: rekorURL })]);
-    if (tsaURL) witnesses.push(['timestamp authority', new TSAWitness({ tsaBaseURL: tsaURL })]);
+    // Both are asked again when they answer 429, 408 or 5xx, backing off as
+    // @sigstore/sign does: its client reads no Retry-After, so this is the
+    // patience there is. A repeated upload to Rekor is answered with the entry
+    // already there.
+    const retry = { retries: 5, factor: 2, minTimeout: 2000, maxTimeout: 60_000 };
+    if (rekorURL) witnesses.push(['transparency log', new RekorWitness({ rekorBaseURL: rekorURL, retry })]);
+    if (tsaURL) witnesses.push(['timestamp authority', new TSAWitness({ tsaBaseURL: tsaURL, retry })]);
 
     const tlogEntries: SigstoreBundle.TransparencyLogEntry[] = [];
     const rfc3161Timestamps: NonNullable<SigstoreSign.VerificationMaterial['rfc3161Timestamps']> = [];

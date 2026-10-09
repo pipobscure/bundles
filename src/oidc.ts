@@ -2,6 +2,11 @@ import * as CRYPTO from 'node:crypto';
 import * as HTTP from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { patientFetch } from './ratelimit.ts';
+
+// Every request here waits when a server says to slow down (see ratelimit.ts):
+// the global fetch, looked up at each call.
+const fetch: typeof globalThis.fetch = (input, init) => patientFetch(globalThis.fetch)(input, init);
 
 // Getting an OIDC identity token to present to Fulcio — the "who are you"
 // half of sigstore signing. Fulcio does not care how the token was obtained,

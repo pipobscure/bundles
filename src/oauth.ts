@@ -1,7 +1,8 @@
 import * as CRYPTO from 'node:crypto';
 import type * as HTTP from 'node:http';
 import { COLLECTION } from './attestation.ts';
-import { resolveDid, resolveHandle, type NetworkOptions, type Session } from './atproto.ts';
+import { net, resolveDid, resolveHandle, type NetworkOptions, type Session } from './atproto.ts';
+import { patiently } from './ratelimit.ts';
 import { pdsEndpoint } from './repo.ts';
 import { listen, respond, openBrowser, canOpenBrowser } from './oidc.ts';
 
@@ -217,7 +218,7 @@ export function clientIdFor(scope: string): string {
 }
 
 async function authorizationServer(pds: string, options: OAuthOptions): Promise<ServerMetadata> {
-    const fetch = options.fetch ?? globalThis.fetch;
+    const fetch = net(options);
     const resource = await json(await fetch(`${pds}/.well-known/oauth-protected-resource`, { redirect: 'error' }),
         `${pds}/.well-known/oauth-protected-resource`) as { authorization_servers?: string[] };
     const issuer = resource.authorization_servers?.[0];
@@ -340,7 +341,8 @@ async function refresh(stored: Live, options: OAuthOptions): Promise<Live> {
 
 // The latest nonce each server handed out, by origin. A server hands one out
 // on first contact and rotates it; a request it rejects for want of the current
-// one is sent once more with it.
+// one is sent once more with it. A server that says to slow down is waited for,
+// and asked again with a proof made afresh: a proof is good for one request.
 const nonces = new Map<string, string>();
 
 async function dpopFetch(url: string, init: RequestInit, dpop: CRYPTO.KeyObject, accessToken: string | undefined, options: OAuthOptions): Promise<Response> {
@@ -353,9 +355,11 @@ async function dpopFetch(url: string, init: RequestInit, dpop: CRYPTO.KeyObject,
         if (nonce) nonces.set(origin, nonce);
         return response;
     };
-    const response = await attempt();
-    if (await wantsNonce(response)) return await attempt();
-    return response;
+    return await patiently(async () => {
+        const response = await attempt();
+        if (await wantsNonce(response)) return await attempt();
+        return response;
+    }, url, { ...options, signal: init.signal ?? options.signal });
 }
 
 // An authorization server says so in a 400's JSON body; a resource server in

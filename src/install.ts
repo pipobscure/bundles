@@ -6,6 +6,7 @@ import * as DNS from 'node:dns';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { patientFetch } from './ratelimit.ts';
 import { STATES, message, type VerificationState } from './manifest.ts';
 import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
 import * as ZLIB from 'node:zlib';
@@ -285,7 +286,7 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const { source, url, name: named, app } = await locate(target, options, log);
     if (app !== undefined) forApp(target, app, scope);
     log(`* fetching ${url}`);
-    const response = await fetch(url, { redirect: 'follow' });
+    const response = await patientFetch()(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
 
@@ -464,7 +465,7 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
     if (url === previous.url && previous.etag) headers['if-none-match'] = previous.etag;
     else if (url === previous.url && previous.lastModified) headers['if-modified-since'] = previous.lastModified;
 
-    const response = await fetch(url, { headers, redirect: 'follow' });
+    const response = await patientFetch()(url, { headers, redirect: 'follow' });
     if (response.status === 304) {
         log(`  unchanged`);
         return { record: previous, state: 'unchanged' };

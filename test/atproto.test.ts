@@ -123,6 +123,12 @@ const requests: string[] = [];
 let offline = false;
 /** PDS origins that are not answering. */
 const DOWN = new Set<string>();
+/**
+ * Answers to give before any real one, by path: a server telling the client to
+ * slow down. Each request that is answered so is remembered, with its DPoP proof.
+ */
+const THROTTLE = new Map<string, Response[]>();
+const throttled: { path: string; dpop?: string | undefined }[] = [];
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -262,6 +268,11 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     const url = new URL(input instanceof Request ? input.url : String(input));
     requests.push(`${init?.method ?? 'GET'} ${url.origin}${url.pathname}`);
     if (offline) throw new TypeError('fetch failed');
+    const slowDown = THROTTLE.get(url.pathname)?.shift();
+    if (slowDown) {
+        throttled.push({ path: url.pathname, dpop: (init?.headers as Record<string, string> | undefined)?.['dpop'] });
+        return slowDown;
+    }
     if (url.origin === 'https://dl.test') {
         const bytes = DOWNLOADS.get(url.pathname);
         return bytes ? new Response(bytes) : new Response('not found', { status: 404 });
@@ -919,6 +930,44 @@ test('attest signs in with OAuth — attestation-only scope, DPoP-bound — writ
     assert.ok(stateDir().startsWith(tmp), 'the state directory is this suite\'s own');
     assert.deepEqual(FS.existsSync(stateDir()) ? FS.readdirSync(stateDir()).filter((name) => name !== 'installed.json' && name !== 'attestations') : [], [],
         'nothing but install records and the attestation cache is ever written there');
+});
+
+test('a PDS or sign-in server that says to slow down is waited for, and asked again with a fresh proof', async () => {
+    const tilly = account();
+    const archive = await version();
+    const hashed = wholeFileHash(archive)!;
+    const slowDown = (headers: Record<string, string>) => new Response(JSON.stringify({ error: 'RateLimitExceeded', message: 'Rate Limit Exceeded' }),
+        { status: 429, headers: { 'content-type': 'application/json', ...headers } });
+    const waits: string[] = [];
+    const onWait = (line: string) => waits.push(line);
+
+    // An app password: createSession and the write are both told to wait, once.
+    THROTTLE.set('/xrpc/com.atproto.server.createSession', [slowDown({ 'retry-after': '0' })]);
+    THROTTLE.set('/xrpc/com.atproto.repo.putRecord', [slowDown({ 'ratelimit-reset': String(Math.floor(Date.now() / 1000)) })]);
+    const session = await ATPROTO.login(tilly.did, tilly.password, { onWait });
+    await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash }, { onWait });
+    assert.equal(verifySync(archive, { attesters: [{ did: tilly.did }] }).state, 'valid');
+    assert.match(waits[0]!, /\(com\.atproto\.server\.createSession\) is rate limiting \(429\): waiting 0s, as it asks \(Retry-After\)/);
+    assert.match(waits[1]!, /\(com\.atproto\.repo\.putRecord\) is rate limiting \(429\): waiting \d+s, until its limit resets/);
+
+    // OAuth: every attempt carries a proof of its own, as DPoP requires.
+    throttled.length = 0;
+    THROTTLE.set('/oauth/par', [slowDown({ 'retry-after': '0' })]);
+    THROTTLE.set('/oauth/token', [slowDown({ 'retry-after': '0' })]);
+    THROTTLE.set('/xrpc/com.atproto.repo.deleteRecord', [slowDown({ 'retry-after': '0' })]);
+    const oauth = await oauthLogin(tilly.did, { open: browser, onWait });
+    await ATPROTO.revoke(oauth, hashed.hash);
+    await oauth.end?.();
+    assert.deepEqual(throttled.map((each) => each.path), ['/oauth/par', '/oauth/token', '/xrpc/com.atproto.repo.deleteRecord']);
+    const proofs = throttled.map((each) => JSON.parse(Buffer.from(each.dpop!.split('.')[1]!, 'base64url').toString()).jti as string);
+    assert.equal(new Set(proofs).size, 3);
+    assert.equal(tilly.records.has(`${COLLECTION}/${hashed.hash}`), false, 'withdrawn, once asked again');
+
+    // A wait nobody would sit through is not waited for: it says when to come back.
+    THROTTLE.set('/xrpc/com.atproto.server.createSession', [slowDown({ 'retry-after': String(24 * 3600) })]);
+    await assert.rejects(ATPROTO.login(tilly.did, tilly.password, { onWait }), (err: Error & { code?: string }) =>
+        err.code === 'ERR_BUNDLE_RATE_LIMITED' && /asks to wait 24h 0m, until .* longer than the 10m this waits; try again then, or allow more with BUNDLE_RATE_LIMIT_WAIT/.test(err.message));
+    THROTTLE.clear();
 });
 
 test('an access token that expires mid-command is refreshed, in memory', async () => {

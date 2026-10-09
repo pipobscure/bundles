@@ -69,6 +69,14 @@ bundle --help          bundle -v, --version
   from, by the domain whose `nzip:` record named them, or by the listing they were installed
   from, as `@<did>/<name>`. A plugin is named `<app's package>:<plugin's package>`
   (`bled:@alice/bled-gpio`).
+- **A server that says to slow down is waited for.** A 429, or a 503 that says when, from a
+  PDS, a sign-in server, the PLC directory, the backlink index, Fulcio or a download, is asked
+  again once the time it names has passed: `Retry-After` (seconds or a date), else atproto's
+  `ratelimit-reset`, else a short backoff, up to five times. Each wait is said on stderr. A wait
+  longer than ten minutes is not waited for: the command fails, saying until when
+  (`BUNDLE_RATE_LIMIT_WAIT` allows longer). Rekor and the timestamp authority are retried with
+  a backoff, since their client reads no `Retry-After`. Only requests that are safe to repeat
+  are repeated: records are written at a key of their own, so a write sent twice is one write.
 - **Errors go to stderr**, results to stdout. `--json`, where offered, prints a machine-readable
   result on stdout and nothing else there.
 - **Nothing is done without asking that is not yours to decide.** A signer or attester nobody
@@ -1038,6 +1046,7 @@ session.
 | `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest`, `publish`, `unpublish` and `lexicon publish` act as, without `--as` |
 | `BUNDLE_ATPROTO_PASSWORD` | an app password: `attest`, `publish`, `unpublish` and `lexicon publish` use it instead of signing in, for CI |
 | `BUNDLE_OAUTH_CLIENT_ID` | a hosted OAuth client metadata URL, instead of the loopback development client |
+| `BUNDLE_RATE_LIMIT_WAIT` | the longest a rate-limited request waits before asking again, in seconds (default: 600). `0` never waits |
 | `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` is resolved against (default: `https://plc.directory`) |
 | `BUNDLE_NO_BROWSER` | never open a browser to sign in with sigstore; use a device code |
 | `BUNDLE_AUDIT_VERDICT` | where the audit skill writes its verdict, when a pipeline asks for one |

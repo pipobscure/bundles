@@ -1186,7 +1186,8 @@ async function publish(args: string[], io: Console): Promise<number> {
     // Before anyone signs in: a listing that points at nothing, or at
     // something that is not an archive, is a typo nobody should publish.
     io.err(`* fetching ${url}`);
-    const response = await fetch(url, { redirect: 'follow' });
+    const { patientFetch } = await import('./ratelimit.ts');
+    const response = await patientFetch(globalThis.fetch, { onWait: io.err })(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`publish: ${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     if (!wholeFileHash(bytes)) throw new Error(`publish: ${url} is not an archive this tool can install`);
