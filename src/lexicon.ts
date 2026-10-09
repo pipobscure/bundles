@@ -2,7 +2,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as DNS from 'node:dns';
 import { packageRoot } from './files.ts';
-import { getRecord, putRecord, type NetworkOptions, type Session } from './atproto.ts';
+import { getRecord, listOwn, putAll, type NetworkOptions, type Session } from './atproto.ts';
 
 // Publishing this package's lexicons, so the rest of the network can resolve
 // what a `com.pipobscure.bundle.attestation` record is.
@@ -127,10 +127,12 @@ export function schemaRecord(doc: LexiconDocument): Record<string, unknown> {
 }
 
 /**
- * Publish every lexicon this package carries from `session`'s account, and
- * read each back to confirm what landed is what was sent. DNS is checked
- * first: a schema published from an account the authority does not name is
- * one nobody can resolve, so that is refused unless `force` says otherwise.
+ * Publish every lexicon this package carries from `session`'s account: the
+ * account's schemas listed once, and all of them written in one batch. DNS is
+ * checked first: a schema published from an account the authority does not
+ * name is one nobody can resolve, so that is refused unless `force` says
+ * otherwise. The PDS saying they are written is taken as their being
+ * written; `lexicon check` reads them back, verified, whenever that is wanted.
  */
 export async function publishLexicons(session: Session, { force = false, ...options }: NetworkOptions & { force?: boolean | undefined } = {},
     docs: LexiconDocument[] = lexicons()): Promise<{ nsid: string; uri: string; dns: string; authority: string | null }[]> {
@@ -143,11 +145,10 @@ export async function publishLexicons(session: Session, { force = false, ...opti
                 ? `${dns} names ${authority}, not ${session.did} — publish from that account, or change the record`
                 : `${dns} has no 'did=' TXT record yet; add 'did=${session.did}' there first (or pass --force to publish anyway)`);
         }
-        const { uri } = await putRecord(session, SCHEMA_COLLECTION, doc.id, schemaRecord(doc), options);
-        const back = await getRecord(session.did, SCHEMA_COLLECTION, doc.id, options);
-        if (!back || !same(back.value, schemaRecord(doc))) throw new Error(`${uri} was written, but does not read back as the document that was sent`);
-        written.push({ nsid: doc.id, uri, dns, authority });
+        written.push({ nsid: doc.id, uri: `at://${session.did}/${SCHEMA_COLLECTION}/${doc.id}`, dns, authority });
     }
+    const existing = await listOwn(session, SCHEMA_COLLECTION, options);
+    await putAll(session, SCHEMA_COLLECTION, docs.map((doc) => ({ rkey: doc.id, record: schemaRecord(doc) })), { ...options, existing });
     return written;
 }
 

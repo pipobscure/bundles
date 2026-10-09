@@ -392,6 +392,13 @@ withdraw their attestation.
   from `BUNDLE_ATPROTO_PASSWORD` or `--password-file` is used instead.
 - **What it writes** is `at://<your DID>/com.pipobscure.bundle.attestation/<hash>`: one record
   per account per file, so attesting again replaces the old record.
+- **All of them go in one request**: atproto's `applyWrites`, up to 200 records each, rather
+  than a request per archive, since every request counts against the account's rate limits.
+  If some were attested before, the PDS refuses to create those, so the account's attestations
+  are listed once and the batch is sent again, replacing them. `--revoke` works the same way.
+- **Nothing is read back.** The PDS saying it wrote the records is taken as written. Your
+  attestations reach the local cache, verified, the next time something fetches them:
+  [`trust`](#trust), [`verify --attester`](#verify), an install.
 
 How attestations are used, and what they do and do not prove, is in [`install`](#install),
 [`verify`](#verify), the [policy](#policy) and
@@ -431,7 +438,8 @@ lexicon in that DID's repository, holding the lexicon document.
   record. It exits `1` unless all are current.
 - **`publish`** writes each schema record from `--as`. It signs in with access to
   `com.atproto.lexicon.schema` and nothing else, refuses an account the DNS record does not
-  name (unless `--force`), and reads each record back to confirm it.
+  name (unless `--force`), and writes them all in one `applyWrites`. Nothing is read back;
+  `check` does that, verified, whenever it is wanted.
 
 This is for whoever owns the lexicons' domain; using attestations or listings needs none of it.
 
@@ -468,8 +476,10 @@ that parses as a URI, so asking it what links to that one value lists every list
 ### `publish`
 
 ```
-bundle publish [options] <name> <url | domain>
+bundle publish [options] <name> <url | domain> [<name> <url | domain>]...
 bundle publish --as pipobscure.com --description 'blink an LED' bled https://github.com/pipobscure/bled/releases/latest/download/bled.nzip
+bundle publish --as pipobscure.com dns https://…/dns.nzip desec https://…/dns-desec.nzip      # several, one batch
+bundle publish --as pipobscure.com --from listings.json                                        # each with its own description
 bundle publish --as pipobscure.com --description 'blink an LED' bled bled.pip.fyi     # the URL is the TXT record's to say
 bundle publish --as alice.example --for @pipobscure.com/bled bled-gpio https://…/bled-gpio.nzip   # a plugin for bled
 ```
@@ -488,7 +498,14 @@ replaces the listing, keeping when it was first listed.
 - **Signing in** works as it does for [`attest`](#attest): OAuth in the browser, asking for write
   access to listing records only (`repo:com.pipobscure.bundle.listing`), and nothing kept
   afterwards. In CI, an app password from `BUNDLE_ATPROTO_PASSWORD` or `--password-file`.
-- **The record is read back** to confirm what landed is what was sent.
+- **Several are one batch.** Give several `<name> <url | domain>` pairs, or `--from` a JSON
+  file: an array of `{ "name", "url" or "domain", "title", "description", "for" }`, where only
+  the name and one of url or domain are needed. Every one is checked first, and one that fails
+  stops them all, before anyone signs in. Then there is one sign-in, one read of the account's
+  listings (to keep when each was first listed), and one `applyWrites` for all of them.
+  `--title` and `--description` describe a single listing; for several, put them in the file.
+- **Nothing is read back.** The PDS saying it wrote the listings is taken as written, since
+  every request counts against the account's rate limits.
 - **A plugin is listed against its app.** With `--for`, the listing's `subject` is the
   `at://` address of the app's listing, not the concept hash. So it never appears among apps,
   and `search --for` and `listings --for` find exactly that app's plugins. An app installed
@@ -501,17 +518,19 @@ replaces the listing, keeping when it was first listed.
 | `--for <app>` | list it as a plugin for this app: an app installed from its listing, `@<handle or did>/<name>`, or an `at://` address |
 | `--title <text>` | a display name (default: the name) |
 | `--description <text>` | what it is, in a sentence or two (at most 300 characters) |
+| `--from <file>` | list these too: a JSON array of `{ "name", "url" or "domain", "title", "description", "for" }`. `--for` applies to entries that do not name their own |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 | `-r, --root <file>` | an extra trusted root, for checking the archive first; repeatable |
 
 ### `unpublish`
 
 ```
-bundle unpublish [options] <name>
-bundle unpublish --as pipobscure.com bled
+bundle unpublish [options] <name>...
+bundle unpublish --as pipobscure.com bled bled-gpio
 ```
 
-Deletes the listing. Exits `1` if there was none. Installs made from it keep working, and keep
+Deletes the listings, as one batch after one read of the account's listings. Exits `1` if one
+of them was not there; the others are still taken down. Installs made from it keep working, and keep
 checking the URL it last named; [`update`](#update) says the listing is gone.
 
 | Option | |

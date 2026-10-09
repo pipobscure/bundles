@@ -156,13 +156,15 @@ export const HELP: Record<string, string> = {
   writes com.pipobscure.bundle.attestation/<hash> to the account's repository, naming
   the archive's whole-file hash — the hash a signature covers. The archive is
   checked first: one whose bytes or signature do not hold together is refused.`,
-    publish: `publish options:                    usage: publish [options] <name> <url | domain>
+    publish: `publish options:                    usage: publish [options] <name> <url | domain> [<name> <url | domain>]...
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --for <app>       list it as a plugin for this app: an app installed from
                         its listing, @<handle or did>/<name>, or an at:// address
-      --title <text>    a display name (default: the name)
-      --description <text>  what it is, in a sentence or two
+      --title <text>    a display name (default: the name); one listing only
+      --description <text>  what it is, in a sentence or two; one listing only
+      --from <file>     list these too: a JSON array of { "name", "url" or
+                        "domain", and optionally "title", "description", "for" }
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
@@ -177,15 +179,20 @@ export const HELP: Record<string, string> = {
   manage in DNS. Either way the archive is fetched first, and refused unless
   it is https and an archive whose bytes hold together. <name> is lowercase
   letters, digits and '-', and is what it installs as. Publishing it again
-  replaces it.`,
-    unpublish: `unpublish options:                  usage: unpublish [options] <name>
+  replaces it.
+
+  several listings are checked first — all of them, before signing in — and
+  written as one batch: the account's listings are read once, and the PDS
+  saying they are written is taken as their being written, since every
+  request counts against the account's rate limits.`,
+    unpublish: `unpublish options:                  usage: unpublish [options] <name>...
       --as <handle | did>  the account the listing is in
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
 
-  deletes the listing. Installs made from it keep checking the URL it last
-  named.`,
+  deletes the listings, as one batch. Installs made from one keep checking
+  the URL it last named. Exits 1 when a name was not listed.`,
     run: `run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
@@ -502,7 +509,8 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
                         (BUNDLE_ATPROTO_PASSWORD works too)
 
   writes each lexicon as a com.atproto.lexicon.schema record from --as,
-  signing in with access to that collection only, and reads it back.`,
+  signing in with access to that collection only, all as one batch. 'lexicon
+  check' reads them back, verified.`,
     },
 };
 
@@ -790,15 +798,18 @@ async function attest(args: string[], io: Console): Promise<number> {
         : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open });
     io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
     try {
-        for (const { archive, hashAlg, hash } of checked) {
-            if (values.revoke) {
-                await ATPROTO.revoke(session, hash);
-                io.out(`withdrew ${session.did}'s attestation of ${archive} (${hashAlg}:${hash})`);
-                continue;
+        // All of them in one batch, not a request each: every request counts
+        // against the account's rate limits.
+        if (values.revoke) {
+            await ATPROTO.revokeAll(session, [...new Set(checked.map(({ hash }) => hash))]);
+            for (const { archive, hashAlg, hash } of checked) io.out(`withdrew ${session.did}'s attestation of ${archive} (${hashAlg}:${hash})`);
+        } else {
+            const unique = [...new Map(checked.map((each) => [each.hash, each])).values()];
+            const written = await ATPROTO.attestAll(session, unique.map(({ hashAlg, hash }) => ({ hashAlg, hex: hash, kind: values.kind, verdict, note: values.note })));
+            for (const { archive, hashAlg, hash } of checked) {
+                io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
+                io.out(`  ${written[unique.findIndex((each) => each.hash === hash)]!.uri}`);
             }
-            const written = await ATPROTO.attest(session, { hashAlg, hex: hash, kind: values.kind, verdict, note: values.note });
-            io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
-            io.out(`  ${written.uri}`);
         }
     } finally {
         await session.end?.();
@@ -1284,17 +1295,83 @@ async function installed(args: string[], io: Console): Promise<number> {
     return worst;
 }
 
-// List an archive under a name, from an atproto account: a record naming its
-// URL, which is how others find it and what `install @<account>/<name>` fetches.
+// List archives under names, from an atproto account: a record naming each
+// one's URL, which is how others find it and what `install @<account>/<name>`
+// fetches. Several are listed as one batch, under one sign-in.
 async function publish(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.publish });
-    const [name, where] = positionals;
-    if (!name || !where || positionals.length > 2) throw new Error('publish: a name, and a URL or a domain, are required');
     const LISTING = await import('./listing.ts');
-    if (!LISTING.isName(name)) throw new Error(`publish: '${name}' is not a listing name (lowercase letters, digits and '-', at most 64)`);
 
-    // A URL is listed as it is. A domain is listed instead of the URL its
-    // `nzip:` record names, so the publisher keeps managing that in DNS.
+    // What to list: <name> <url | domain> pairs, and the entries of --from.
+    const wanted: { name: string; where: string; title?: string | undefined; description?: string | undefined; for?: string | undefined }[] = [];
+    if (positionals.length % 2) throw new Error('publish: each name needs a URL or a domain after it');
+    for (let i = 0; i < positionals.length; i += 2) {
+        wanted.push({ name: positionals[i]!, where: positionals[i + 1]!, title: values.title, description: values.description, for: values.for });
+    }
+    if (values.from !== undefined) {
+        let entries: unknown;
+        try {
+            entries = JSON.parse(FS.readFileSync(values.from, 'utf-8'));
+        } catch (err) {
+            throw new Error(`publish: ${values.from} is not JSON: ${message(err)}`);
+        }
+        if (!Array.isArray(entries)) throw new Error(`publish: ${values.from} is not an array of listings`);
+        for (const [i, entry] of entries.entries()) {
+            const { name, url, domain, title, description, for: app } = (entry ?? {}) as Record<string, unknown>;
+            const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+            if (typeof name !== 'string' || (typeof url === 'string') === (typeof domain === 'string')) {
+                throw new Error(`publish: ${values.from}, entry ${i + 1}: needs a "name", and a "url" or a "domain"`);
+            }
+            wanted.push({ name, where: (url ?? domain) as string, title: text(title), description: text(description), for: text(app) ?? values.for });
+        }
+    }
+    if (!wanted.length) throw new Error('publish: a name, and a URL or a domain, are required (or --from <file>)');
+    if (wanted.length > 1 && (values.title !== undefined || values.description !== undefined)) {
+        throw new Error('publish: --title and --description describe one listing — for several, give each its own in --from');
+    }
+    for (const { name } of wanted) {
+        if (!LISTING.isName(name)) throw new Error(`publish: '${name}' is not a listing name (lowercase letters, digits and '-', at most 64)`);
+    }
+
+    // Before anyone signs in: every listing must point at an archive. One
+    // that points at nothing, or at something that is not an archive, is a
+    // typo nobody should publish — and stops the lot.
+    const listings: import('./listing.ts').Publishing[] = [];
+    const apps = new Map<string, Awaited<ReturnType<typeof appListing>>>();
+    for (const each of wanted) {
+        const checked = await listable(each.where, values.root ?? [], io);
+        if (typeof checked === 'number') return checked;
+        let app: Awaited<ReturnType<typeof appListing>> | undefined;
+        if (each.for !== undefined) {
+            app = apps.get(each.for) ?? await appListing('publish', each.for, true);
+            apps.set(each.for, app);
+            io.err(`* listing ${each.name} as a plugin for ${app.label} (${app.uri})`);
+        }
+        listings.push({ name: each.name, ...checked, for: app?.uri, title: each.title, description: each.description });
+    }
+
+    const session = await signIn('publish', values, io, `atproto repo:${LISTING.LISTING}`);
+    try {
+        const written = await LISTING.publishAll(session, listings);
+        for (const [i, { uri, replaced }] of written.entries()) {
+            const { name, for: app } = wanted[i]!;
+            io.out(`${replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
+            io.out(`  ${uri}`);
+            const installed = app !== undefined ? apps.get(app)?.installed : undefined;
+            io.err(`  install it with: bundle install ${app !== undefined ? `--for ${installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`);
+        }
+    } finally {
+        await session.end?.();
+    }
+    return 0;
+}
+
+// What one listing names, checked: a URL as it is, or a domain — listed
+// instead of the URL its `nzip:` record names, so the publisher keeps
+// managing that in DNS — and in either case an archive that holds together.
+// An exit code, when it does not.
+async function listable(where: string, roots: string[], io: Console): Promise<{ url: string } | { domain: string } | number> {
+    const LISTING = await import('./listing.ts');
     let url: string;
     let domain: string | undefined;
     if (/^[a-z][a-z0-9+.-]*:/i.test(where)) {
@@ -1308,56 +1385,37 @@ async function publish(args: string[], io: Console): Promise<number> {
         io.err(`* ${domain} names ${url}`);
     }
 
-    // Before anyone signs in: a listing that points at nothing, or at
-    // something that is not an archive, is a typo nobody should publish.
     io.err(`* fetching ${url}`);
     const { patientFetch } = await import('./ratelimit.ts');
     const response = await patientFetch(globalThis.fetch, { onWait: io.err })(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`publish: ${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     if (!wholeFileHash(bytes)) throw new Error(`publish: ${url} is not an archive this tool can install`);
-    const res = await verifyBundle(bytes, { roots: values.root ?? [], deep: true, integrity: true });
+    const res = await verifyBundle(bytes, { roots, deep: true, integrity: true });
     if (res.state === 'invalid') {
         io.err(`error: refusing to publish ${url}: ${res.reason}`);
         return STATES.invalid.code;
     }
     io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
     if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
-
-    const app = values.for !== undefined ? await appListing('publish', values.for, true) : undefined;
-    if (app) io.err(`* listing it as a plugin for ${app.label} (${app.uri})`);
-
-    const session = await signIn('publish', values, io, `atproto repo:${LISTING.LISTING}`);
-    try {
-        const written = await LISTING.publish(session, {
-            name, ...(domain ? { domain } : { url }), for: app?.uri, title: values.title, description: values.description,
-        });
-        io.out(`${written.replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
-        io.out(`  ${written.uri}`);
-        io.err(`  install it with: bundle install ${app ? `--for ${app.installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`);
-    } finally {
-        await session.end?.();
-    }
-    return 0;
+    return domain ? { domain } : { url };
 }
 
-// Take a listing down.
+// Take listings down: those that are there, as one batch.
 async function unpublish(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.unpublish });
-    const [name] = positionals;
-    if (!name || positionals.length > 1) throw new Error('unpublish: a name is required');
+    if (!positionals.length) throw new Error('unpublish: a name is required');
     const LISTING = await import('./listing.ts');
+    for (const name of positionals) if (!LISTING.isName(name)) throw new Error(`unpublish: '${name}' is not a listing name`);
     const session = await signIn('unpublish', values, io, `atproto repo:${LISTING.LISTING}`);
     try {
-        if (!await LISTING.unpublish(session, name)) {
-            io.err(`error: ${session.did} has no listing called '${name}'`);
-            return 1;
-        }
-        io.out(`unpublished ${name} from ${session.did}`);
+        const { removed, missing } = await LISTING.unpublishAll(session, positionals);
+        for (const name of removed) io.out(`unpublished ${name} from ${session.did}`);
+        for (const name of missing) io.err(`error: ${session.did} has no listing called '${name}'`);
+        return missing.length ? 1 : 0;
     } finally {
         await session.end?.();
     }
-    return 0;
 }
 
 // Sign in to write to an account's repository, with access to `scope` only
@@ -2070,6 +2128,7 @@ export const OPTIONS = {
         for:             { type: 'string' },
         title:           { type: 'string' },
         description:     { type: 'string' },
+        from:            { type: 'string' },
         'password-file': { type: 'string' },
         root:            { type: 'string', short: 'r', multiple: true },
     },

@@ -346,6 +346,26 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
             account.records.set(key, body['record'] as Value);
             return json({ uri: `at://${account.did}/${key}`, cid: CID.of(encode(body['record'] as Value)).toString() });
         }
+        case '/xrpc/com.atproto.repo.applyWrites': {
+            // One commit: every write applies, or none does. A create of a
+            // record that is there, or an update or delete of one that is not,
+            // refuses the lot — as a real PDS's repository does.
+            if (!authorized || body['repo'] !== account.did) return json({ error: 'AuthRequired' }, 401);
+            const writes = body['writes'] as { $type: string; collection: string; rkey: string; value?: Value }[];
+            if (writes.length > 200) return json({ error: 'InvalidRequest', message: 'too many writes' }, 400);
+            const next = new Map(account.records);
+            for (const { $type, collection, rkey, value } of writes) {
+                const key = `${collection}/${rkey}`;
+                const action = $type.slice($type.indexOf('#') + 1);
+                if (action === 'create' && next.has(key)) return json({ error: 'InvalidRequest', message: `Record already exists: ${key}` }, 400);
+                if (action !== 'create' && !next.has(key)) return json({ error: 'InvalidRequest', message: `Could not find record: ${key}` }, 400);
+                if (action === 'delete') next.delete(key);
+                else next.set(key, value!);
+            }
+            account.records.clear();
+            for (const [key, value] of next) account.records.set(key, value);
+            return json({ commit: { cid: 'bafy', rev: 'rev' } });
+        }
         case '/xrpc/com.atproto.repo.deleteRecord':
             if (!authorized) return json({ error: 'AuthRequired' }, 401);
             account.records.delete(`${String(body['collection'])}/${String(body['rkey'])}`);
@@ -372,6 +392,9 @@ async function attestAs(who: Account, archive: string, kind?: string, verdict?: 
     const hashed = wholeFileHash(archive)!;
     const session = await ATPROTO.login(who.did, who.password);
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash, kind, verdict });
+    // Attesting writes; it does not read back. What verifies is what a later
+    // fetch — `bundle trust`, an install — puts in the cache.
+    await ATPROTO.fetchAttestation(who.did, hashed.hashAlg, hashed.hash);
 }
 
 /**
@@ -921,6 +944,7 @@ test('attest signs in with OAuth — attestation-only scope, DPoP-bound — writ
     // The PDS asks for its own nonce first; the write goes through on the retry.
     const hashed = wholeFileHash(archive)!;
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash, kind: 'audited' });
+    await ATPROTO.fetchAttestation(yara.did, hashed.hashAlg, hashed.hash);
     assert.equal(verifySync(archive, { attesters: [{ did: yara.did, kind: 'audited' }] }).state, 'valid');
 
     // Done: the refresh token is revoked, and nothing was ever written to disk.
@@ -946,7 +970,7 @@ test('a PDS or sign-in server that says to slow down is waited for, and asked ag
     THROTTLE.set('/xrpc/com.atproto.repo.putRecord', [slowDown({ 'ratelimit-reset': String(Math.floor(Date.now() / 1000)) })]);
     const session = await ATPROTO.login(tilly.did, tilly.password, { onWait });
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash }, { onWait });
-    assert.equal(verifySync(archive, { attesters: [{ did: tilly.did }] }).state, 'valid');
+    assert.ok(tilly.records.has(`${COLLECTION}/${hashed.hash}`), 'written, once asked again');
     assert.match(waits[0]!, /\(com\.atproto\.server\.createSession\) is rate limiting \(429\): waiting 0s, as it asks \(Retry-After\)/);
     assert.match(waits[1]!, /\(com\.atproto\.repo\.putRecord\) is rate limiting \(429\): waiting \d+s, until its limit resets/);
 
@@ -979,7 +1003,7 @@ test('an access token that expires mid-command is refreshed, in memory', async (
     const hashed = wholeFileHash(archive)!;
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash });
     assert.equal(AUTH.refreshes, refreshes + 1);
-    assert.equal(verifySync(archive, { attesters: [{ did: zoe.did }] }).state, 'valid');
+    assert.ok(zoe.records.has(`${COLLECTION}/${hashed.hash}`), 'written, once refreshed');
     await session.end?.();
 });
 
@@ -1020,10 +1044,36 @@ test('bundle attest takes several archives under one sign-in, and checks them al
 
     let opened = 0;
     const io = { ...collector(), open: (url: string) => { opened++; browser(url); } };
+    // What each command asked of the PDS. A session's first request is sent
+    // twice — the PDS hands out its DPoP nonce by refusing it — which is one
+    // request per sign-in, not per archive, so it is counted once.
+    const writes = () => requests.filter((line) => line.startsWith(`POST ${cal.pds}/xrpc/com.atproto.repo.`) || line.startsWith(`GET ${cal.pds}/xrpc/com.atproto.`))
+        .map((line) => line.slice(line.lastIndexOf('/') + 1))
+        .filter((method, i, all) => i !== 1 || method !== all[0]);
+    requests.length = 0;
     assert.equal(await main(['attest', '--as', cal.did, '--kind', 'reproduced', ...archives], io), 0, io.stderr.join('\n'));
     assert.equal(opened, 1, 'one sign-in for all of them');
     assert.match(io.stderr.join('\n'), /signed in as did:plc:.* through OAuth \(attestations only\)/);
-    for (const archive of archives) assert.equal(verifySync(archive, { attesters: [{ did: cal.did, kind: 'reproduced' }] }).state, 'valid');
+    assert.deepEqual(writes(), ['com.atproto.repo.applyWrites'], 'all three in one request, and nothing read back');
+    for (const archive of archives) {
+        const { hashAlg, hash } = wholeFileHash(archive)!;
+        await ATPROTO.fetchAttestation(cal.did, hashAlg, hash);
+        assert.equal(verifySync(archive, { attesters: [{ did: cal.did, kind: 'reproduced' }] }).state, 'valid');
+    }
+
+    // Attested again, with one more: the batch is refused for those already
+    // there, so the collection is listed and they are updated — still no
+    // request per archive.
+    const another = await version();
+    requests.length = 0;
+    assert.equal(await main(['attest', '--as', cal.did, '--kind', 'audited', ...archives, another], { ...collector(), open: browser }), 0);
+    assert.deepEqual(writes(), ['com.atproto.repo.applyWrites', 'com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
+    for (const archive of [...archives, another]) {
+        const { hashAlg, hash } = wholeFileHash(archive)!;
+        await ATPROTO.fetchAttestation(cal.did, hashAlg, hash);
+        assert.equal(verifySync(archive, { attesters: [{ did: cal.did, kind: 'audited' }] }).state, 'valid', 'replaced');
+    }
+    archives.push(another);
 
     // One broken archive among them stops the lot, before anyone signs in.
     const broken = PATH.join(tmp, 'broken-member.run');
@@ -1036,10 +1086,13 @@ test('bundle attest takes several archives under one sign-in, and checks them al
     assert.equal(await main(['attest', '--as', cal.did, fresh, broken], refused), STATES.invalid.code);
     assert.equal(verifySync(fresh, { attesters: [{ did: cal.did }] }).state, 'unsigned', 'nothing was written');
 
-    // And the same sign-in withdraws them all.
+    // And the same sign-in withdraws them all, in one request.
     const withdrawn = { ...collector(), open: browser };
+    requests.length = 0;
     assert.equal(await main(['attest', '--as', cal.did, '--revoke', ...archives], withdrawn), 0);
+    assert.deepEqual(writes(), ['com.atproto.repo.applyWrites']);
     for (const archive of archives) assert.equal(verifySync(archive, { attesters: [{ did: cal.did }] }).state, 'unsigned');
+    assert.equal([...cal.records.keys()].filter((key) => key.startsWith(`${COLLECTION}/`)).length, 0);
 });
 
 // ---------------------------------------------------------------- lexicons ---
@@ -1051,7 +1104,7 @@ test('the lexicons this package carries are where their NSIDs say, under the aut
     assert.equal(docs[0]!.defs['main'] && (docs[0]!.defs['main'] as { type: string }).type, 'record');
 });
 
-test('lexicon publish needs DNS to name the account, writes with lexicon-only access, and reads it back', async () => {
+test('lexicon publish needs DNS to name the account, writes with lexicon-only access, all in one batch', async () => {
     const dana = account();
     const dns = new Map<string, string>();
     const resolveTxt = async (name: string) => {
@@ -1081,9 +1134,15 @@ test('lexicon publish needs DNS to name the account, writes with lexicon-only ac
     assert.equal(record['id'], COLLECTION);
     assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current']);
 
-    // Changed since: check says so.
+    // Changed since: check says so, and publishing again replaces it — the
+    // schemas listed once, and all of them written in one request.
     dana.records.set(`${SCHEMA_COLLECTION}/${COLLECTION}`, { ...record, description: 'an older version' });
     assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current']);
+    requests.length = 0;
+    await publishLexicons(session, { resolveTxt });
+    assert.deepEqual(requests.filter((line) => line.includes(`${dana.pds}/xrpc/`)).map((line) => line.slice(line.lastIndexOf('/') + 1)),
+        ['com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current']);
 });
 
 // ---------------------------------------------------------------- validate ---
@@ -1203,7 +1262,7 @@ test('a listing is read only when it is one: the subject, an https URL, a usable
     assert.equal(LISTINGS.matchQuery(' - * '), null);
 });
 
-test('publish writes a listing, reads it back, keeps when it was first listed; unpublish takes it down', async () => {
+test('publish writes listings in one batch, keeps when each was first listed; unpublish takes them down', async () => {
     const pia = account();
     const session = await ATPROTO.login(pia.did, pia.password);
     const first = await LISTINGS.publish(session, { name: 'bled', url: 'https://dl.test/bled.nzip', description: 'blink an LED' },
@@ -1222,9 +1281,28 @@ test('publish writes a listing, reads it back, keeps when it was first listed; u
     await assert.rejects(LISTINGS.publish(session, { name: 'bled', url: 'http://dl.test/bled.nzip' }), /not https/);
     await assert.rejects(LISTINGS.publish(session, { name: 'Bled', url: 'https://dl.test/bled.nzip' }), /not a listing name/);
 
+    // Several at once: the listings read once, and one batch — creating the
+    // new, replacing the one already there — with nothing read back.
+    const asked = () => requests.filter((line) => line.includes(`${pia.pds}/xrpc/`)).map((line) => line.slice(line.lastIndexOf('/') + 1));
+    requests.length = 0;
+    const many = await LISTINGS.publishAll(session, [
+        { name: 'bled', url: 'https://dl.test/v3/bled.nzip' },
+        { name: 'blink', domain: 'blink.example' },
+        { name: 'glow', url: 'https://dl.test/glow.nzip', description: 'glow, softly' },
+    ]);
+    assert.deepEqual(asked(), ['com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
+    assert.deepEqual(many.map(({ replaced }) => replaced), [true, false, false]);
+    assert.equal(many[0]!.record.createdAt, '2026-01-01T00:00:00.000Z');
+    assert.equal((pia.records.get(`${LISTING}/blink`) as Record<string, unknown>)['domain'], 'blink.example');
+    await assert.rejects(LISTINGS.publishAll(session, [{ name: 'x', url: 'https://dl.test/x' }, { name: 'x', url: 'https://dl.test/y' }]), /'x' is listed twice/);
+
     assert.equal(await LISTINGS.unpublish(session, 'bled'), true);
     assert.equal(pia.records.has(`${LISTING}/bled`), false);
     assert.equal(await LISTINGS.unpublish(session, 'bled'), false);
+    requests.length = 0;
+    assert.deepEqual(await LISTINGS.unpublishAll(session, ['blink', 'bled', 'glow']), { removed: ['blink', 'glow'], missing: ['bled'] });
+    assert.deepEqual(asked(), ['com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
+    assert.equal([...pia.records.keys()].some((key) => key.startsWith(`${LISTING}/`)), false);
 });
 
 test('the index is built from the backlink index, and a sync asks again only where a repository moved', async () => {
@@ -1434,6 +1512,55 @@ test('a plugin is listed against its app: found with --for, never among apps, an
     assert.equal(await main(['install', '--yes', '--for', `@${extender.did}/not-installed-here`, `@${extender.did}/host-extra`], elsewhere), 70);
     assert.match(elsewhere.stderr.join('\n'), /is at:\/\/.*not-installed-here, which no app installed here came from — install the app first/);
     remove(host.name);
+});
+
+test('bundle publish lists several under one sign-in, as one batch — from the command line, or --from a file', async () => {
+    const quin = account();
+    DOWNLOADS.set('/many/one.nzip', FS.readFileSync(await version()));
+    DOWNLOADS.set('/many/two.nzip', FS.readFileSync(await version()));
+    DOWNLOADS.set('/many/three.nzip', FS.readFileSync(await version()));
+    DOWNLOADS.set('/many/junk.nzip', Buffer.from('not an archive'));
+    const asked = () => requests.filter((line) => line.includes(`${quin.pds}/xrpc/`)).map((line) => line.slice(line.lastIndexOf('/') + 1));
+    process.env['BUNDLE_ATPROTO_PASSWORD'] = quin.password;
+    try {
+        requests.length = 0;
+        const io = collector();
+        assert.equal(await main(['publish', '--as', quin.did, 'one', 'https://dl.test/many/one.nzip', 'two', 'https://dl.test/many/two.nzip'], io), 0, io.stderr.join('\n'));
+        assert.match(io.stdout.join('\n'), /published one as did:plc:.*\n.*\npublished two as did:plc:/);
+        assert.deepEqual(asked(), ['com.atproto.server.createSession', 'com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites'], 'one sign-in, one read, one write');
+
+        // A file gives each its own description; one already listed is updated in the same batch.
+        const file = PATH.join(tmp, 'listings.json');
+        FS.writeFileSync(file, JSON.stringify([
+            { name: 'two', url: 'https://dl.test/many/two.nzip', description: 'the second' },
+            { name: 'three', url: 'https://dl.test/many/three.nzip', title: 'Three', description: 'the third' },
+        ]));
+        const from = collector();
+        assert.equal(await main(['publish', '--as', quin.did, '--from', file], from), 0, from.stderr.join('\n'));
+        assert.match(from.stdout.join('\n'), /updated two as .*[\s\S]*published three as /);
+        assert.equal((quin.records.get(`${LISTING}/three`) as Record<string, unknown>)['description'], 'the third');
+
+        // One that is not an archive stops them all, before anyone signs in.
+        requests.length = 0;
+        const junk = collector();
+        assert.equal(await main(['publish', '--as', quin.did, 'four', 'https://dl.test/many/one.nzip', 'junk', 'https://dl.test/many/junk.nzip'], junk), 70);
+        assert.deepEqual(asked(), [], 'the PDS never asked');
+        assert.equal(quin.records.has(`${LISTING}/four`), false);
+
+        const described = collector();
+        assert.equal(await main(['publish', '--as', quin.did, '--description', 'which?', 'a', 'https://dl.test/many/one.nzip', 'b', 'https://dl.test/many/two.nzip'], described), 70);
+        assert.match(described.stderr.join('\n'), /--title and --description describe one listing — for several, give each its own in --from/);
+        assert.equal(await main(['publish', '--as', quin.did, 'odd'], collector()), 70);
+
+        // Taken down together; a name that was not listed is said, and is exit 1.
+        const down = collector();
+        assert.equal(await main(['unpublish', '--as', quin.did, 'one', 'two', 'nothing'], down), 1);
+        assert.match(down.stdout.join('\n'), /unpublished one from .*\nunpublished two from /);
+        assert.match(down.stderr.join('\n'), /has no listing called 'nothing'/);
+        assert.deepEqual([...quin.records.keys()].filter((key) => key.startsWith(`${LISTING}/`)), [`${LISTING}/three`]);
+    } finally {
+        delete process.env['BUNDLE_ATPROTO_PASSWORD'];
+    }
 });
 
 test('bundle publish, search, listings and unpublish, end to end', async () => {

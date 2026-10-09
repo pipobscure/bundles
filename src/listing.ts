@@ -4,7 +4,7 @@ import * as PATH from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { stateDir, isDid } from './attestation.ts';
 import {
-    backlinks, deleteRecord, fetchDidDocument, getRecord, putRecord, resolveHandle, xrpcJson,
+    backlinks, deleteAll, fetchDidDocument, getRecord, listOwn, putAll, resolveHandle, xrpcJson,
     type NetworkOptions, type Session,
 } from './atproto.ts';
 import { claimedHandle, pdsEndpoint, type DidDocument, type Value } from './repo.ts';
@@ -222,51 +222,78 @@ async function fetchListing(did: string, name: string, options: NetworkOptions):
 
 // -------------------------------------------------------------- publishing ---
 
-/**
- * List a bundle under `name` from the session's account, and read it back to
- * confirm what landed is what was sent. It names a `url`, or a `domain` whose
- * `nzip:` TXT record names one. With `for`, the address of an app's listing,
- * it lists a plugin for that app. Listing it again replaces the record,
- * keeping when it was first listed.
- */
-export async function publish(session: Session, { name, url, domain, for: app, title, description }: {
+/** One listing to publish: a `url`, or a `domain` whose `nzip:` TXT record names one. */
+export interface Publishing {
     name: string;
     url?: string | undefined;
     domain?: string | undefined;
+    /** The address of an app's listing: this is a plugin for that app. */
     for?: string | undefined;
     title?: string | undefined;
     description?: string | undefined;
-}, options: NetworkOptions = {}): Promise<{ uri: string; replaced: boolean; record: ListingRecord }> {
-    if (!isName(name)) throw new Error(`'${name}' is not a listing name (lowercase letters, digits and '-', at most 64)`);
-    const existing = await getRecord(session.did, LISTING, name, options);
-    const previous = existing ? readListing(existing.value, name) : null;
-    const record: ListingRecord = {
-        $type: LISTING,
-        subject: app ?? SUBJECT,
-        ...(url !== undefined ? { url } : {}),
-        ...(domain !== undefined ? { domain } : {}),
-        ...(title ? { title } : {}),
-        ...(description ? { description } : {}),
-        createdAt: previous?.ok ? previous.record.createdAt : (options.now ?? (() => new Date()))().toISOString(),
-    };
-    const checked = readListing(record as unknown as Value, name);
-    if (!checked.ok) throw new Error(`refusing to publish: ${checked.reason}`);
+}
 
-    const { uri } = await putRecord(session, LISTING, name, record as unknown as Record<string, unknown>, options);
-    const back = await fetchListing(session.did, name, options);
-    if (!back || back.subject !== record.subject || back.url !== record.url || back.domain !== record.domain
-        || back.title !== record.title || back.description !== record.description) {
-        throw new Error(`${uri} was written, but does not read back as the listing that was sent`);
+/**
+ * List a bundle under `name` from the session's account. Listing it again
+ * replaces the record, keeping when it was first listed.
+ */
+export async function publish(session: Session, listing: Publishing, options: NetworkOptions = {}): Promise<{ uri: string; replaced: boolean; record: ListingRecord }> {
+    const [written] = await publishAll(session, [listing], options);
+    return written!;
+}
+
+/**
+ * List several bundles at once: the account's listings read once — to know
+ * which are there, and keep when each was first listed — and all of them
+ * written in one batch (as many as `applyWrites` takes to a request). The PDS
+ * saying they are written is taken as their being written; nothing is read
+ * back, since every request counts against the account's rate limits.
+ */
+export async function publishAll(session: Session, listings: Publishing[], options: NetworkOptions = {}): Promise<{ uri: string; replaced: boolean; record: ListingRecord }[]> {
+    const names = new Set<string>();
+    for (const { name } of listings) {
+        if (!isName(name)) throw new Error(`'${name}' is not a listing name (lowercase letters, digits and '-', at most 64)`);
+        if (names.has(name)) throw new Error(`'${name}' is listed twice`);
+        names.add(name);
     }
-    return { uri, replaced: Boolean(existing), record };
+    const existing = await listOwn(session, LISTING, options);
+    const now = (options.now ?? (() => new Date()))().toISOString();
+    const written = listings.map(({ name, url, domain, for: app, title, description }) => {
+        const before = existing.get(name);
+        const previous = before ? readListing(before, name) : null;
+        const record: ListingRecord = {
+            $type: LISTING,
+            subject: app ?? SUBJECT,
+            ...(url !== undefined ? { url } : {}),
+            ...(domain !== undefined ? { domain } : {}),
+            ...(title ? { title } : {}),
+            ...(description ? { description } : {}),
+            createdAt: previous?.ok ? previous.record.createdAt : now,
+        };
+        const checked = readListing(record as unknown as Value, name);
+        if (!checked.ok) throw new Error(`refusing to publish ${name}: ${checked.reason}`);
+        return { uri: listingUri(session.did, name), replaced: Boolean(before), record };
+    });
+    await putAll(session, LISTING, written.map(({ record }, i) => ({ rkey: listings[i]!.name, record: record as unknown as Record<string, unknown> })),
+        { ...options, existing });
+    return written;
 }
 
 /** Take a listing down. False when there was none to take down. */
 export async function unpublish(session: Session, name: string, options: NetworkOptions = {}): Promise<boolean> {
-    if (!isName(name)) throw new Error(`'${name}' is not a listing name`);
-    if (!await getRecord(session.did, LISTING, name, options)) return false;
-    await deleteRecord(session, LISTING, name, options);
-    return true;
+    return (await unpublishAll(session, [name], options)).removed.length === 1;
+}
+
+/**
+ * Take several listings down: the account's listings read once, and those
+ * that are there deleted in one batch. Says which were, and which were not.
+ */
+export async function unpublishAll(session: Session, names: string[], options: NetworkOptions = {}): Promise<{ removed: string[]; missing: string[] }> {
+    for (const name of names) if (!isName(name)) throw new Error(`'${name}' is not a listing name`);
+    const existing = await listOwn(session, LISTING, options);
+    const removed = [...new Set(names)].filter((name) => existing.has(name));
+    await deleteAll(session, LISTING, removed, { ...options, existing });
+    return { removed, missing: [...new Set(names)].filter((name) => !existing.has(name)) };
 }
 
 // ---------------------------------------------------------------- the index ---

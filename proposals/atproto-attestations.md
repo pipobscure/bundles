@@ -306,8 +306,8 @@ Publishing it, so that services can resolve and validate it, takes two steps:
 DNS record and compares the published schema, verified, with this package's;
 `bundle lexicon publish --as <account>` writes it. It signs in with access to
 `com.atproto.lexicon.schema` only, refuses an account the DNS record does not name
-unless `--force` is given, and reads each record back. `--dry-run` stops before signing
-in.
+unless `--force` is given, and writes them all in one `applyWrites`, reading nothing back.
+`--dry-run` stops before signing in.
 
 Until then, PDSes accept the records under optimistic validation. Once the lexicon is
 published, validators check records against it, so it must describe exactly what

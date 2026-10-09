@@ -338,32 +338,144 @@ export async function login(identifier: string, password: string, options: Netwo
     };
 }
 
-/**
- * Publish an attestation of `hashAlg:hex`, then fetch it back into the cache —
- * which also proves the round trip: what is cached is what verifies.
- */
-export async function attest(session: Session, { hashAlg, hex, kind, verdict, note }: {
+/** What an attestation says: of which file, and — when not simply vouching for it — what about it. */
+export interface Attesting {
     hashAlg: string;
     hex: string;
     kind?: string | undefined;
     /** 'bad' to warn against the file; good is the default and is not written. */
     verdict?: Verdict | undefined;
     note?: string | undefined;
-}, options: NetworkOptions = {}): Promise<{ uri: string; cid: string }> {
-    const record: AttestationRecord = {
-        $type: COLLECTION,
-        hash: `${hashAlg}:${hex}`,
-        ...(kind ? { kind } : {}),
-        ...(verdict === 'bad' ? { verdict } : {}),
-        ...(note ? { note } : {}),
-        createdAt: (options.now ?? (() => new Date()))().toISOString(),
-    };
-    const written = await xrpcPost(session.pds, 'com.atproto.repo.putRecord',
-        { repo: session.did, collection: COLLECTION, rkey: hex, record }, session, options) as { uri?: string; cid?: string };
-    if (await fetchAttestation(session.did, hashAlg, hex, options) !== 'present') {
-        throw new Error(`${session.pds} accepted the attestation, but it does not verify when fetched back`);
+}
+
+/**
+ * Publish an attestation of `hashAlg:hex`. The PDS saying it is written is
+ * taken as it being written: nothing is read back, since every request counts
+ * against the account's rate limits, and `bundle trust` or an install fetches
+ * it — verified — whenever it is needed.
+ */
+export async function attest(session: Session, attesting: Attesting, options: NetworkOptions = {}): Promise<{ uri: string }> {
+    const [written] = await attestAll(session, [attesting], options);
+    return written!;
+}
+
+/** Publish several attestations, in as few requests as the PDS allows (see `putAll()`). */
+export async function attestAll(session: Session, attestations: Attesting[], options: NetworkOptions = {}): Promise<{ uri: string }[]> {
+    const now = (options.now ?? (() => new Date()))().toISOString();
+    const records = attestations.map(({ hashAlg, hex, kind, verdict, note }) => ({
+        rkey: hex,
+        record: {
+            $type: COLLECTION,
+            hash: `${hashAlg}:${hex}`,
+            ...(kind ? { kind } : {}),
+            ...(verdict === 'bad' ? { verdict } : {}),
+            ...(note ? { note } : {}),
+            createdAt: now,
+        } satisfies AttestationRecord as Record<string, unknown>,
+    }));
+    await putAll(session, COLLECTION, records, options);
+    return records.map(({ rkey }) => ({ uri: recordUri(session.did, rkey) }));
+}
+
+/** Withdraw attestations, in as few requests as it takes, and drop them from the cache. */
+export async function revokeAll(session: Session, hexes: string[], options: NetworkOptions = {}): Promise<void> {
+    await deleteAll(session, COLLECTION, hexes, options);
+    for (const hex of hexes) removeProof(options.cache ?? cacheDir(), session.did, hex);
+}
+
+// ---------------------------------------------------------------- batches ---
+
+/** One write in an `applyWrites` batch. */
+export type Write =
+    | { action: 'create' | 'update'; collection: string; rkey: string; record: Record<string, unknown> }
+    | { action: 'delete'; collection: string; rkey: string };
+
+/** The most writes one `applyWrites` takes. */
+export const MAX_BATCH = 200;
+
+/**
+ * Apply `writes` to the session's own repository: one request for up to
+ * `MAX_BATCH` of them, each request one commit — all of it written, or none.
+ * A create of a record that is there, or an update or delete of one that is
+ * not, refuses the whole request.
+ */
+export async function applyWrites(session: Session, writes: Write[], options: NetworkOptions = {}): Promise<void> {
+    for (let at = 0; at < writes.length; at += MAX_BATCH) {
+        await xrpcPost(session.pds, 'com.atproto.repo.applyWrites', {
+            repo: session.did,
+            writes: writes.slice(at, at + MAX_BATCH).map((write) => write.action === 'delete'
+                ? { $type: 'com.atproto.repo.applyWrites#delete', collection: write.collection, rkey: write.rkey }
+                : { $type: `com.atproto.repo.applyWrites#${write.action}`, collection: write.collection, rkey: write.rkey, value: write.record }),
+        }, session, options);
     }
-    return { uri: written.uri ?? recordUri(session.did, hex), cid: written.cid ?? '' };
+}
+
+/**
+ * The records in one collection of the session's own repository, by key: as
+ * the PDS lists them, a hundred to a request. Unverified — it is the
+ * account's own repository, asked only which records are there.
+ */
+export async function listOwn(session: Session, collection: string, options: NetworkOptions = {}): Promise<Map<string, Value>> {
+    const found = new Map<string, Value>();
+    let cursor: string | undefined;
+    do {
+        const page = await xrpcJson(session.pds, 'com.atproto.repo.listRecords',
+            { repo: session.did, collection, limit: '100', ...(cursor ? { cursor } : {}) }, options) as {
+            records?: { uri: string; value: Value }[]; cursor?: string;
+        };
+        for (const { uri, value } of page.records ?? []) found.set(uri.slice(uri.lastIndexOf('/') + 1), value);
+        cursor = page.records?.length ? page.cursor : undefined;
+    } while (cursor);
+    return found;
+}
+
+/**
+ * Write records at keys of their own, replacing what is there, in as few
+ * requests as there can be. One record is one putRecord. Several are created
+ * in one batch — the usual case, nothing there yet — and only if the PDS
+ * refuses that, because some are there already, is the collection listed and
+ * the batch sent again, updating those. `existing`, when the caller has listed
+ * the collection already, skips straight to the right batch. Being told to
+ * slow down is not a refusal: it is waited out, or fails, as it is.
+ */
+export async function putAll(session: Session, collection: string, records: { rkey: string; record: Record<string, unknown> }[],
+    options: NetworkOptions & { existing?: ReadonlySet<string> | ReadonlyMap<string, unknown> | undefined } = {}): Promise<void> {
+    if (!records.length) return;
+    if (records.length === 1 && !options.existing) {
+        await putRecord(session, collection, records[0]!.rkey, records[0]!.record, options);
+        return;
+    }
+    const writes = (existing: { has(rkey: string): boolean } | undefined): Write[] => records.map(({ rkey, record }) =>
+        ({ action: existing?.has(rkey) ? 'update' : 'create', collection, rkey, record }));
+    if (options.existing) return await applyWrites(session, writes(options.existing), options);
+    await refusedOnce(() => applyWrites(session, writes(undefined), options),
+        async () => applyWrites(session, writes(await listOwn(session, collection, options)), options));
+}
+
+/** Delete records — those that are there — in as few requests as there can be, as `putAll()` writes them. */
+export async function deleteAll(session: Session, collection: string, rkeys: string[],
+    options: NetworkOptions & { existing?: ReadonlySet<string> | ReadonlyMap<string, unknown> | undefined } = {}): Promise<void> {
+    if (!rkeys.length) return;
+    if (rkeys.length === 1 && !options.existing) {
+        await deleteRecord(session, collection, rkeys[0]!, options);
+        return;
+    }
+    const writes = (keys: string[]): Write[] => keys.map((rkey) => ({ action: 'delete', collection, rkey }));
+    const there = (existing: { has(rkey: string): boolean }) => rkeys.filter((rkey) => existing.has(rkey));
+    if (options.existing) return await applyWrites(session, writes(there(options.existing)), options);
+    await refusedOnce(() => applyWrites(session, writes(rkeys), options),
+        async () => applyWrites(session, writes(there(await listOwn(session, collection, options))), options));
+}
+
+// Try `first`; if the PDS refuses it — anything but being rate limited — try
+// `then`, once, and let that fail as it fails.
+async function refusedOnce(first: () => Promise<void>, then: () => Promise<void>): Promise<void> {
+    try {
+        await first();
+    } catch (err) {
+        if ((err as { code?: string }).code === 'ERR_BUNDLE_RATE_LIMITED') throw err;
+        await then();
+    }
 }
 
 /** Withdraw an attestation, and drop it from the cache. */
@@ -392,8 +504,7 @@ export async function deleteRecord(session: Session, collection: string, rkey: s
 }
 
 export async function revoke(session: Session, hex: string, options: NetworkOptions = {}): Promise<void> {
-    await deleteRecord(session, COLLECTION, hex, options);
-    removeProof(options.cache ?? cacheDir(), session.did, hex);
+    await revokeAll(session, [hex], options);
 }
 
 // ------------------------------------------------------------------- XRPC ---

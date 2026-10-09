@@ -291,7 +291,9 @@ record from the publisher's PDS with its proof, however fresh the index is.
 
 `bundle publish [--as <account>] [--description <text>] [--title <name>] <name> <url | domain>`
 writes the listing. `bundle unpublish <name>` deletes it. Both sign in as `attest`
-does, with write access to `com.pipobscure.bundle.listing` only, and read the record back.
+does, with write access to `com.pipobscure.bundle.listing` only. Several listings, as pairs or
+`--from` a file, are one read of the account's listings and one `applyWrites`, and nothing is
+read back: every request counts against the account's rate limits.
 `publish` refuses a non-`https:` URL. Given a domain, it lists the domain, and checks the
 URL its TXT record names now. It also fetches the URL once, before signing in, and
 refuses anything that is not an archive whose bytes hold together, so a typo is not
