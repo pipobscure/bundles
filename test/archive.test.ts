@@ -164,3 +164,52 @@ test('fromDirectory reads exactly the files it was given, in order', async () =>
     for await (const member of fromDirectory(source, ['index.js', 'greet.js'])) seen.push(member.name);
     assert.deepEqual(seen, ['index.js', 'greet.js']);
 });
+
+test('the same files make the same archive: each member carries its file\'s time, and signing keeps them', async () => {
+    const dir = tree(tmp, APP, 'reproducible');
+    const files = Object.keys(APP);
+    // An odd second and a fraction: more than the DOS fields hold, so the
+    // extended timestamp has to carry it too.
+    const times = files.map((_, i) => new Date(Date.UTC(2024, 4, 1, 12, 0, 1 + i * 2, 250)));
+    files.forEach((name, i) => FS.utimesSync(PATH.join(dir, name), times[i]!, times[i]!));
+
+    const first = PATH.join(tmp, 'reproducible-1.nzip');
+    const second = PATH.join(tmp, 'reproducible-2.nzip');
+    await write(first, (out) => bundle({ base: dir, files, out }));
+    // Long enough that an archive dated by the clock would differ.
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+    await write(second, (out) => bundle({ base: dir, files, out }));
+    assert.deepEqual(FS.readFileSync(second), FS.readFileSync(first), 'byte for byte');
+
+    const dated = (file: string) => {
+        const zip = ZLIB.ZipFile.openSync(file);
+        try {
+            return Object.fromEntries([...zip.entriesSync()].map(([name, entry]) => [name, entry.modified.getTime()]));
+        } finally {
+            zip.closeSync();
+        }
+    };
+    const whole = (date: Date) => Math.floor(date.getTime() / 1000) * 1000;
+    const expected = Object.fromEntries(files.map((name, i) => [name, whole(times[i]!)]));
+    const latest = Math.max(...Object.values(expected));
+    assert.deepEqual(dated(first), { ...expected, [AUTHORITY]: latest }, 'the manifest is as new as the newest member');
+
+    const signed = PATH.join(tmp, 'reproducible.signed.nzip');
+    await write(signed, (out) => rebundle({ source: first, signer: keySigner({ key, chain }), out }));
+    assert.deepEqual(dated(signed), dated(first), 'signing keeps every time');
+
+    // A checkout dates every file now; SOURCE_DATE_EPOCH says when the source is from.
+    const now = new Date();
+    files.forEach((name) => FS.utimesSync(PATH.join(dir, name), now, now));
+    const epoch = Date.UTC(2025, 0, 1) / 1000;
+    process.env['SOURCE_DATE_EPOCH'] = String(epoch);
+    try {
+        const clamped = PATH.join(tmp, 'reproducible-clamped.nzip');
+        await write(clamped, (out) => bundle({ base: dir, files, out }));
+        assert.ok(Object.values(dated(clamped)).every((time) => time === epoch * 1000), 'no member later than SOURCE_DATE_EPOCH');
+        process.env['SOURCE_DATE_EPOCH'] = 'yesterday';
+        await assert.rejects(write(PATH.join(tmp, 'never.nzip'), (out) => bundle({ base: dir, files, out })), /SOURCE_DATE_EPOCH is 'yesterday', not a number of seconds/);
+    } finally {
+        delete process.env['SOURCE_DATE_EPOCH'];
+    }
+});

@@ -120,6 +120,14 @@ there: a launcher of your own, or a verifying node built by [`sea`](#sea). Witho
 is a plain archive, to be run from a mount. The prefix runs before anything in the archive
 does, so it is part of what [`audit`](#audit) reviews, and [`sign`](#sign) keeps it as it is.
 
+**The same files make the same archive.** Members are in the order of the sorted file list,
+each dated with its file's own modification time, never the time of the build, and
+`AUTHORITY.PEM` is dated as the newest member. A fresh checkout dates every file at the
+moment of the checkout, so set `SOURCE_DATE_EPOCH` (seconds, e.g.
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`) and no member is dated later than that.
+[`sign`](#sign) keeps every member's time. Build with `TZ=UTC` too: node writes ZIP times in
+local time, so the same files built in two timezones differ in those bytes.
+
 The result is **unsigned**, and that is a bundle in its own right: one that attestations can
 vouch for, or that [`sign`](#sign) signs. Every bundle is an `.nzip`. While both an unsigned
 and a signed copy are around, call the unsigned one `app.unsigned.nzip`: signing then writes
@@ -1046,6 +1054,7 @@ session.
 | `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest`, `publish`, `unpublish` and `lexicon publish` act as, without `--as` |
 | `BUNDLE_ATPROTO_PASSWORD` | an app password: `attest`, `publish`, `unpublish` and `lexicon publish` use it instead of signing in, for CI |
 | `BUNDLE_OAUTH_CLIENT_ID` | a hosted OAuth client metadata URL, instead of the loopback development client |
+| `SOURCE_DATE_EPOCH` | the latest time `create` dates a member with, in seconds: for reproducible builds from a fresh checkout |
 | `BUNDLE_RATE_LIMIT_WAIT` | the longest a rate-limited request waits before asking again, in seconds (default: 600). `0` never waits |
 | `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` is resolved against (default: `https://plc.directory`) |
 | `BUNDLE_NO_BROWSER` | never open a browser to sign in with sigstore; use a device code |

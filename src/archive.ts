@@ -34,6 +34,8 @@ export interface Member {
     name: string;
     data: Buffer;
     mode?: number | undefined;
+    /** When it was last modified: its file's time, or the time a source archive gave it. */
+    modified?: Date | undefined;
 }
 
 /** What a signer hands back once the finished hash exists. */
@@ -103,18 +105,46 @@ export interface RebundleOptions {
 // `AUTHORITY.PEM` is never carried across from a source archive — it describes
 // the signing of the archive it came from, and a re-emitted archive gets a
 // fresh one.
+//
+// A member's time is its file's — never the time the archive happens to be
+// made — so the same files make the same archive, byte for byte. A source
+// archive's members keep the times it gave them. `SOURCE_DATE_EPOCH`, when
+// set, is the latest time any member may have (see `buildTime()`).
 export async function *fromDirectory(base: string, files: string[]): AsyncGenerator<Member> {
+    const latest = buildTime();
     for (const name of files) {
-        yield { name, data: FS.readFileSync(PATH.resolve(base, name)), mode: 0o444 };
+        const path = PATH.resolve(base, name);
+        yield { name, data: FS.readFileSync(path), mode: 0o444, modified: clamp(FS.statSync(path).mtime, latest) };
     }
 }
 
 export async function *fromArchive(zip: ZLIB.ZipFile): AsyncGenerator<Member> {
     for (const [name, entry] of zip.entriesSync()) {
         if (name === AUTHORITY || entry.isDirectory) continue;
-        yield { name, data: entry.contentSync(), mode: entry.mode || 0o444 };
+        yield { name, data: entry.contentSync(), mode: entry.mode || 0o444, modified: entry.modified };
     }
 }
+
+/**
+ * `SOURCE_DATE_EPOCH`, as reproducible builds define it: the time of the
+ * source (say, its last commit, `git log -1 --format=%ct`), in seconds. No
+ * member is later than it, so a fresh checkout — whose files all carry the
+ * time of the checkout — still makes the same archive. Unset, nothing is
+ * clamped.
+ */
+export function buildTime(): Date | undefined {
+    const configured = process.env['SOURCE_DATE_EPOCH']?.trim();
+    if (!configured) return undefined;
+    if (!/^\d+$/.test(configured)) throw new Error(`SOURCE_DATE_EPOCH is '${configured}', not a number of seconds`);
+    return new Date(Number(configured) * 1000);
+}
+
+function clamp(time: Date, latest: Date | undefined): Date {
+    return latest && time.getTime() > latest.getTime() ? latest : time;
+}
+
+// The earliest time a ZIP entry can carry: what a manifest of no members is dated.
+const ZIP_EPOCH = new Date(1980, 0, 1);
 
 // Yields a ZipEntry per member — each stamped, in its entry comment, with the
 // hex digest of its own content — then a final `AUTHORITY.PEM` manifest entry
@@ -126,11 +156,15 @@ async function *entries(
     members: AsyncIterable<Member> | Iterable<Member>,
     { hashAlg, signAlg, chain }: { hashAlg: string; signAlg?: string | undefined; chain?: string | undefined },
 ): AsyncGenerator<ZLIB.ZipEntry> {
-    for await (const { name, data, mode } of members) {
+    // The manifest is made here, not read from a file: it is dated as the
+    // latest of the members, which is a time the same inputs always give.
+    let latest: Date | undefined;
+    for await (const { name, data, mode, modified } of members) {
         const digest = CRYPTO.createHash(hashAlg).update(data).digest('hex');
-        yield await ZLIB.ZipEntry.create(name, data, { mode: mode ?? 0o444, comment: digest });
+        if (modified && (!latest || modified.getTime() > latest.getTime())) latest = modified;
+        yield await ZLIB.ZipEntry.create(name, data, { mode: mode ?? 0o444, comment: digest, ...(modified ? { modified } : {}) });
     }
-    yield await ZLIB.ZipEntry.create(AUTHORITY, buildManifest({ hashAlg, signAlg, chain }), { mode: 0o444 });
+    yield await ZLIB.ZipEntry.create(AUTHORITY, buildManifest({ hashAlg, signAlg, chain }), { mode: 0o444, modified: latest ?? buildTime() ?? ZIP_EPOCH });
 }
 
 /**
