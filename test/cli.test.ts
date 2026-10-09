@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { main, USAGE, STATES, COMMANDS, splitRunArgs } from '../src/cli.ts';
+import { main, USAGE, HELP, SUBCOMMAND_HELP, STATES, COMMANDS, splitRunArgs } from '../src/cli.ts';
 import { createBundle, verifyBundleSync } from '../src/api.ts';
 import {
     APP, CERTS, CHAIN_PEM, LEAF_KEY, ROOT, ROOT_PEM, SHELL_BASE, WINDOWS,
@@ -30,6 +30,47 @@ test('help is printed for --help, and for no command at all', async () => {
     // Nothing to do is a usage error, so it prints the usage and says so.
     assert.equal(await main([], bare), 64);
     assert.equal(bare.stdout.join('\n'), USAGE);
+});
+
+test('the help is short, and every command answers --help with its own, whatever else is on the line', async () => {
+    assert.ok(USAGE.split('\n').length < 40, 'the overview is an overview');
+    assert.match(USAGE, /bundle <command> --help/);
+    assert.deepEqual(Object.keys(HELP), Object.keys(COMMANDS), 'one help per command');
+
+    const asked = async (...argv: string[]) => {
+        const io = collector();
+        const code = await main(argv, io);
+        return { code, out: io.stdout.join('\n'), err: io.stderr.join('\n') };
+    };
+    for (const command of Object.keys(COMMANDS)) {
+        const help = `${HELP[command]}\n\n  -h, --help            show this help`;
+        assert.deepEqual(await asked(command, '--help'), { code: 0, out: help, err: '' }, command);
+        // Anything else, valid or not, is not read.
+        assert.deepEqual(await asked(command, '--no-such-option', '-h', 'whatever', '--output'), { code: 0, out: help, err: '' }, `${command}, with other arguments`);
+        if (command !== 'run') assert.equal((await asked(command, 'whatever', '--help')).out, help, `${command} <argument> --help`);
+        assert.deepEqual(await asked('help', command), { code: 0, out: help, err: '' }, `help ${command}`);
+    }
+
+    // A subcommand has help of its own; one that is not a subcommand gets the command's.
+    for (const [command, subcommands] of Object.entries(SUBCOMMAND_HELP)) {
+        for (const [sub, text] of Object.entries(subcommands)) {
+            const help = `${text}\n\n  -h, --help            show this help`;
+            assert.equal((await asked(command, sub, '--force', '--help')).out, help, `${command} ${sub}`);
+            assert.equal((await asked(command, '--help', sub)).out, help, `${command} --help ${sub}`);
+            assert.equal((await asked('help', command, sub)).out, help, `help ${command} ${sub}`);
+        }
+    }
+    assert.match((await asked('policy', 'frobnicate', '--help')).out, /^policy options:/);
+
+    // After '--', and after run's archive, --help belongs to someone else.
+    assert.equal((await asked('run', '--help')).code, 0);
+    const app = await asked('run', PATH.join(tmp, 'no-such-app.nzip'), '--help');
+    assert.notEqual(app.code, 0, 'the program\'s --help, so the archive is looked for');
+    assert.doesNotMatch(app.out, /run options:/);
+    assert.equal((await asked('create', '--base', source, '--files', list, '--output', PATH.join(tmp, 'dashdash.nzip'), '--', '--help')).out, '', 'after --, not a flag');
+
+    assert.deepEqual(await asked('help', 'frobnicate'), { code: 70, out: '', err: "error: no command 'frobnicate' — 'bundle --help' lists them" });
+    assert.match((await asked('frobnicate', '--help')).err, /unknown command: frobnicate — 'bundle --help' lists them/);
 });
 
 test('--version and -v print the version of the package that is running', async () => {

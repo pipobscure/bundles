@@ -4,7 +4,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { complete, respond, splitLine, script, startupFile, hookLine, addHook, removeHooks, hasHook, detectShell, programAt, programNamed } from '../src/completion.ts';
-import { COMMANDS, OPTIONS, USAGE, main } from '../src/cli.ts';
+import { COMMANDS, OPTIONS, HELP, main } from '../src/cli.ts';
 import { recordPath } from '../src/install.ts';
 import { MAIN, ROOT, collector, scratch } from './helpers.ts';
 
@@ -94,19 +94,13 @@ test('the CLI answers on Tab, and never fails loudly doing it', async () => {
     assert.deepEqual(nothing.stdout, []);
 });
 
-test('the usage text documents every option each command accepts', () => {
-    const lines = USAGE.split('\n');
+test('each command\'s help documents every option it accepts', () => {
     const undocumented: string[] = [];
     for (const [command, options] of Object.entries(OPTIONS)) {
-        const start = lines.findIndex((line) => line.startsWith(`${command} options:`));
-        let end = lines.findIndex((line, i) => i > start && /^\S/.test(line));
-        if (end < 0) end = lines.length;
-        // `sea` takes `sign`'s signing options, and says so rather than repeating them.
-        const own = lines.slice(start, end).join('\n');
-        const section = command === 'sea' ? own + lines.slice(lines.findIndex((line) => line.startsWith('sign options:'))).join('\n') : own;
+        const section = HELP[command] ?? '';
         for (const [name, option] of Object.entries(options as Record<string, { type: string; default?: unknown }>)) {
             const spelled = option.type === 'boolean' && option.default === true ? `--no-${name}` : `--${name}`;
-            if (start < 0 || !new RegExp(`${spelled}\\b`).test(section)) undocumented.push(`${command} ${spelled}`);
+            if (!new RegExp(`${spelled}\\b`).test(section)) undocumented.push(`${command} ${spelled}`);
         }
     }
     assert.deepEqual(undocumented, []);

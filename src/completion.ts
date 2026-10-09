@@ -2,7 +2,7 @@ import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { COMMANDS, OPTIONS, USAGE } from './cli.ts';
+import { COMMANDS, OPTIONS, USAGE, HELP } from './cli.ts';
 
 // Tab completion, for bash, zsh, fish and PowerShell.
 //
@@ -205,10 +205,10 @@ function commandDescriptions(): Map<string, string> {
     return commands;
 }
 
-/** A command's options' descriptions, from its section of the usage text. */
+/** A command's options' descriptions, from its help. */
 function optionDescriptions(command: string): Map<string, string> {
     const described = new Map<string, string>();
-    const lines = USAGE.split('\n');
+    const lines = (Object.hasOwn(HELP, command) ? HELP[command]! : '').split('\n');
     const start = lines.findIndex((line) => line.startsWith(`${command} options:`));
     if (start < 0) return described;
     let last: string | undefined;

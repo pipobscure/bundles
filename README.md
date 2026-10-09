@@ -264,11 +264,14 @@ never the folder.
 
 ## Commands at a glance
 
+`bundle <command> --help` says what one command does and lists its options; `bundle --help`
+lists the commands.
+
 | Building and signing | |
 |---|---|
 | [`create`](docs/cli.md#create) | build an unsigned archive from a list of files |
 | [`audit`](docs/cli.md#audit) | report what is about to be reviewed, and gate signing on the verdict |
-| [`sign`](docs/cli.md#sign) | sign an archive into a new file, optionally behind a launcher or a binary |
+| [`sign`](docs/cli.md#sign) | sign an archive as it is: `app.unsigned.nzip` into `app.nzip` |
 | [`sea`](docs/cli.md#sea) | build a node runtime that verifies an archive before running it |
 
 | Checking and running | |

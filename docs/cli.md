@@ -1,12 +1,13 @@
 # `bundle` command reference
 
-Everything `bundle` does, command by command. `bundle --help` prints the same options in
-brief; this is the long form. For what the tool is and how to get started, see the
+Everything `bundle` does, command by command. `bundle <command> --help` prints one command's
+options in brief, and `bundle --help` lists the commands; this is the long form. For what the tool is and how to get started, see the
 [README](../README.md). For how it works underneath, see [design.md](design.md).
 
 ```
 bundle <command> [options] [arguments]
-bundle --help          bundle -v, --version
+bundle <command> [subcommand] --help     bundle help <command> [subcommand]
+bundle --help                            bundle -v, --version
 ```
 
 | Building and signing | |
@@ -53,6 +54,10 @@ bundle --help          bundle -v, --version
 
 ## Conventions
 
+- **`--help` (or `-h`) after a command prints that command's help**, and nothing else on the
+  line is read, so it is what to add when unsure what the rest should be. After a
+  subcommand (`bundle policy init --help`), it prints that subcommand's. After a `--`, and
+  after `run`'s archive, it belongs to the program instead.
 - **Options come before arguments.** `--name value` and `--name=value` both work. A short
   option takes its value as the next word: `-o app.nzip`.
 - **Options that are on by default are turned off with `--no-`**: `--no-discover`,

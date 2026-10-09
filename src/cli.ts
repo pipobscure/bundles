@@ -21,12 +21,13 @@ import type { Validation, Seen } from './install.ts';
 // deliberate: what the CLI can do is exactly what an embedder can do, because
 // they are the same functions.
 
+/** What `bundle --help` prints: the commands, and how to ask about one. */
 export const USAGE = `usage: bundle <command> [options]
        bundle -v, --version
 
 commands:
   create    build an archive from a list of files
-  sign      sign an archive into a new file, optionally behind a prefix
+  sign      sign an archive as it is: app.unsigned.nzip into app.nzip
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   attest    vouch for an archive from an atproto account, or withdraw that
@@ -47,7 +48,16 @@ commands:
   skill     install this package's bundle-auditing skill into a project
   shell     print what to load at shell start: Tab completion, and validate
 
-create options:                     usage: create [options]
+  bundle <command> --help     what one command does, and its options
+  bundle help <command>       the same
+
+options:
+  -h, --help            show this help; after a command, that command's
+  -v, --version         print the version`;
+
+/** What `bundle <command> --help` prints: one command, what it does, and its options. */
+export const HELP: Record<string, string> = {
+    create: `create options:                     usage: create [options]
   -b, --base <dir>      base directory the file list is relative to (default: .)
   -l, --launcher        put this package's shell launcher in front, so the
                         result runs by name — the usual way to make a program
@@ -70,9 +80,8 @@ create options:                     usage: create [options]
   each member is dated with its file's own time (never the time of the
   build), no later than SOURCE_DATE_EPOCH when that is set; --date gives
   them all one time instead. So the same files make the same archive — in
-  the same timezone, since ZIP times are local: build with TZ=UTC.
-
-sign options:                       usage: sign [options] <archive>
+  the same timezone, since ZIP times are local: build with TZ=UTC.`,
+    sign: `sign options:                       usage: sign [options] <archive>
   -o, --output <file>   write the signed archive here; '-' for stdout. By
                         default app.unsigned.nzip is signed into app.nzip, and
                         a name without '.unsigned' is signed in place
@@ -93,9 +102,8 @@ sign options:                       usage: sign [options] <archive>
 
   or, to sign against a certificate authority of your own:
   -k, --key <file>      leaf private key (PEM)
-  -c, --chain <file>    full certificate chain (PEM, leaf first)
-
-audit options:                      usage: audit [options] <archive>
+  -c, --chain <file>    full certificate chain (PEM, leaf first)`,
+    audit: `audit options:                      usage: audit [options] <archive>
   -b, --baseline <file>  a previously approved archive to review against, so
                         the review is of what changed rather than of everything
   -v, --verdict <file>  where the verdict is (default: <archive>.audit.json)
@@ -106,9 +114,8 @@ audit options:                      usage: audit [options] <archive>
   with none of those it reports what is about to be reviewed and how. The review
   itself needs judgement, so no command performs it: install the skill with
   'bundle skill' and run /audit-bundle, or read the archive yourself and
-  --approve. Signing is not gated unless you run --check before it.
-
-verify options:                     usage: verify [options] <archive>
+  --approve. Signing is not gated unless you run --check before it.`,
+    verify: `verify options:                     usage: verify [options] <archive>
   -a, --archive <file>  archive to verify (or pass it as a positional argument)
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
@@ -124,9 +131,8 @@ verify options:                     usage: verify [options] <archive>
   with attesters, their attestations of this file are fetched first; if that
   fails, what the cache holds is used. A signature is then optional — when
   there is one it must verify, but its certificate only has to be trusted if
-  --identity or --issuer ask for a signer too.
-
-attest options:                     usage: attest [options] <archive>...
+  --identity or --issuer ask for a signer too.`,
+    attest: `attest options:                     usage: attest [options] <archive>...
       --as <handle | did>  the account to attest as
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --kind <kind>     what is being said: published, audited, reproduced —
@@ -149,9 +155,8 @@ attest options:                     usage: attest [options] <archive>...
 
   writes com.pipobscure.bundle.attestation/<hash> to the account's repository, naming
   the archive's whole-file hash — the hash a signature covers. The archive is
-  checked first: one whose bytes or signature do not hold together is refused.
-
-publish options:                    usage: publish [options] <name> <url | domain>
+  checked first: one whose bytes or signature do not hold together is refused.`,
+    publish: `publish options:                    usage: publish [options] <name> <url | domain>
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --for <app>       list it as a plugin for this app: an app installed from
@@ -172,18 +177,16 @@ publish options:                    usage: publish [options] <name> <url | domai
   manage in DNS. Either way the archive is fetched first, and refused unless
   it is https and an archive whose bytes hold together. <name> is lowercase
   letters, digits and '-', and is what it installs as. Publishing it again
-  replaces it.
-
-unpublish options:                  usage: unpublish [options] <name>
+  replaces it.`,
+    unpublish: `unpublish options:                  usage: unpublish [options] <name>
       --as <handle | did>  the account the listing is in
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
 
   deletes the listing. Installs made from it keep checking the URL it last
-  named.
-
-run options:                        usage: run [options] <archive> [app args...]
+  named.`,
+    run: `run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -196,44 +199,8 @@ run options:                        usage: run [options] <archive> [app args...]
                         never one that misses what the flags above demand
 
   these options come before the archive; everything after it is the program's,
-  flags included. A '--' is accepted there too, for the habit.
-
-sea options:                        usage: sea [options] [archive]
-  -o, --output <file>   write the executable here (required)
-      --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
-      --node <file>     node binary to embed (default: the running one)
-      --base <file>     reuse a SEA base built earlier instead of building one
-      --no-sigstore     leave the sigstore libraries out of the embedded verifier
-      --untrusted       let the finished executable run an archive whose
-                        signature is good but unanchored
-  -r, --root <file>     trusted root the executable checks against; repeatable
-      --identity <san>  identity the executable requires of a signature
-      --issuer <url>    issuer the executable requires of a signature
-      --attester <[kind@]who>  attester the executable requires; repeatable.
-                        Handles are resolved now, and the DID is what is baked
-      --quorum <n>      how many of the attesters (default: all)
-      --max-age <time>  how stale a cached attestation may be (default: 7d)
-      --block <who>     refuse what this DID or handle has marked bad; repeatable
-
-  with an archive, the result is that application: one file that verifies
-  itself and runs what is inside it. without one, the result is a verifying
-  node — a runtime that takes an archive on its own command line:
-
-      bundle sea -o node-verifying
-      ./node-verifying ./my-app.zip --args --for --the --app
-
-  a runtime built with a policy (-r, --identity, --issuer, --attester) is
-  sealed: it accepts no policy from its command line, because a binary that
-  demands a signing identity is not one whose user can ask it to stop. It
-  checks attestations against the cache 'bundle trust' keeps current, and
-  never the network.
-
-  with an archive, the executable is built unsigned, and refuses to run until
-  'bundle sign' signs it: the same create, audit, sign order as any archive,
-  so what is signed is what was reviewed. A verifying node needs no
-  signature of its own; it checks what it is handed.
-
-search options:                     usage: search [options] <words>...
+  flags included. A '--' is accepted there too, for the habit.`,
+    search: `search options:                     usage: search [options] <words>...
       --for <app>       search the plugins listed for this app instead: an app
                         installed from its listing, or @<handle or did>/<name>
       --refresh         sync the index first, however recent it is
@@ -250,17 +217,15 @@ search options:                     usage: search [options] <words>...
 
   plugins are listed against their app's listing, so they never show up
   among apps; --for asks for one app's. The index follows the plugins of
-  every app installed here from a listing, and of the one --for names.
-
-listings options:                   usage: listings [options]
+  every app installed here from a listing, and of the one --for names.`,
+    listings: `listings options:                   usage: listings [options]
       --for <app>       the plugins listed for this app instead
       --refresh         sync the index first, however recent it is
       --offline         answer from the index as it is, without the network
       --json            print the listings as JSON
 
-  every listing in the index, synced first as for 'search'.
-
-install options:                    usage: install [options] [url | domain | @account/name | ./folder]
+  every listing in the index, synced first as for 'search'.`,
+    install: `install options:                    usage: install [options] [url | domain | @account/name | ./folder]
   -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -339,9 +304,8 @@ install options:                    usage: install [options] [url | domain | @ac
   of the shell it is run from — Tab completion, and a quiet daily re-check of
   installs (see 'shell'); 'bundle uninstall' takes that out again. Run again
   once installed, it fetches nothing and only sets up the current shell — so
-  after switching shells, 'bundle install' is all it takes.
-
-update options:                     usage: update [options] [name]
+  after switching shells, 'bundle install' is all it takes.`,
+    update: `update options:                     usage: update [options] [name]
   -y, --yes             accept everything found for a new version, rather than asking
       --identity <san>  require this sigstore signing identity of every new version
       --issuer <url>    require this sigstore OIDC issuer of every new version
@@ -359,9 +323,8 @@ update options:                     usage: update [options] [name]
   like an install, against what has been accepted for it so far: a new signer,
   or different attestations, is a question rather than a failure — publishers
   move, and auditors do not review every release. Only flags and the policy
-  make anything mandatory.
-
-installed options:                  usage: installed [options]
+  make anything mandatory.`,
+    installed: `installed options:                  usage: installed [options]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --json            print the results as JSON
 
@@ -369,9 +332,8 @@ installed options:                  usage: installed [options]
   checks each one: the file is there, its bytes are still the bytes that were
   installed, someone accepted for it still vouches for it, the policy still
   holds, and nobody it blocks on has marked it bad since. Attestations are
-  fetched fresh first. Exits non-zero if any of that is no longer true.
-
-validate options:                   usage: validate [options] [name | url | domain]...
+  fetched fresh first. Exits non-zero if any of that is no longer true.`,
+    validate: `validate options:                   usage: validate [options] [name | url | domain]...
   -q, --quiet           say nothing unless something needs attention
       --every <time>    leave alone anything validated more recently (30m, 1d)
       --timeout <time>  give up on the network after this, and answer from the cache
@@ -386,9 +348,58 @@ validate options:                   usage: validate [options] [name | url | doma
   nothing needs attention, 1 for a new warning or an install nobody accepted
   vouches for any more, 2 for one that is changed, missing, invalid or
   blocked. Made for startup — e.g. 'bundle validate --quiet --every 1d' in a
-  shell profile; offline, it answers from the cache.
+  shell profile; offline, it answers from the cache.`,
+    uninstall: `uninstall options:                  usage: uninstall [name | url | domain | @did/name]
 
-policy options:                     usage: policy [show | init | check <file>] [options]
+  deletes the file and forgets the record. With no argument it removes this
+  package's own install — what 'bundle install' left behind. An app's plugins
+  go with it, unless another install of the same app still loads them. The
+  .nzip association on Windows is left alone: other archives may need it.`,
+    sea: `sea options:                        usage: sea [options] [archive]
+  -o, --output <file>   write the executable here (required)
+      --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
+      --node <file>     node binary to embed (default: the running one)
+      --base <file>     reuse a SEA base built earlier instead of building one
+      --no-sigstore     leave the sigstore libraries out of the embedded verifier
+      --untrusted       let the finished executable run an archive whose
+                        signature is good but unanchored
+  -r, --root <file>     trusted root the executable checks against; repeatable
+      --identity <san>  identity the executable requires of a signature
+      --issuer <url>    issuer the executable requires of a signature
+      --attester <[kind@]who>  attester the executable requires; repeatable.
+                        Handles are resolved now, and the DID is what is baked
+      --quorum <n>      how many of the attesters (default: all)
+      --max-age <time>  how stale a cached attestation may be (default: 7d)
+      --block <who>     refuse what this DID or handle has marked bad; repeatable
+
+  with an archive, the result is that application: one file that verifies
+  itself and runs what is inside it. without one, the result is a verifying
+  node — a runtime that takes an archive on its own command line:
+
+      bundle sea -o node-verifying
+      ./node-verifying ./my-app.zip --args --for --the --app
+
+  a runtime built with a policy (-r, --identity, --issuer, --attester) is
+  sealed: it accepts no policy from its command line, because a binary that
+  demands a signing identity is not one whose user can ask it to stop. It
+  checks attestations against the cache 'bundle trust' keeps current, and
+  never the network.
+
+  with an archive, the executable is built unsigned, and refuses to run until
+  'bundle sign' signs it: the same create, audit, sign order as any archive,
+  so what is signed is what was reviewed. A verifying node needs no
+  signature of its own; it checks what it is handed.`,
+    trust: `trust options:                      usage: trust [options]
+      --mirror <url>    TUF repository to refresh from (default: sigstore's)
+      --attester <who>  also keep this DID's or handle's attestations; repeatable
+      --no-sigstore     refresh only the attestations
+
+  attestations are kept for every attester named here, in BUNDLE_ATTESTERS,
+  in an install record, or already in the cache: each one's attestations are
+  listed, new ones fetched and verified, and withdrawn ones dropped. That is
+  what a verifying runtime — which never reaches for the network — checks
+  against, and what decides how stale its answer can be.`,
+    policy: `policy options:                     usage: policy [show | init | check <file>] [options]
   -a, --app <name>      the rules for this installed name, apps section included
       --json            print the rules in force as JSON (merged — not a policy file)
       --system          the machine's file: the one init writes, or the one shown
@@ -403,9 +414,8 @@ policy options:                     usage: policy [show | init | check <file>] [
   BUNDLE_SYSTEM_POLICY) and one for the user (~/.config/bundle/policy.json, or
   BUNDLE_POLICY). Both are JSON, described by a JSON Schema published with each
   release; files written or shown here start with a "$schema" pointing at the
-  one for this version, so an editor can complete and check them.
-
-lexicon options:                    usage: lexicon [check | publish] [options]
+  one for this version, so an editor can complete and check them.`,
+    lexicon: `lexicon options:                    usage: lexicon [check | publish] [options]
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --dry-run         say what publish would write, and stop before signing in
@@ -418,27 +428,12 @@ lexicon options:                    usage: lexicon [check | publish] [options]
   naming the account whose repository publishes them. 'check' resolves that
   and compares what is published — verified — with what is here. 'publish'
   writes each as a com.atproto.lexicon.schema record from --as, signing in
-  with access to that collection only, and reads it back.
-
-uninstall options:                  usage: uninstall [name | url | domain | @did/name]
-
-  deletes the file and forgets the record. With no argument it removes this
-  package's own install — what 'bundle install' left behind. An app's plugins
-  go with it, unless another install of the same app still loads them. The
-  .nzip association on Windows is left alone: other archives may need it.
-
-trust options:
-      --mirror <url>    TUF repository to refresh from (default: sigstore's)
-      --attester <who>  also keep this DID's or handle's attestations; repeatable
-      --no-sigstore     refresh only the attestations
-
-  attestations are kept for every attester named here, in BUNDLE_ATTESTERS,
-  in an install record, or already in the cache: each one's attestations are
-  listed, new ones fetched and verified, and withdrawn ones dropped. That is
-  what a verifying runtime — which never reaches for the network — checks
-  against, and what decides how stale its answer can be.
-
-shell options:                      usage: shell [bash | zsh | fish | powershell] [options]
+  with access to that collection only, and reads it back.`,
+    skill: `skill options:                      usage: skill [options] [name]
+  -d, --dir <dir>       where to install (default: .claude/skills)
+  -f, --force           overwrite files that are already there
+  -l, --list            list the skills this package carries and stop`,
+    shell: `shell options:                      usage: shell [bash | zsh | fish | powershell] [options]
       --every <time>    how often a new shell re-validates installs (default: 1d)
       --timeout <time>  how long it may wait for the network (default: 5s)
       --no-validate     leave out the re-validation
@@ -463,14 +458,66 @@ shell options:                      usage: shell [bash | zsh | fish | powershell
   'bundle validate --quiet', so a warning about something you installed —
   someone marking it bad since — is the first thing a new terminal says. It
   asks the network at most once per --every, gives up after --timeout and
-  answers from the cache, and says nothing when there is nothing to say.
+  answers from the cache, and says nothing when there is nothing to say.`,
+};
 
-skill options:                      usage: skill [options] [name]
-  -d, --dir <dir>       where to install (default: .claude/skills)
-  -f, --force           overwrite files that are already there
-  -l, --list            list the skills this package carries and stop
+/**
+ * What `bundle <command> <subcommand> --help` prints, for the commands that
+ * have subcommands. The command's own help lists them all.
+ */
+export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
+    policy: {
+        show: `policy show options:                usage: policy show [options]
+      --system          only the machine's file
+      --user            only the user's file
+
+  prints the policy files themselves: the machine's (/etc/bundle/policy.json,
+  or BUNDLE_SYSTEM_POLICY) and the user's (~/.config/bundle/policy.json, or
+  BUNDLE_POLICY) — both, unless one is asked for.`,
+        init: `policy init options:                usage: policy init [options]
+      --user            write the user's file (the default)
+      --system          write the machine's file instead
+  -f, --force           replace a file that is already there
+
+  writes a starter policy file, beginning with a "$schema" pointing at the
+  JSON Schema for this version, so an editor can complete and check it.`,
+        check: `policy check:                       usage: policy check <file>
+
+  reads a policy file the way an install will, and says what is wrong with
+  it if anything is.`,
+    },
+    lexicon: {
+        check: `lexicon check:                      usage: lexicon check
+
+  resolves each lexicon's authority from its '_lexicon.<authority>' TXT
+  record, and compares what that account has published — verified — with
+  what this package carries. Exits 1 when any is missing or different.`,
+        publish: `lexicon publish options:            usage: lexicon publish [options]
+      --as <handle | did>  the account to publish from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --dry-run         say what would be written, and stop before signing in
+      --force           publish even though DNS does not name that account yet
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  writes each lexicon as a com.atproto.lexicon.schema record from --as,
+  signing in with access to that collection only, and reads it back.`,
+    },
+};
+
+/**
+ * The help for one command, or one of its subcommands: what `--help` after
+ * it prints. Undefined for a command there is none of.
+ */
+export function helpFor(command: string, subcommand?: string | undefined): string | undefined {
+    const own = Object.hasOwn(HELP, command) ? HELP[command] : undefined;
+    if (own === undefined) return undefined;
+    const sub = subcommand !== undefined && Object.hasOwn(SUBCOMMAND_HELP[command] ?? {}, subcommand) ? SUBCOMMAND_HELP[command]![subcommand] : undefined;
+    return `${sub ?? own}
 
   -h, --help            show this help`;
+}
+
 
 /** Where a command's output goes. Swappable so tests need no subprocess. */
 export interface Console {
@@ -526,8 +573,14 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
             io.out(USAGE);
             return 64;
         }
-        if (cmd === '-h' || cmd === '--help' || cmd === 'help') {
+        if (cmd === '-h' || cmd === '--help' || (cmd === 'help' && rest[0] === undefined)) {
             io.out(USAGE);
+            return 0;
+        }
+        if (cmd === 'help') {
+            const help = helpFor(rest[0]!, rest[1]);
+            if (help === undefined) throw new Error(`no command '${rest[0]}' — 'bundle --help' lists them`);
+            io.out(help);
             return 0;
         }
         if (cmd === '-v' || cmd === '--version') {
@@ -546,12 +599,31 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
             return 0;
         }
         const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
-        if (!command) throw new Error(`unknown command: ${cmd}`);
+        if (!command) throw new Error(`unknown command: ${cmd} — 'bundle --help' lists them`);
+        // --help wins over everything else on the line, which is not read: it
+        // is what to type when unsure what the rest should be.
+        const asked = askedForHelp(cmd, rest);
+        if (asked) {
+            io.out(helpFor(cmd, asked.subcommand)!);
+            return 0;
+        }
         return await command(rest, io);
     } catch (err) {
         io.err(`error: ${message(err)}`);
         return 70;
     }
+}
+
+// Whether `--help` (or `-h`) is among a command's own arguments, and for a
+// command with subcommands, which one it is about. Its own arguments are those
+// before a '--', and for `run`, those before the archive: what follows is the
+// program's, so 'bundle run app.nzip --help' asks the program.
+function askedForHelp(command: string, args: string[]): { subcommand?: string | undefined } | undefined {
+    const end = args.indexOf('--');
+    const own = command === 'run' ? splitRunArgs(args).mine : end < 0 ? args : args.slice(0, end);
+    if (!own.includes('--help') && !own.includes('-h')) return undefined;
+    const subcommands = SUBCOMMAND_HELP[command];
+    return { subcommand: subcommands ? own.find((arg) => Object.hasOwn(subcommands, arg)) : undefined };
 }
 
 // The version of whatever is running — read from the package.json beside it,
