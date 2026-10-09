@@ -237,9 +237,10 @@ export const HELP: Record<string, string> = {
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
   -n, --name <name>     install under this name, rather than the one the
                         server suggests (Content-Disposition, else the URL)
-      --for <app>       install a plugin for this app — an installed name, or
-                        the app's package name — into the app's scope rather
-                        than onto the PATH
+      --for <app>       install a plugin for this app — an installed name, the
+                        listing it was installed from (@<handle or did>/<name>,
+                        or an at:// address), or its package name — into the
+                        app's scope rather than onto the PATH
   -d, --dir <dir>       where to install (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
       --no-shell        installing itself, do not offer to set up the shell
@@ -1037,21 +1038,55 @@ async function install(args: string[], io: Console): Promise<number> {
 // runtime, and which survives `--name` — or a package name given directly.
 async function scopeFor(value: string, INSTALL: typeof import('./install.ts')): Promise<string> {
     const app = INSTALL.records()[value];
-    if (app && app.scope === undefined) {
-        let name = app.package;
-        if (!name) {
-            try {
-                name = INSTALL.packageName(FS.readFileSync(INSTALL.pathOf(app)));
-            } catch {
-                // said below
-            }
-        }
-        if (!name) throw new Error(`install: ${value} carries no package name to install plugins for — name the scope instead`);
-        return name;
+    if (app && app.scope === undefined) return appPackage(value, app, INSTALL);
+
+    // The app as it is listed: `@<handle or did>/<name>` or its at:// address,
+    // which is the app installed here from that listing. `@pipobscure.com/dns`
+    // could also be read as a package name, but a handle that resolves says
+    // which was meant.
+    const listed = await listingOf(value);
+    if (listed) {
+        const host = Object.values(INSTALL.records()).find((record) => record.scope === undefined && INSTALL.sourceOf(record) === listed);
+        if (!host) throw new Error(`install: ${value} is ${listed}, which no app installed here came from — install the app first ('bundle install ${value}'), then its plugins`);
+        return appPackage(value, host, INSTALL);
     }
     const { isScope } = await import('./policy.ts');
-    if (!isScope(value)) throw new Error(`install: --for takes an installed app, or the package name of one; '${value}' is neither`);
+    if (!isScope(value)) throw new Error(`install: --for takes an installed app, @<handle or did>/<name>, a listing's at:// address, or a package name; '${value}' is none of those`);
     return value;
+}
+
+// The package name an installed app knows itself by: the scope its plugins go in.
+function appPackage(value: string, app: import('./install.ts').InstallRecord, INSTALL: typeof import('./install.ts')): string {
+    let name = app.package;
+    if (!name) {
+        try {
+            name = INSTALL.packageName(FS.readFileSync(INSTALL.pathOf(app)));
+        } catch {
+            // said below
+        }
+    }
+    if (!name) throw new Error(`install: ${value} carries no package name to install plugins for — name the scope instead`);
+    return name;
+}
+
+// The at:// address a listing reference names, or undefined when it names
+// none: an at:// address as it is, and `@<handle or did>/<name>` with its
+// handle resolved. A handle that does not resolve is not one, and the value
+// is left to be read as a package name.
+async function listingOf(value: string): Promise<string | undefined> {
+    const LISTING = await import('./listing.ts');
+    if (LISTING.parseListingUri(value)) return value;
+    const match = /^@([^/]+)\/([^/]+)$/.exec(value);
+    if (!match || !LISTING.isName(match[2]!)) return undefined;
+    const [, who, name] = match as unknown as [string, string, string];
+    if (who.startsWith('did:')) return LISTING.listingUri(who, name);
+    if (!who.includes('.')) return undefined;
+    try {
+        const ATPROTO = await import('./atproto.ts');
+        return LISTING.listingUri((await ATPROTO.resolveHandle(who)).did, name);
+    } catch {
+        return undefined;
+    }
 }
 
 // Add `bundle shell` to the startup file of the shell `bundle install` was run

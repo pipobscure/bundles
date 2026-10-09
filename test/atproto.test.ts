@@ -1421,6 +1421,18 @@ test('a plugin is listed against its app: found with --for, never among apps, an
 
     const { uninstall: remove } = await import('../src/install.ts');
     remove('demo:demo');
+
+    // On the command line, --for takes the app as it is listed, too: by
+    // @<handle or did>/<name>, or by its at:// address.
+    for (const app of [`@${author.did}/host-app`, listedApp.uri]) {
+        const io = collector();
+        assert.equal(await main(['install', '--yes', '--for', app, `@${extender.did}/host-extra`], io), 0, io.stderr.join('\n'));
+        assert.match(io.stdout.join('\n'), /\(demo\) installed for demo, in /, app);
+        remove('demo:demo');
+    }
+    const elsewhere = collector();
+    assert.equal(await main(['install', '--yes', '--for', `@${extender.did}/not-installed-here`, `@${extender.did}/host-extra`], elsewhere), 70);
+    assert.match(elsewhere.stderr.join('\n'), /is at:\/\/.*not-installed-here, which no app installed here came from — install the app first/);
     remove(host.name);
 });
 

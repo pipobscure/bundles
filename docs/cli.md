@@ -668,8 +668,10 @@ hands.
 
 **`--for` installs a plugin** for an app, from a URL, a domain or a listing alike: a bundle
 the app loads by package name, with `@pipobscure/bundle/plugins` (see [Plugins](../README.md#plugins)).
-`--for` takes the app as it is installed (`bled`, mapped to its package name) or its package
-name. The plugin goes into that app's **scope**: a directory of the app's own
+`--for` takes the app as it is installed (`bled`), or as it is listed
+(`@pipobscure.com/bled`, or its `at://` address: the app installed here from that listing),
+either mapped to its package name, or that package name itself. A listing no installed app came
+from is refused: install the app first. The plugin goes into that app's **scope**: a directory of the app's own
 (`~/.local/share/bundle/plugins/<scope>/`; see [Files and directories](#files-and-directories)),
 under the package name inside it. It is not made executable and is never on the PATH.
 
@@ -709,7 +711,7 @@ shells, `bundle install` is all it takes.
 | `--no-discover` | do not ask the backlink index who has attested it |
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
 | `-n, --name <name>` | install under this name |
-| `--for <app>` | install a plugin for this app: an installed name, or the app's package name |
+| `--for <app>` | install a plugin for this app: an installed name, the listing it was installed from (`@<handle or did>/<name>`, or an `at://` address), or its package name |
 | `-d, --dir <dir>` | install here (default: `~/.local/bin`, or `%LOCALAPPDATA%\bundle\bin`) |
 | `--no-shell` | installing itself, do not offer to set up the shell |
 
