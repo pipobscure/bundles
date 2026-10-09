@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
-import { bundle, rebundle, reprefix, keySigner, members, prefixLength, fromDirectory, createArchive } from '../src/archive.ts';
+import { bundle, rebundle, reprefix, keySigner, members, prefixLength, fromDirectory, createArchive, parseDate } from '../src/archive.ts';
 import { AUTHORITY, parseSignature, parseUnsigned, verifySync, wholeFileHash } from '../src/manifest.ts';
 import { APP, chain, comment, key, rootPem, scratch, tree } from './helpers.ts';
 
@@ -211,5 +211,46 @@ test('the same files make the same archive: each member carries its file\'s time
         await assert.rejects(write(PATH.join(tmp, 'never.nzip'), (out) => bundle({ base: dir, files, out })), /SOURCE_DATE_EPOCH is 'yesterday', not a number of seconds/);
     } finally {
         delete process.env['SOURCE_DATE_EPOCH'];
+    }
+});
+
+test('--date reads ISO 8601 and nothing else: a time with its offset, or a date', () => {
+    const at = (text: string) => parseDate(text).toString();
+    assert.equal(at('2024-05-01T12:00:00Z'), '2024-05-01T12:00:00Z');
+    assert.equal(at('2024-05-01T14:00:00+02:00'), '2024-05-01T12:00:00Z', 'an offset is where the moment is');
+    assert.equal(at('2024-05-01'), '2024-05-01T00:00:00Z', 'a date alone is midnight UTC');
+    assert.equal(at('20240501T120000Z'), '2024-05-01T12:00:00Z', 'the basic format is ISO 8601 too');
+    assert.throws(() => parseDate('2024-05-01T12:00:00'), /not a time anywhere in particular: give its offset, as Z or ±hh:mm/);
+    assert.throws(() => parseDate('2024-02-30'), /not a date there is/, 'not rolled over into March');
+    assert.throws(() => parseDate('2024-02-30T00:00:00Z'), /not an ISO 8601 date .*: .*day/);
+    assert.throws(() => parseDate('2024-05-01T12:00:00Z[Europe/Berlin]'), /leave out the \[annotation\]/);
+    assert.throws(() => parseDate('May 1st, 2024'), /not an ISO 8601 date \(2024-05-01\) or date and time/);
+    assert.throws(() => parseDate('1979-12-31T23:59:59Z'), /not a time a ZIP entry can hold: 1980 to 2107/);
+    assert.throws(() => parseDate('2108-01-01'), /1980 to 2107/);
+});
+
+test('--date gives every member, and the manifest, one time, whatever the files say', async () => {
+    const dir = tree(tmp, APP, 'one-date');
+    const files = Object.keys(APP);
+    const date = parseDate('2024-05-01T12:00:01.750+02:00');
+    const output = (n: number) => PATH.join(tmp, `one-date-${n}.nzip`);
+    await write(output(1), (out) => bundle({ base: dir, files, date, out }));
+    // The files change their times; the archive does not.
+    const later = new Date();
+    files.forEach((name) => FS.utimesSync(PATH.join(dir, name), later, later));
+    process.env['SOURCE_DATE_EPOCH'] = '0';
+    try {
+        await write(output(2), (out) => bundle({ base: dir, files, date, out }));
+    } finally {
+        delete process.env['SOURCE_DATE_EPOCH'];
+    }
+    assert.deepEqual(FS.readFileSync(output(2)), FS.readFileSync(output(1)), 'neither the files\' times nor SOURCE_DATE_EPOCH count');
+
+    const zip = ZLIB.ZipFile.openSync(output(1));
+    try {
+        const times = new Set([...zip.entriesSync()].map(([, entry]) => entry.modified.getTime()));
+        assert.deepEqual([...times], [Date.parse('2024-05-01T10:00:01Z')], 'one time, in whole seconds');
+    } finally {
+        zip.closeSync();
     }
 });

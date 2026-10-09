@@ -32,6 +32,12 @@ const { state, reason, identity } = await verifyBundle('app.nzip', { roots: ['ca
 const status = await runBundle('app.signed.nzip', { roots: ['ca.pem'], args: ['--help'] });
 ```
 
+**Dates.** Each member is dated with its file's own modification time, never the time of the
+build, and no later than `SOURCE_DATE_EPOCH` when that is set, so the same files make the same
+archive. `date`, a `Temporal.Instant`, gives every member one time instead:
+`createBundle({ …, date: parseDate('2024-05-01T12:00:00Z') })`. `parseDate()` takes ISO 8601
+only: a date, or a date and time with its offset. Signing keeps every member's time.
+
 **Signers.** A signer is `{ chain, signAlg, sign(digest) }`. The chain goes into the archive
 *before* hashing; `sign()` is called *after*, with the finished hash. That two-phase shape is
 what lets sigstore work at all — the certificate has to be embedded before the bytes exist,

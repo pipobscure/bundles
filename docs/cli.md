@@ -125,7 +125,9 @@ each dated with its file's own modification time, never the time of the build, a
 `AUTHORITY.PEM` is dated as the newest member. A fresh checkout dates every file at the
 moment of the checkout, so set `SOURCE_DATE_EPOCH` (seconds, e.g.
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`) and no member is dated later than that.
-[`sign`](#sign) keeps every member's time. Build with `TZ=UTC` too: node writes ZIP times in
+`--date` gives every member one time instead, whatever the files say: what a rebuild passes
+to make the archive it made before. [`sign`](#sign) keeps every member's time. Build with
+`TZ=UTC` too: node writes ZIP times in
 local time, so the same files built in two timezones differ in those bytes.
 
 The result is **unsigned**, and that is a bundle in its own right: one that attestations can
@@ -140,6 +142,7 @@ and a signed copy are around, call the unsigned one `app.unsigned.nzip`: signing
 | `-o, --output <file>` | write the archive here (default: stdout) |
 | `-l, --launcher` | put this package's `#!/bin/sh` launcher in front, so the result runs by name. The usual way to make a program. |
 | `-p, --prefix <file>` | put this in front instead: a launcher of your own, or a verifying node |
+| `--date <iso8601>` | date every member with this one time: `2024-05-01T12:00:00Z`, `2024-05-01T14:00:00+02:00`, or a date alone (`2024-05-01`, midnight UTC). ISO 8601 only, with an offset whenever there is a time. Overrides the files' times and `SOURCE_DATE_EPOCH` |
 | `-k, --key <file>` | sign as it is built, with this private key (PEM) — only with `--chain` |
 | `-c, --chain <file>` | the certificate chain for `--key` (PEM, leaf first) |
 | `--hash <alg>` | the digest for the whole-file hash and the member digests (default: `sha256`) |

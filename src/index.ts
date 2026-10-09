@@ -40,6 +40,7 @@ export {
     members,
     fromDirectory,
     fromArchive,
+    parseDate,
     type Member,
     type Signer,
     type Signature,

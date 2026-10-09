@@ -85,6 +85,8 @@ export interface BundleOptions {
     key?: Buffer | string | CRYPTO.KeyObject | undefined;
     chain?: string | undefined;
     signer?: Signer | undefined;
+    /** One time for every member, instead of each file's own (see `parseDate()`). */
+    date?: Temporal.Instant | undefined;
     out: Writable;
 }
 
@@ -110,12 +112,63 @@ export interface RebundleOptions {
 // made — so the same files make the same archive, byte for byte. A source
 // archive's members keep the times it gave them. `SOURCE_DATE_EPOCH`, when
 // set, is the latest time any member may have (see `buildTime()`).
-export async function *fromDirectory(base: string, files: string[]): AsyncGenerator<Member> {
-    const latest = buildTime();
+// `date`, when given, is every member's time instead: what a rebuild says the
+// files are dated, whatever they say themselves.
+export async function *fromDirectory(base: string, files: string[], date?: Temporal.Instant | undefined): AsyncGenerator<Member> {
+    const shared = date ? new Date(zipTime(date).epochMilliseconds) : undefined;
+    const latest = shared ? undefined : buildTime();
     for (const name of files) {
         const path = PATH.resolve(base, name);
-        yield { name, data: FS.readFileSync(path), mode: 0o444, modified: clamp(FS.statSync(path).mtime, latest) };
+        yield { name, data: FS.readFileSync(path), mode: 0o444, modified: shared ?? clamp(FS.statSync(path).mtime, latest) };
     }
+}
+
+/**
+ * A time for every member of an archive, from an ISO 8601 string and nothing
+ * else: a date and time with its offset (`2024-05-01T12:00:00Z`,
+ * `2024-05-01T14:00:00+02:00`), or a date alone (`2024-05-01`, midnight UTC).
+ * A time without an offset is refused — it would be another moment in every
+ * other timezone — and so are RFC 9557's `[…]` annotations, which ISO 8601
+ * does not have. Read by Temporal, so a day that does not exist is refused
+ * rather than rolled over into the next month.
+ */
+export function parseDate(text: string): Temporal.Instant {
+    const refuse = (why: string) => new Error(`'${text}' is not ${why}`);
+    if (text.includes('[')) throw refuse('ISO 8601: leave out the [annotation]');
+    let instant: Temporal.Instant;
+    try {
+        instant = Temporal.Instant.from(text);
+    } catch (err) {
+        if (/^[+-]?\d{4,6}-?\d{2}-?\d{2}$/.test(text)) {
+            try {
+                instant = Temporal.PlainDate.from(text).toZonedDateTime('UTC').toInstant();
+            } catch (again) {
+                throw refuse(`a date there is (${(again as Error).message})`);
+            }
+        } else {
+            let local = false;
+            try {
+                Temporal.PlainDateTime.from(text);
+                local = true;
+            } catch {
+                // not even that
+            }
+            if (local) throw refuse('a time anywhere in particular: give its offset, as Z or ±hh:mm (2024-05-01T12:00:00Z)');
+            throw refuse(`an ISO 8601 date (2024-05-01) or date and time (2024-05-01T12:00:00Z): ${(err as Error).message}`);
+        }
+    }
+    zipTime(instant, text);
+    return instant;
+}
+
+// What a ZIP entry holds of a time: whole seconds, from 1980 until 2107.
+const ZIP_FIRST = Temporal.Instant.from('1980-01-01T00:00:00Z');
+const ZIP_AFTER = Temporal.Instant.from('2108-01-01T00:00:00Z');
+function zipTime(instant: Temporal.Instant, text = instant.toString()): Temporal.Instant {
+    if (Temporal.Instant.compare(instant, ZIP_FIRST) < 0 || Temporal.Instant.compare(instant, ZIP_AFTER) >= 0) {
+        throw new Error(`'${text}' is not a time a ZIP entry can hold: 1980 to 2107`);
+    }
+    return instant.round({ smallestUnit: 'second', roundingMode: 'floor' });
 }
 
 export async function *fromArchive(zip: ZLIB.ZipFile): AsyncGenerator<Member> {
@@ -301,9 +354,9 @@ function withComment(region: Buffer, marker: string): Buffer {
  * shorthand for `signer: keySigner({ key, chain, signAlg })`, so the
  * create-and-sign-in-one-step path stays available.
  */
-export async function bundle({ base, files, prefix, hashAlg = 'sha256', signAlg = 'sha256', key, chain, signer, out }: BundleOptions): Promise<EmitResult> {
+export async function bundle({ base, files, prefix, hashAlg = 'sha256', signAlg = 'sha256', key, chain, signer, date, out }: BundleOptions): Promise<EmitResult> {
     const active = signer ?? (key && chain ? keySigner({ key, chain, signAlg }) : undefined);
-    return emit({ members: fromDirectory(base, files), prefix, hashAlg, signer: active, out });
+    return emit({ members: fromDirectory(base, files, date), prefix, hashAlg, signer: active, out });
 }
 
 /**

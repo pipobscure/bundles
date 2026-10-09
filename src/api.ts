@@ -54,6 +54,12 @@ export interface CreateOptions extends Destination {
     chain?: string | undefined;
     /** A two-phase signer, instead of `key`/`chain`. */
     signer?: Signer | undefined;
+    /**
+     * One time for every member, instead of each file's own: what a rebuild
+     * dates its files, so it makes the same archive. `parseDate()` reads one
+     * from an ISO 8601 string.
+     */
+    date?: Temporal.Instant | undefined;
 }
 
 export interface SignOptions extends Destination {
@@ -114,12 +120,13 @@ export interface Inspection {
  * signing it and optionally prepending a launcher or binary.
  */
 export async function createBundle(options: CreateOptions): Promise<BuildResult> {
-    const { base = '.', files, prefix, hashAlg, signAlg, key, chain, signer } = options;
+    const { base = '.', files, prefix, hashAlg, signAlg, key, chain, signer, date } = options;
     if (!files.length) throw new Error('create: the file list is empty');
+    if (date !== undefined && !(date instanceof Temporal.Instant)) throw new Error('create: date must be a Temporal.Instant');
     if (!signer && Boolean(key) !== Boolean(chain)) throw new Error('create: key and chain must be given together');
 
     return await produce(options, Boolean(prefix), (out) => bundle({
-        base, files, prefix, hashAlg, signAlg, key, chain, signer, out,
+        base, files, prefix, hashAlg, signAlg, key, chain, signer, date, out,
     }));
 }
 

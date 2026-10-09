@@ -2,7 +2,7 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, signedName, verifyBundle, runBundle, fileSigner } from './api.ts';
-import { members } from './archive.ts';
+import { members, parseDate } from './archive.ts';
 import { launcherPath, packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
@@ -59,11 +59,17 @@ create options:                     usage: create [options]
   -c, --chain <file>    full certificate chain (PEM, leaf first)
       --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
       --sign <alg>      digest the signature over that hash uses (default: sha256)
+      --date <iso8601>  date every member with this one time, as a rebuild
+                        should: 2024-05-01T12:00:00Z, or a date (UTC midnight)
 
   the prefix decides the archive's shape, and is part of what an audit
   reviews; signing keeps it. Every member records its own digest, and the
   archive records its whole-file hash, so even unsigned it says what its
   bytes should be.
+
+  each member is dated with its file's own time (never the time of the
+  build), no later than SOURCE_DATE_EPOCH when that is set; --date gives
+  them all one time instead. So the same files make the same archive.
 
 sign options:                       usage: sign [options] <archive>
   -o, --output <file>   write the signed archive here; '-' for stdout. By
@@ -571,6 +577,8 @@ async function create(args: string[], io: Console): Promise<number> {
     // on Windows; `--prefix node-verifying` means that one.
     if (prefix && process.platform === 'win32' && !FS.existsSync(prefix) && FS.existsSync(`${prefix}.exe`)) prefix = `${prefix}.exe`;
 
+    // Read before the file list, so a mistyped date fails before anything is read.
+    const date = values.date !== undefined ? parseDate(values.date) : undefined;
     const listing = values.files ? FS.readFileSync(values.files, 'utf-8') : await readStdin();
     const files = [...new Set(listing.split(/\r?\n/).filter(Boolean))].sort();
     if (!files.length) throw new Error('create: the file list is empty');
@@ -580,9 +588,10 @@ async function create(args: string[], io: Console): Promise<number> {
         ? `* signed archive (${files.length} members, ${values.hash} digests, ${values.sign} signature)`
         : `* unsigned archive (${files.length} members, ${values.hash} digests)`);
     if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
+    if (date) io.err(`* every member dated ${date.round({ smallestUnit: 'second', roundingMode: 'floor' }).toString()}`);
 
     const res = await createBundle({
-        base: values.base, files, prefix, output: values.output,
+        base: values.base, files, prefix, output: values.output, date,
         hashAlg: values.hash, signAlg: values.sign,
         key: values.key ? FS.readFileSync(values.key) : undefined,
         chain: values.chain ? FS.readFileSync(values.chain, 'utf-8') : undefined,
@@ -1898,6 +1907,7 @@ export const OPTIONS = {
         chain:  { type: 'string', short: 'c' },
         hash:   { type: 'string', default: 'sha256' },
         sign:   { type: 'string', default: 'sha256' },
+        date:   { type: 'string' },
     },
     sign: {
         output:     { type: 'string',  short: 'o' },

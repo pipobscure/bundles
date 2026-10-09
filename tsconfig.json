@@ -6,7 +6,7 @@
   // that work: the source says `./manifest.ts`, the emit says `./manifest.js`.
   "compilerOptions": {
     "target": "es2024",
-    "lib": ["es2024"],
+    "lib": ["es2024", "esnext.temporal"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "moduleDetection": "force",

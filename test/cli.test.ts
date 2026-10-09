@@ -64,6 +64,20 @@ test('create builds an archive from a file list and names its members', async ()
     assert.match(io.stderr.join('\n'), /unsigned archive \(4 members/);
 });
 
+test('create --date dates every member alike, and takes nothing but ISO 8601', async () => {
+    const dated = (n: number) => PATH.join(tmp, `dated-${n}.nzip`);
+    const io = collector();
+    assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T12:00:00Z', '--output', dated(1)], io), 0);
+    assert.match(io.stderr.join('\n'), /every member dated 2024-05-01T12:00:00Z/);
+    assert.equal(await main(['create', '--base', source, '--files', list, '--date', '2024-05-01T14:00:00+02:00', '--output', dated(2)], collector()), 0);
+    assert.deepEqual(FS.readFileSync(dated(2)), FS.readFileSync(dated(1)), 'the same moment, the same archive');
+
+    const refused = collector();
+    assert.equal(await main(['create', '--base', source, '--files', list, '--date', '05/01/2024', '--output', dated(3)], refused), 70);
+    assert.match(refused.stderr.join('\n'), /'05\/01\/2024' is not an ISO 8601 date/);
+    assert.equal(FS.existsSync(dated(3)), false);
+});
+
 test('create refuses a key without a chain', async () => {
     const io = collector();
     assert.equal(await main(['create', '--base', source, '--files', list, '--key', LEAF_KEY], io), 70);
