@@ -626,28 +626,40 @@ function lookup(blocks: Map<string, Buffer>, root: CID, key: Buffer): CID | null
         if (depth > 128) throw new Error('repository tree is implausibly deep');
         const bytes = blocks.get(node.toString());
         if (!bytes) throw new Error('record proof is incomplete: a tree node on the path is missing');
-        const decoded = decode(bytes) as { l?: Value; e?: Value };
-        const entries = decoded.e;
-        if (!Array.isArray(entries)) throw new Error('malformed repository tree node');
-
-        let next: CID | null = link(decoded.l);
-        let previous = Buffer.alloc(0);
-        for (const entry of entries) {
-            const { p, k, v, t } = entry as { p?: Value; k?: Value; v?: Value; t?: Value };
-            if (typeof p !== 'number' || !(k instanceof Uint8Array) || !(v instanceof CID)) {
-                throw new Error('malformed repository tree entry');
-            }
-            if (p > previous.length) throw new Error('malformed repository tree entry prefix');
-            const full = Buffer.concat([previous.subarray(0, p), k]);
-            const order = Buffer.compare(key, full);
-            if (order === 0) return v;
-            if (order < 0) break;
-            next = link(t);
-            previous = full;
-        }
-        node = next;
+        const step = treeStep(bytes, key);
+        if ('record' in step) return step.record;
+        node = step.next;
     }
     return null;
+}
+
+/**
+ * One step of the walk to `key` through a Merkle Search Tree node: the record
+ * the key maps to, when this node holds it, or the subtree to go on into —
+ * null when there is none, which proves the key is not in the tree. What a
+ * walk that fetches nodes as it goes takes one level at a time.
+ */
+export function treeStep(node: Uint8Array, key: Uint8Array): { record: CID } | { next: CID | null } {
+    const decoded = decode(node) as { l?: Value; e?: Value };
+    const entries = decoded.e;
+    if (!Array.isArray(entries)) throw new Error('malformed repository tree node');
+
+    let next: CID | null = link(decoded.l);
+    let previous = Buffer.alloc(0);
+    for (const entry of entries) {
+        const { p, k, v, t } = entry as { p?: Value; k?: Value; v?: Value; t?: Value };
+        if (typeof p !== 'number' || !(k instanceof Uint8Array) || !(v instanceof CID)) {
+            throw new Error('malformed repository tree entry');
+        }
+        if (p > previous.length) throw new Error('malformed repository tree entry prefix');
+        const full = Buffer.concat([previous.subarray(0, p), k]);
+        const order = Buffer.compare(key, full);
+        if (order === 0) return { record: v };
+        if (order < 0) break;
+        next = link(t);
+        previous = full;
+    }
+    return { next };
 }
 
 function link(value: Value | undefined): CID | null {

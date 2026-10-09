@@ -5,7 +5,7 @@ import {
     type Attester, type AttestationRecord, type Verdict,
 } from './attestation.ts';
 import { patientFetch, type Patience } from './ratelimit.ts';
-import { verifyRecordProof, signingKey, pdsEndpoint, claimedHandle, CID, readCar, type DidDocument, type Value } from './repo.ts';
+import { verifyRecordProof, signingKey, pdsEndpoint, claimedHandle, treeStep, decode, writeCar, CID, readCar, type DidDocument, type Value } from './repo.ts';
 
 // The online half of attestations: resolving who someone is, fetching the
 // proofs of what they have attested into the cache, and writing attestations.
@@ -34,6 +34,11 @@ export interface NetworkOptions extends Patience {
     /** The PLC directory to resolve `did:plc:` against. */
     plc?: string | undefined;
     now?: (() => Date) | undefined;
+    /**
+     * DID documents fetched so far, by DID, for work that asks about the same
+     * people many times over — `trust`, `validate` — to ask the network once.
+     */
+    documents?: Map<string, Promise<DidDocument>> | undefined;
 }
 
 // ------------------------------------------------------------- identities ---
@@ -51,6 +56,17 @@ export async function resolveDid(did: string, options: NetworkOptions = {}): Pro
  * holds — so a lookup made for any other reason stays out of it.
  */
 export async function fetchDidDocument(did: string, options: NetworkOptions = {}): Promise<DidDocument> {
+    const known = options.documents?.get(did);
+    if (known) return await known;
+    const fetching = fetchDocument(did, options);
+    if (options.documents) {
+        options.documents.set(did, fetching);
+        fetching.catch(() => options.documents?.delete(did));
+    }
+    return await fetching;
+}
+
+async function fetchDocument(did: string, options: NetworkOptions): Promise<DidDocument> {
     const fetch = net(options);
     let url: string;
     if (did.startsWith('did:plc:')) {
@@ -139,6 +155,13 @@ export async function fetchAttestation(did: string, hashAlg: string, hex: string
 async function fetchProof(doc: DidDocument, hashAlg: string | null, rkey: string, cache: string, options: NetworkOptions): Promise<'present' | 'absent'> {
     const did = doc.id;
     const car = await xrpcBytes(pdsEndpoint(doc), 'com.atproto.sync.getRecord', { did, collection: COLLECTION, rkey }, options);
+    return storeProof(doc, hashAlg, rkey, car, cache, options);
+}
+
+// Check a proof of `rkey` and cache it — or, when it proves there is none, or
+// that what is there is no attestation of the hash, remove what was cached.
+function storeProof(doc: DidDocument, hashAlg: string | null, rkey: string, car: Buffer | null, cache: string, options: NetworkOptions): 'present' | 'absent' {
+    const did = doc.id;
     if (car === null) {
         removeProof(cache, did, rkey);
         return 'absent';
@@ -155,6 +178,101 @@ async function fetchProof(doc: DidDocument, hashAlg: string | null, rkey: string
     }
     writeProof(cache, did, rkey, { checkedAt: (options.now ?? (() => new Date()))(), car });
     return 'present';
+}
+
+/** Below this many keys, a request each is no more than a walk of the tree takes. */
+const WALK_FROM = 4;
+
+/**
+ * Fetch `did`'s attestations of many hashes into the cache — or out of it, for
+ * those the proofs show are gone — in a handful of requests however many
+ * there are: see `fetchProofs()`. What `validate` does for each attester.
+ */
+export async function fetchAttestations(did: string, wanted: { hashAlg: string | null; hex: string }[], options: NetworkOptions = {}): Promise<Map<string, 'present' | 'absent'>> {
+    const cache = options.cache ?? cacheDir();
+    const doc = await resolveDid(did, options);
+    const result = new Map<string, 'present' | 'absent'>();
+    const unique = [...new Map(wanted.map((each) => [each.hex, each])).values()];
+    const proofs = await fetchProofs(doc, unique.map(({ hex }) => hex), options);
+    for (const { hashAlg, hex } of unique) result.set(hex, storeProof(doc, hashAlg, hex, proofs.get(hex) ?? null, cache, options));
+    return result;
+}
+
+/**
+ * Proofs of many attestation records in `doc`'s repository — or of their
+ * absence — in a handful of requests however many there are. A record's
+ * proof is the signed commit, the tree nodes on the path from its root to the
+ * record's key, and the record: `com.atproto.sync.getRecord` sends one record's
+ * at a time. Here the commit is fetched once, and the tree is walked toward
+ * every key at the same time, a level to a request (`com.atproto.sync.
+ * getBlocks`), then the records — about as many requests as the tree is deep.
+ * Each proof is put together from those blocks, and checked by the caller
+ * exactly as one fetched on its own would be. Fewer keys than make that worth
+ * it, or a repository that moves on in the middle — its old nodes gone — are
+ * fetched a record at a time instead.
+ */
+export async function fetchProofs(doc: DidDocument, rkeys: string[], options: NetworkOptions = {}): Promise<Map<string, Buffer | null>> {
+    const did = doc.id;
+    const pds = pdsEndpoint(doc);
+    const proofs = new Map<string, Buffer | null>();
+    const oneByOne = async () => {
+        for (const rkey of rkeys) proofs.set(rkey, await xrpcBytes(pds, 'com.atproto.sync.getRecord', { did, collection: COLLECTION, rkey }, options));
+        return proofs;
+    };
+    if (rkeys.length < WALK_FROM) return await oneByOne();
+
+    const blocks = new Map<string, Buffer>();
+    const fetchBlocks = async (cids: CID[]) => {
+        const missing = [...new Map(cids.filter((cid) => !blocks.has(cid.toString())).map((cid) => [cid.toString(), cid])).values()];
+        for (let at = 0; at < missing.length; at += 100) {
+            const params = new URLSearchParams({ did });
+            for (const cid of missing.slice(at, at + 100)) params.append('cids', cid.toString());
+            const response = await net(options)(`${pds}/xrpc/com.atproto.sync.getBlocks?${params}`, { redirect: 'follow' });
+            if (!response.ok) throw new Error(`com.atproto.sync.getBlocks at ${pds}: ${(await errorOf(response)).text}`);
+            // Every block is hashed against its CID as it is read: whatever
+            // sent them, they are the blocks those CIDs name.
+            for (const [cid, data] of readCar(Buffer.from(await response.arrayBuffer())).blocks) blocks.set(cid, data);
+        }
+        for (const cid of missing) if (!blocks.has(cid.toString())) throw new Error(`${pds} did not send ${cid.toString()}`);
+    };
+
+    try {
+        const latest = await xrpcJson(pds, 'com.atproto.sync.getLatestCommit', { did }, options) as { cid?: string };
+        const commit = CID.parse(String(latest.cid));
+        await fetchBlocks([commit]);
+        const data = (decode(blocks.get(commit.toString())!) as Record<string, Value>)['data'];
+        if (!(data instanceof CID)) throw new Error('commit carries no data root');
+
+        // Walk toward every key at once, a level at a time.
+        const paths = new Map(rkeys.map((rkey) => [rkey, [] as CID[]]));
+        const found = new Map<string, CID | null>();
+        let walking = new Map(rkeys.map((rkey) => [rkey, data]));
+        for (let depth = 0; walking.size; depth++) {
+            if (depth > 128) throw new Error('repository tree is implausibly deep');
+            await fetchBlocks([...walking.values()]);
+            const next = new Map<string, CID>();
+            for (const [rkey, node] of walking) {
+                paths.get(rkey)!.push(node);
+                const step = treeStep(blocks.get(node.toString())!, Buffer.from(`${COLLECTION}/${rkey}`, 'utf-8'));
+                if ('record' in step) found.set(rkey, step.record);
+                else if (step.next) next.set(rkey, step.next);
+                else found.set(rkey, null);
+            }
+            walking = next;
+        }
+        await fetchBlocks([...found.values()].filter((cid): cid is CID => cid !== null));
+
+        for (const rkey of rkeys) {
+            const record = found.get(rkey);
+            const parts = [commit, ...paths.get(rkey)!, ...(record ? [record] : [])];
+            proofs.set(rkey, writeCar([commit], parts.map((cid) => [cid, blocks.get(cid.toString())!] as [CID, Uint8Array])));
+        }
+        return proofs;
+    } catch (err) {
+        if ((err as { code?: string }).code === 'ERR_BUNDLE_RATE_LIMITED') throw err;
+        proofs.clear();
+        return await oneByOne();
+    }
 }
 
 /**
@@ -196,13 +314,17 @@ export async function refreshAttester(did: string, options: NetworkOptions = {})
             removed++;
         }
     }
+    // Those already cached, and still the record listed, are re-confirmed as
+    // they are; the rest are fetched together (see `fetchProofs()`).
+    const needed: string[] = [];
     for (const [rkey, cid] of listed) {
         const cached = rotated ? null : readProof(cache, did, rkey);
-        if (cached && sameRecord(cached.car, did, key, rkey, cid)) {
-            writeProof(cache, did, rkey, { checkedAt: now, car: cached.car });
-            continue;
-        }
-        if (await fetchProof(doc, null, rkey, cache, options) === 'present') fetched++;
+        if (cached && sameRecord(cached.car, did, key, rkey, cid)) writeProof(cache, did, rkey, { checkedAt: now, car: cached.car });
+        else needed.push(rkey);
+    }
+    const proofs = await fetchProofs(doc, needed, options);
+    for (const rkey of needed) {
+        if (storeProof(doc, null, rkey, proofs.get(rkey) ?? null, cache, options) === 'present') fetched++;
     }
     return { present: cachedKeys(cache, did).length, fetched, removed };
 }

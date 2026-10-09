@@ -816,6 +816,9 @@ then compares the result with what the install saw last time:
 Then it remembers what it saw, so each change is reported once. It is made to run unattended,
 at login or on a timer; [`shell`](#shell) sets that up.
 
+It asks attester by attester, not install by install: what one attester said about every
+install is fetched together, as [`trust`](#trust) fetches it, and each DID document once.
+
 | Option | |
 |---|---|
 | `-q, --quiet` | say nothing unless something needs attention |
@@ -874,6 +877,12 @@ material it checks against is fetched ahead of time, here:
   here, in `BUNDLE_ATTESTERS` or `BUNDLE_BLOCK`, in either policy file, accepted for an
   install, or already in the cache. For each one it lists their attestations, fetches and
   verifies new ones, drops withdrawn ones, and re-confirms the rest.
+- **New ones come together.** Each proof is the signed commit, the tree nodes on the path to
+  the record, and the record. Rather than a request per record, the tree is walked toward all
+  of them at once, one level per request (`com.atproto.sync.getBlocks`), so the request count
+  depends on the tree's depth, not on how many attestations there are. Every proof assembled
+  this way is checked exactly as one fetched alone. With only a few records, or a PDS that
+  will not hand out blocks, they are fetched one at a time.
 
 This is what a sealed executable or the preload checks attestations against, and how stale
 that may be is the policy's `maxAge` (default seven days). Exit `1` if any refresh failed.

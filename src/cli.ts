@@ -1962,8 +1962,10 @@ async function trust(args: string[], io: Console): Promise<number> {
     // install, or already cached because a verification once needed them.
     const ATPROTO = await import('./atproto.ts');
     const INSTALL = await import('./install.ts');
+    // Each attester's DID document is fetched once, however often it comes up.
+    const network = { documents: new Map() };
     const dids = new Set<string>();
-    for (const spec of values.attester ?? []) dids.add((await ATPROTO.resolveAttester(spec)).did);
+    for (const spec of values.attester ?? []) dids.add((await ATPROTO.resolveAttester(spec, network)).did);
     const POLICY = await import('./policy.ts');
     const environment = policyFromEnvironment();
     for (const { did } of [...environment.attesters, ...(environment.block ?? [])]) dids.add(did);
@@ -1978,7 +1980,7 @@ async function trust(args: string[], io: Console): Promise<number> {
 
     for (const did of [...dids].sort()) {
         try {
-            const { present, fetched, removed } = await ATPROTO.refreshAttester(did);
+            const { present, fetched, removed } = await ATPROTO.refreshAttester(did, network);
             io.out(`${did}: ${present} attestation${present === 1 ? '' : 's'}` +
                 `${fetched ? `, ${fetched} new` : ''}${removed ? `, ${removed} withdrawn` : ''}`);
         } catch (err) {

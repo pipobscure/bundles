@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import {
     CID, decode, encode, readCar, writeCar, verifyRecordProof, signingKey, formatMultikey, sign, verifySignature,
-    pointKey, compressedPoint, type Curve, type DidDocument, type Value,
+    pointKey, compressedPoint, treeStep, type Curve, type DidDocument, type Value,
 } from '../src/repo.ts';
 import { COLLECTION, stateDir, parseAttester, parseDuration, readProof, writeProof, type Attester } from '../src/attestation.ts';
 import * as ATPROTO from '../src/atproto.ts';
@@ -93,22 +93,51 @@ class Account {
         };
     }
 
+    private latest: { state: string; commit: CID; blocks: Map<string, Buffer>; root: CID } | undefined;
+
+    /**
+     * The repository as it is: a signed commit over a two-level Merkle Search
+     * Tree — a root node, and the leaves between its entries — and the
+     * records, every block by CID. The same until the records or the key
+     * change, as a real PDS's latest commit is between two requests.
+     */
+    snapshot({ signWith }: { signWith?: CRYPTO.KeyObject } = {}): { commit: CID; blocks: Map<string, Buffer>; root: CID } {
+        const state = JSON.stringify([...this.records.keys()].sort().map((key) => [key, CID.of(encode(this.records.get(key)!)).toString()]))
+            + formatMultikey(this.curve, this.publicKey);
+        if (!signWith && this.latest?.state === state) return this.latest;
+        const blocks = new Map<string, Buffer>();
+        const put = (bytes: Buffer) => { const cid = CID.of(bytes); blocks.set(cid.toString(), bytes); return cid; };
+        const entries = [...this.records.entries()]
+            .map(([key, value]) => [Buffer.from(key), put(encode(value))] as const)
+            .sort(([a], [b]) => Buffer.compare(a, b));
+        const leaf = (some: (readonly [Buffer, CID])[]) => (some.length ? put(encode({ l: null, e: some.map(([k, v]) => ({ p: 0, k, v, t: null })) })) : null);
+        // Every fourth key is in the root; the rest are in the leaf to its right.
+        const chunks: (readonly [Buffer, CID])[][] = [];
+        for (let at = 0; at < entries.length; at += 4) chunks.push(entries.slice(at, at + 4));
+        const root = put(encode({
+            l: leaf(chunks[0] ?? []),
+            e: chunks.slice(1).map(([first, ...rest]) => ({ p: 0, k: first![0], v: first![1], t: leaf(rest) })),
+        }));
+        const commit = { did: this.did, version: 3, data: root, rev: `3l${String(++this.revision).padStart(11, '2')}`, prev: null };
+        const signed = put(encode({ ...commit, sig: sign(this.curve, signWith ?? this.privateKey, encode(commit)) }));
+        const made = { state, commit: signed, blocks, root };
+        if (!signWith) this.latest = made;
+        return made;
+    }
+
     /** The CAR `sync.getRecord` answers with — a proof of presence or of absence. */
     proof(collection: string, rkey: string, { signWith }: { signWith?: CRYPTO.KeyObject } = {}): Buffer {
-        const blocks: [CID, Buffer][] = [];
-        const entries = [...this.records.entries()]
-            .map(([key, value]) => {
-                const bytes = encode(value);
-                const cid = CID.of(bytes);
-                if (key === `${collection}/${rkey}`) blocks.push([cid, bytes]);
-                return [Buffer.from(key), cid] as const;
-            })
-            .sort(([a], [b]) => Buffer.compare(a, b));
-        const node = encode({ l: null, e: entries.map(([k, v]) => ({ p: 0, k, v, t: null })) });
-        const commit = { did: this.did, version: 3, data: CID.of(node), rev: `3l${String(++this.revision).padStart(11, '2')}`, prev: null };
-        const signed = encode({ ...commit, sig: sign(this.curve, signWith ?? this.privateKey, encode(commit)) });
-        const root = CID.of(signed);
-        return writeCar([root], [[root, signed], [CID.of(node), node], ...blocks]);
+        const { commit, blocks, root } = this.snapshot({ signWith });
+        const key = Buffer.from(`${collection}/${rkey}`);
+        const path: CID[] = [commit];
+        let node: CID | null = root;
+        while (node) {
+            path.push(node);
+            const step = treeStep(blocks.get(node.toString())!, key);
+            if ('record' in step) { path.push(step.record); break; }
+            node = step.next;
+        }
+        return writeCar([commit], path.map((cid) => [cid, blocks.get(cid.toString())!] as [CID, Buffer]));
     }
 
     rotate(): void {
@@ -326,7 +355,14 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
                 { headers: { 'content-type': 'application/vnd.ipld.car' } });
         case '/xrpc/com.atproto.sync.getLatestCommit':
             // A revision that moves whenever anything in the repository does.
-            return json({ cid: 'bafy', rev: CRYPTO.createHash('sha256').update(JSON.stringify([...account.records.entries()].sort())).digest('hex').slice(0, 13) });
+            return json({ cid: account.snapshot().commit.toString(), rev: CRYPTO.createHash('sha256').update(JSON.stringify([...account.records.entries()].sort())).digest('hex').slice(0, 13) });
+        case '/xrpc/com.atproto.sync.getBlocks': {
+            const { blocks } = account.snapshot();
+            const wanted = params.getAll('cids');
+            if (wanted.some((cid) => !blocks.has(cid))) return json({ error: 'BlockNotFound', message: 'no such block' }, 400);
+            return new Response(writeCar([], wanted.map((cid) => [CID.parse(cid), blocks.get(cid)!] as [CID, Buffer])),
+                { headers: { 'content-type': 'application/vnd.ipld.car' } });
+        }
         case '/xrpc/com.atproto.repo.listRecords': {
             const prefix = `${params.get('collection')}/`;
             return json({
@@ -638,6 +674,51 @@ test('a proof signed by the wrong key is never cached', async () => {
     judy.proof = (collection, rkey) => original(collection, rkey, { signWith: impostor });
     await assert.rejects(ATPROTO.fetchAttestation(judy.did, 'sha256', hex), /signature does not verify/);
     assert.equal(readProof(CACHE, judy.did, hex), null);
+});
+
+test('many attestations are fetched together: the tree walked a level to a request, every proof still checked', async () => {
+    const eve = account();
+    const archives = await Promise.all(Array.from({ length: 9 }, () => version()));
+    const hashes = archives.map((archive) => wholeFileHash(archive)!);
+    const session = await ATPROTO.login(eve.did, eve.password);
+    await ATPROTO.attestAll(session, hashes.map(({ hashAlg, hash }) => ({ hashAlg, hex: hash })));
+    const asked = () => requests.filter((line) => line.startsWith(`GET ${eve.pds}/`) || line.startsWith('GET https://plc.test/'))
+        .map((line) => line.slice(line.lastIndexOf('/') + 1));
+
+    // trust: listed, then the nine proofs from one walk — commit, root, leaves,
+    // records — and not a request each.
+    requests.length = 0;
+    assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 9, fetched: 9, removed: 0 });
+    assert.deepEqual(asked(), [encodeURIComponent(eve.did), 'com.atproto.repo.listRecords', 'com.atproto.sync.getLatestCommit',
+        'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks', 'com.atproto.sync.getBlocks']);
+    for (const archive of archives) assert.equal(verifySync(archive, { attesters: [{ did: eve.did }] }).state, 'valid');
+
+    // validate: what one attester said about several archives, together — the
+    // one never attested proven absent by the same walk — and each DID
+    // document fetched once, however often it is asked for.
+    const stranger = await version();
+    const documents = new Map();
+    requests.length = 0;
+    const found = await ATPROTO.fetchAttestations(eve.did, [...hashes.slice(0, 4), wholeFileHash(stranger)!]
+        .map(({ hashAlg, hash }) => ({ hashAlg, hex: hash })), { documents });
+    assert.deepEqual([...found.values()], ['present', 'present', 'present', 'present', 'absent']);
+    assert.equal(asked().filter((method) => method === 'com.atproto.sync.getRecord').length, 0);
+    await ATPROTO.fetchAttestations(eve.did, [{ hashAlg: hashes[5]!.hashAlg, hex: hashes[5]!.hash }], { documents });
+    assert.equal(asked().filter((method) => method === encodeURIComponent(eve.did)).length, 1, 'the DID document, once');
+
+    // A PDS that will not hand out blocks is asked a record at a time instead.
+    THROTTLE.set('/xrpc/com.atproto.sync.getBlocks', [new Response('{}', { status: 500 })]);
+    requests.length = 0;
+    const fallback = await ATPROTO.fetchAttestations(eve.did, hashes.slice(4).map(({ hashAlg, hash }) => ({ hashAlg, hex: hash })));
+    assert.deepEqual([...fallback.values()], ['present', 'present', 'present', 'present', 'present']);
+    assert.equal(asked().filter((method) => method === 'com.atproto.sync.getRecord').length, 5);
+    THROTTLE.clear();
+
+    // Withdrawn elsewhere — straight on the PDS, not through this cache —
+    // they are gone on the next refresh.
+    for (const { hash } of hashes.slice(0, 2)) eve.records.delete(`${COLLECTION}/${hash}`);
+    assert.deepEqual(await ATPROTO.refreshAttester(eve.did), { present: 7, fetched: 0, removed: 2 });
+    assert.equal(verifySync(archives[0]!, { attesters: [{ did: eve.did }] }).state, 'unsigned');
 });
 
 test('a handle resolves to its DID only when the DID document claims it back', async () => {

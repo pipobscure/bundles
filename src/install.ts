@@ -648,34 +648,54 @@ export function installed({ roots = [] }: { roots?: string[] | undefined } = {})
  * problems met, if any; the cache keeps what it had for those.
  */
 export async function refreshInstalled(network: NetworkOptions = {}): Promise<string[]> {
-    const problems: string[] = [];
-    for (const record of Object.values(records())) problems.push(...await refreshRecord(record, network));
-    return problems;
+    return [...(await refreshRecords(Object.values(records()), network)).values()].flat();
 }
 
-// Fetch every attestation of one install's archive: from everyone known to
+// Fetch every attestation of these installs' archives: from everyone known to
 // have said something, plus anyone who has since — which is how a scanner's
-// warning about something already installed reaches the person who installed it.
-async function refreshRecord(record: InstallRecord, network: NetworkOptions): Promise<string[]> {
-    const hash = record.hash?.split(':');
-    if (!hash || hash.length !== 2) return [];
-    const { refreshFor, discover } = await import('./atproto.ts');
+// warning about something already installed reaches the person who installed
+// it. Asked attester by attester, not install by install: each attester's
+// attestations of all of these archives are fetched together, in a handful
+// of requests (`fetchAttestations()`), and each DID document once. The
+// problems met, by install.
+async function refreshRecords(installs: InstallRecord[], network: NetworkOptions): Promise<Map<string, string[]>> {
+    const { fetchAttestations, discover } = await import('./atproto.ts');
     const { cachedFor } = await import('./attestation.ts');
-    const problems: string[] = [];
-    const policy = policyOf(record);
-    const dids = new Set([...candidates(record, policy), ...cachedFor(hash[1]!)]);
-    if (policy.discovery) {
-        try {
-            for (const did of await discover(hash[0]!, hash[1]!, { ...network, index: policy.discovery })) dids.add(did);
-        } catch (err) {
-            problems.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
+    const shared = { ...network, documents: network.documents ?? new Map() };
+    const problems = new Map(installs.map((record) => [record.name, [] as string[]]));
+    const wanted = new Map<string, Map<string, { hashAlg: string; hex: string; names: string[] }>>();
+
+    for (const record of installs) {
+        const hash = record.hash?.split(':');
+        if (!hash || hash.length !== 2) continue;
+        const [hashAlg, hex] = hash as [string, string];
+        const policy = policyOf(record);
+        const dids = new Set([...candidates(record, policy), ...cachedFor(hex)]);
+        if (policy.discovery) {
+            try {
+                for (const did of await discover(hashAlg, hex, { ...shared, index: policy.discovery })) dids.add(did);
+            } catch (err) {
+                problems.get(record.name)!.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
+            }
+        }
+        for (const did of policy.ignore) dids.delete(did);
+        for (const did of dids) {
+            const of = wanted.get(did) ?? new Map();
+            wanted.set(did, of);
+            const entry = of.get(hex) ?? { hashAlg, hex, names: [] };
+            of.set(hex, entry);
+            entry.names.push(record.name);
         }
     }
-    for (const did of policy.ignore) dids.delete(did);
-    if (!dids.size) return problems;
-    for (const problem of await refreshFor([...dids].map((did) => ({ did })), hash[0]!, hash[1]!, network)) {
-        problems.push(`${record.name}: ${problem}`);
-    }
+
+    await Promise.all([...wanted].map(async ([did, of]) => {
+        try {
+            await fetchAttestations(did, [...of.values()], shared);
+        } catch (err) {
+            for (const { names } of of.values()) for (const name of names) problems.get(name)!.push(`${name}: ${did}: ${message(err)}`);
+        }
+    }));
+    for (const list of problems.values()) list.sort();
     return problems;
 }
 
@@ -715,14 +735,19 @@ export async function validate(which: string[] = [], { roots = [], network = {},
     const all = records();
     const names = which.length ? [...new Set(which.map((each) => resolve(all, each)))] : Object.keys(all).sort();
     const results: Validation[] = [];
+    const recent = (record: InstallRecord) => {
+        const last = record.validatedAt ? Date.parse(record.validatedAt) : NaN;
+        return every !== undefined && Date.now() - last < every;
+    };
+    // Everything that is due, fetched together, before any of it is judged.
+    const fetched = await refreshRecords(names.map((name) => all[name]!).filter((record) => !recent(record)), network);
     for (const name of names) {
         const record = all[name]!;
-        const last = record.validatedAt ? Date.parse(record.validatedAt) : NaN;
-        if (every !== undefined && Date.now() - last < every) {
+        if (recent(record)) {
             results.push({ record, check: { record, path: pathOf(record), state: 'ok', reason: 'validated recently' }, added: [], removed: [], problems: [], skipped: true });
             continue;
         }
-        const problems = await refreshRecord(record, network);
+        const problems = fetched.get(name) ?? [];
         const result = check(record, roots);
         // Only a check that got as far as a review knows who has attested; a
         // file that is missing or changed keeps its previous picture.
