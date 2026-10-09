@@ -17,6 +17,12 @@ const tmp = scratch('sea');
 const source = tree(tmp);
 test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
 
+// An executable that has just run can stay locked on Windows for a moment
+// after it exits; removing it there is retried rather than failed.
+function discard(file: string): void {
+    FS.rmSync(file, { maxRetries: 10, retryDelay: 100 });
+}
+
 const APP_BUNDLE = PATH.join(tmp, 'app.run');
 await createBundle({ base: source, files: Object.keys(APP), output: APP_BUNDLE });
 
@@ -64,7 +70,7 @@ async function sealed(options: Omit<Parameters<typeof buildSea>[0], 'output'> & 
     const unsigned = `${options.output}.unsigned`;
     await buildSea({ ...options, output: unsigned });
     const res = await signBundle({ source: unsigned, output: options.output, signer: testSigner() });
-    FS.rmSync(unsigned);
+    discard(unsigned);
     return res;
 }
 
@@ -140,7 +146,7 @@ test('a signed container verifies itself and runs the application inside it', ne
     const ran = run(output, ['one', 'two']);
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] one,two/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('the application inside runs from the mount, not from any real directory', needsSea, async () => {
@@ -162,7 +168,7 @@ test('the application inside runs from the mount, not from any real directory', 
     // around it.
     assert.ok(!where.dir.startsWith(tmp), where.dir);
     assert.equal(where.file, PATH.join(where.dir, 'index.js'));
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a CommonJS application is run as CommonJS', needsSea, async () => {
@@ -178,7 +184,7 @@ test('a CommonJS application is run as CommonJS', needsSea, async () => {
     const ran = run(output);
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /commonjs ran function true/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a container whose bytes changed refuses to run anything', needsSea, async () => {
@@ -198,7 +204,7 @@ test('a container whose bytes changed refuses to run anything', needsSea, async 
     assert.notEqual(ran.status, 0);
     assert.match(ran.stderr, /refusing to run/);
     assert.doesNotMatch(ran.stdout, /hello from a signed bundle/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('an unsigned container refuses to run, however well formed it is', needsSea, async () => {
@@ -209,7 +215,7 @@ test('an unsigned container refuses to run, however well formed it is', needsSea
     const ran = run(output);
     assert.notEqual(ran.status, 0);
     assert.match(ran.stderr, /refusing to run/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a trust root baked in at build time needs nothing from the environment', needsSea, async () => {
@@ -221,7 +227,7 @@ test('a trust root baked in at build time needs nothing from the environment', n
     const ran = run(output, [], { BUNDLE_ROOTS: '', BUNDLE_ALLOW_UNTRUSTED: '' });
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a container with nothing baked in takes its policy from the environment', needsSea, async () => {
@@ -230,7 +236,7 @@ test('a container with nothing baked in takes its policy from the environment', 
     await createSeaBase({ output: plainBase, sigstore: false });
     const output = PATH.join(tmp, 'plain.sea');
     await sealed({ app: APP_BUNDLE, output, base: plainBase });
-    FS.rmSync(plainBase);
+    discard(plainBase);
 
     // Nothing to anchor the chain to: the signature is perfectly good and the
     // certificate means nothing here, which is `valid-untrusted`.
@@ -244,7 +250,7 @@ test('a container with nothing baked in takes its policy from the environment', 
 
     const allowed = run(output, [], { BUNDLE_ROOTS: '', BUNDLE_ALLOW_UNTRUSTED: '1' });
     assert.equal(allowed.status, 0, allowed.stderr);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a container built through the CLI is the same self-validating thing', needsSea, async () => {
@@ -266,12 +272,12 @@ test('a container built through the CLI is the same self-validating thing', need
 
     const signed = collector();
     assert.equal(await main(['sign', '--key', LEAF_KEY, '--chain', CHAIN_PEM, '--output', output, unsigned], signed), 0, signed.stderr.join('\n'));
-    FS.rmSync(unsigned);
+    discard(unsigned);
 
     const ran = run(output, ['cli']);
     assert.equal(ran.status, 0, ran.stderr);
     assert.match(ran.stdout, /hello from a signed bundle \[sub\] cli/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 // ------------------------------------------------------- the verifying node ---
@@ -384,7 +390,7 @@ test('a runtime built with a policy of its own takes none from its command line'
     // What cannot loosen anything still works.
     const entry = run(sealed, ['--entry', 'index.js', SIGNED_APP], { BUNDLE_ROOTS: '' });
     assert.equal(entry.status, 0, entry.stderr);
-    FS.rmSync(sealed);
+    discard(sealed);
 });
 
 test('the same base becomes a self-validating executable by appending an app', needsSea, async () => {
@@ -403,7 +409,7 @@ test('the same base becomes a self-validating executable by appending an app', n
     const ignored = run(output, [SIGNED_APP], { BUNDLE_ROOTS: ROOT_PEM });
     assert.equal(ignored.status, 0, ignored.stderr);
     assert.match(ignored.stdout, /hello from a signed bundle/);
-    FS.rmSync(output);
+    discard(output);
 });
 
 test('a worker thread runs from the application as its main thread does, verified the same way', needsSea, async () => {
@@ -438,7 +444,7 @@ test('a worker thread runs from the application as its main thread does, verifie
     assert.equal(said.greeting, 'hello from a worker');
     assert.ok(said.from.endsWith('/worker.js') && !said.from.startsWith(pathToFileURL(tmp).href), said.from);
     assert.equal(said.plugins, true, 'plugins the worker loads are verified, as in the main thread');
-    FS.rmSync(output);
+    discard(output);
 
     // A verifying node: the application comes from its command line, which a
     // worker never sees — it gets what its main thread mounted.
