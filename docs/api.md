@@ -112,12 +112,13 @@ absolute path is also accepted, for plugins laid out the same way anywhere else.
 
 ```js
 list('bled');
-// [ ['gpio', { name: '@alice/bled-gpio', version: '1.2.0', description: 'GPIO pins for bled', license: 'MIT' }],
-//   ['mock', { name: 'gpio-mock', version: '0.3.1' }] ]
+// [ ['@alice.example/bled-gpio', { name: '@alice/bled-gpio', version: '1.2.0', description: 'GPIO pins for bled', license: 'MIT' }],
+//   ['https://dl.example.com/gpio-mock.nzip', { name: 'gpio-mock', version: '0.3.1' }] ]
 ```
 
-- `name` is what it was installed as: the name `bundle install --for` gave it, which is what
-  `bundle update bled:gpio` and `bundle uninstall bled:gpio` take.
+- `name` is what `bundle install --for` was given, as typed: a listing, a URL or a domain. It
+  tells a person which install it was, and only identifies: two plugins can share one. A
+  plugin put in a scope by hand, without `bundle install`, is called by its package name.
 - `package` is its `package.json`, reduced to what describes it: `name`, `version`,
   `description`, `keywords`, `license`, `author`, `contributors`, `maintainers`, `homepage`,
   `repository`, `bugs`, `funding` and `engines` (`PACKAGE_FIELDS`), as far as it has them. Its

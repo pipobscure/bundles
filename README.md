@@ -221,9 +221,10 @@ for (const [, pkg] of list('bled')) await import(pkg.name);  // or everything in
 use('bled', { verify: { attesters: ['audited@did:web:bled.dev'] } });   // and check them as they load
 ```
 
-`list()` gives `[name, package]` for each plugin: the name it was installed as, and what its
-`package.json` says about it (name, version, description, license and the like, never its
-scripts, entry points or dependencies). That is enough to tell your users what is installed.
+`list()` gives `[name, package]` for each plugin. `name` is what was typed to install it
+(`@alice.example/bled-gpio`, a URL, a domain), and `package` is what its `package.json` says
+about it (name, version, description, license and the like, never its scripts, entry points or
+dependencies). That is enough to tell your users what is installed, and where it came from.
 
 A plugin can never replace something your app already has, and it gets your app's own
 modules when it imports them. Each worker thread calls `use()` itself. The full API is in

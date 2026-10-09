@@ -3,7 +3,7 @@ import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
 import { createRequire, registerHooks } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { scopeDir } from './scopes.ts';
+import { scopeDir, labelFile } from './scopes.ts';
 import { sibling } from './preload.ts';
 import type * as VerifierModule from './plugin-verifier.ts';
 
@@ -120,7 +120,7 @@ export const PACKAGE_FIELDS = [
 interface Plugin {
     /** The package name inside it: what apps import. */
     name: string;
-    /** The name it was installed as: its file in the scope, without `.nzip`. */
+    /** The name it was installed as — what `bundle install --for` was given — or its package name. */
     installed: string;
     file: string;
     manifest: PackageJson;
@@ -201,13 +201,16 @@ export function use(scope: string, options: UseOptions = {}): void {
  *   for (const [name, pkg] of list('bled')) console.log(`${name}: ${pkg.description}`);
  *   for (const [, pkg] of list('bled')) await import(pkg.name);
  *
- * Sorted by installed name. Nothing is verified or run to answer it.
+ * The name is what `bundle install --for` was given, as typed — a URL, a
+ * domain or a listing — and only identifies it: two plugins may share one,
+ * never a package name. Sorted by name, then package. Nothing is verified or
+ * run to answer it.
  */
 export function list(scope: string): [name: string, pkg: PluginPackage][] {
     const used = scopes.find((each) => each.scope === scope);
     return [...(used?.plugins ?? index(scopeDir(scope))).values()]
         .map((plugin): [string, PluginPackage] => [plugin.installed, describe(plugin.manifest)])
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
 }
 
 function describe(manifest: PackageJson): PluginPackage {
@@ -221,9 +224,10 @@ function describe(manifest: PackageJson): PluginPackage {
 // ------------------------------------------------------------------ indexing ---
 
 // Every archive in a scope, by the package name inside it: `*.nzip` at the top,
-// and — as plugins were installed before they had names of their own — in
-// `@scope/` directories, as node_modules lays scoped names out. Nothing is
-// verified or run here; the package.json is read, and that is all.
+// and in `@scope/` directories, as node_modules lays scoped names out. Each is
+// called what `bundle install` noted beside it, or — copied in by hand — its
+// package name. Nothing is verified or run here; the package.json is read,
+// and that is all.
 function index(dir: string): Map<string, Plugin> {
     const plugins = new Map<string, Plugin>();
     const files: string[] = [];
@@ -247,10 +251,18 @@ function index(dir: string): Map<string, Plugin> {
         if (typeof manifest.name !== 'string' || !manifest.name) throw new Error(`${file} is not a plugin: its package.json names no package`);
         const other = plugins.get(manifest.name);
         if (other) throw new Error(`two plugins in ${dir} are both '${manifest.name}': ${other.file} and ${file} — remove one`);
-        const installed = PATH.relative(dir, file).replace(/\.nzip$/, '').split(PATH.sep).join('/');
+        const installed = labelOf(file) ?? manifest.name;
         plugins.set(manifest.name, { name: manifest.name, installed, file, manifest });
     }
     return plugins;
+}
+
+function labelOf(file: string): string | undefined {
+    try {
+        return FS.readFileSync(labelFile(file), 'utf-8').trim() || undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 interface ZipFileLike {

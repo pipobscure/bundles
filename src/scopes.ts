@@ -33,3 +33,17 @@ export function scopeDir(scope: string): string {
     if (!isScope(scope)) throw new Error(`'${scope}' is neither a package name nor an absolute path`);
     return PATH.join(pluginsDir(), ...scope.split('/'));
 }
+
+/** Where in its scope a plugin with this package name is stored: `@alice/bled-gpio.nzip`. */
+export function pluginFile(name: string): string {
+    return PATH.join(...`${name}.nzip`.split('/'));
+}
+
+/**
+ * Where the name a plugin was installed as is kept: beside its archive, as
+ * text (`@alice/bled-gpio.nzip.name`), so the loader can say it without
+ * reading the installer's records.
+ */
+export function labelFile(archive: string): string {
+    return `${archive}.name`;
+}
