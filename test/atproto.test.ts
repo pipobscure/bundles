@@ -1403,6 +1403,22 @@ test('publish writes listings in one batch, keeps when each was first listed; un
     assert.equal([...pia.records.keys()].some((key) => key.startsWith(`${LISTING}/`)), false);
 });
 
+test('a publisher whose listings keep changing is re-indexed every time, however the full-text index has grown', async () => {
+    // Deleting from a contentless-delete FTS5 table, once it has merged
+    // segments, writes a tombstone page whose row id — (segment + 2^16) << 37 —
+    // is past 2^53; node:sqlite turned that into an error on every re-sync.
+    const path = PATH.join(tmp, 'churn.sqlite');
+    const ivy = account();
+    for (let i = 0; i < 16; i++) ivy.records.set(`${LISTING}/tool-${i}`, listed(`https://dl.test/tool-${i}.nzip`, { description: `tool number ${i}` }));
+    for (let round = 0; round < 40; round++) {
+        ivy.records.set(`${LISTING}/tool-${round % 16}`, listed(`https://dl.test/tool-${round % 16}.nzip`, { description: `tool number ${round % 16}, round ${round}` }));
+        const synced = await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });
+        assert.deepEqual(synced.failed, [], `round ${round}`);
+    }
+    assert.deepEqual(LISTINGS.search('round 39', path).map((each) => each.name), ['tool-7']);
+    assert.equal(LISTINGS.listings(path).filter((each) => each.did === ivy.did).length, 16);
+});
+
 test('the index is built from the backlink index, and a sync asks again only where a repository moved', async () => {
     const path = PATH.join(tmp, 'listings.sqlite');
     const sync = () => LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });

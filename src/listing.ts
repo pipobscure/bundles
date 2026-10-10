@@ -1,7 +1,7 @@
 import * as CRYPTO from 'node:crypto';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { stateDir, isDid } from './attestation.ts';
 import {
     backlinks, deleteAll, fetchDidDocument, getRecord, listOwn, putAll, resolveHandle, xrpcJson,
@@ -532,8 +532,8 @@ export async function syncIndex({ index, path = indexPath(), apps = [], concurre
             if (dids.has(did)) continue;
             transaction(db, () => {
                 unindex(db, did);
-                db.prepare('DELETE FROM listings WHERE did = ?').run(did);
-                db.prepare('DELETE FROM publishers WHERE did = ?').run(did);
+                write(db, 'DELETE FROM listings WHERE did = ?').run(did);
+                write(db, 'DELETE FROM publishers WHERE did = ?').run(did);
             });
             removed++;
         }
@@ -548,15 +548,15 @@ export async function syncIndex({ index, path = indexPath(), apps = [], concurre
                 } catch (err) {
                     const error = err instanceof Error ? err.message : String(err);
                     failed.push({ did, error });
-                    db.prepare('INSERT INTO publishers (did, error) VALUES (?, ?) ON CONFLICT (did) DO UPDATE SET error = excluded.error').run(did, error);
+                    write(db, 'INSERT INTO publishers (did, error) VALUES (?, ?) ON CONFLICT (did) DO UPDATE SET error = excluded.error').run(did, error);
                 }
             }
         }));
 
         transaction(db, () => {
-            db.prepare('INSERT OR REPLACE INTO sync (id, index_url, synced_at) VALUES (1, ?, ?)').run(index, now.toISOString());
-            db.prepare('DELETE FROM subjects').run();
-            for (const subject of subjects) db.prepare('INSERT INTO subjects (uri) VALUES (?)').run(subject);
+            write(db, 'INSERT OR REPLACE INTO sync (id, index_url, synced_at) VALUES (1, ?, ?)').run(index, now.toISOString());
+            write(db, 'DELETE FROM subjects').run();
+            for (const subject of subjects) write(db, 'INSERT INTO subjects (uri) VALUES (?)').run(subject);
         });
         const count = (db.prepare('SELECT count(*) AS n FROM listings').get() as { n: number }).n;
         return { publishers: dids.size, listings: count, refreshed, removed, failed: failed.sort((a, b) => a.did.localeCompare(b.did)) };
@@ -617,14 +617,14 @@ async function refreshPublisher(db: DatabaseSync, did: string, now: Date, handle
     const listed = moved ? await listListings(pds!, did, network) : null;
 
     transaction(db, () => {
-        db.prepare(`INSERT INTO publishers (did, handle, handle_checked_at, pds, rev, synced_at, error) VALUES (?, ?, ?, ?, ?, ?, NULL)
+        write(db, `INSERT INTO publishers (did, handle, handle_checked_at, pds, rev, synced_at, error) VALUES (?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT (did) DO UPDATE SET handle = excluded.handle, handle_checked_at = excluded.handle_checked_at,
             pds = excluded.pds, rev = excluded.rev, synced_at = excluded.synced_at, error = NULL`)
             .run(did, handle, handleCheckedAt, pds, rev, now.toISOString());
         if (listed || handle !== (row?.handle ?? null)) unindex(db, did);
         if (listed) {
-            db.prepare('DELETE FROM listings WHERE did = ?').run(did);
-            const insert = db.prepare('INSERT INTO listings (did, rkey, cid, subject, url, domain, title, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            write(db, 'DELETE FROM listings WHERE did = ?').run(did);
+            const insert = write(db, 'INSERT INTO listings (did, rkey, cid, subject, url, domain, title, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
             for (const { name, cid, record } of listed) {
                 insert.run(did, name, cid, record.subject, record.url ?? null, record.domain ?? null, record.title ?? null, record.description ?? null, record.createdAt);
             }
@@ -677,12 +677,25 @@ async function listListings(pds: string, did: string, network: NetworkOptions): 
 // The full-text rows share their listing's rowid, and carry the handle too, so
 // they are rewritten whenever either changes.
 function unindex(db: DatabaseSync, did: string): void {
-    db.prepare('DELETE FROM listings_fts WHERE rowid IN (SELECT rowid FROM listings WHERE did = ?)').run(did);
+    write(db, 'DELETE FROM listings_fts WHERE rowid IN (SELECT rowid FROM listings WHERE did = ?)').run(did);
 }
 
 function reindex(db: DatabaseSync, did: string, handle: string | null): void {
-    db.prepare(`INSERT INTO listings_fts (rowid, rkey, title, description, handle)
+    write(db, `INSERT INTO listings_fts (rowid, rkey, title, description, handle)
         SELECT rowid, rkey, title, description, ? FROM listings WHERE did = ?`).run(handle, did);
+}
+
+// A statement that changes the index. Whatever it changes, `run()` reports
+// SQLite's last-inserted row id — the connection's, not the statement's — and
+// node:sqlite refuses to turn one past 2^53 into a number, throwing after the
+// statement has done its work. Deleting from the contentless-delete full-text
+// table writes a tombstone page whose row id, (segment + 2^16) << 37, is
+// always past it, and it stays the last-inserted one until the next insert.
+// So every write reports in BigInts, which nothing here reads anyway.
+function write(db: DatabaseSync, sql: string): StatementSync {
+    const statement = db.prepare(sql);
+    statement.setReadBigInts(true);
+    return statement;
 }
 
 function transaction(db: DatabaseSync, body: () => void): void {
