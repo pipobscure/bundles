@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.0.21
 
 - **The listing index syncs a publisher whose listings changed.** Re-indexing deleted their
   old full-text rows, which in SQLite's contentless-delete FTS5 tables writes a tombstone page
