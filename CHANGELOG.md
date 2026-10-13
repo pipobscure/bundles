@@ -3,8 +3,13 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## 0.1.1
+## 0.1.2
 
+- **For now, `bundle suite` writes a plugin into a suite only with its app.** `suite add`,
+  `validate` and `publish` refuse a plugin for an app that is not in the suite, and anything for
+  a shared scope, while how suites of plugins alone should work is settled. Only the authoring
+  commands hold to this: the lexicon, the schema and `install` are unchanged, and a suite
+  published otherwise installs as it is.
 - **`suite add --for` no longer takes `#` in place of `@`.** 0.1.0 read `--for
   '#<account>/<name>'` as an app's listing. That form was never meant to exist, and is refused
   now: name the app as `@<handle or did>/<name>` or by its `at://` address. Specs written with it
