@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.1.0
 
 - **Suites: listings installed together.** A suite names listings, apps and plugins for them,
   and what each must carry: a signer, attesters. `bundle install @<account>/<suite>` installs

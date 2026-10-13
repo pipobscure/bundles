@@ -588,7 +588,7 @@ writes a `$schema` that points at the released copy, so an editor can complete a
 
 ```json
 {
-  "$schema": "https://github.com/pipobscure/bundles/releases/download/v0.0.22/suite.schema.json",
+  "$schema": "https://github.com/pipobscure/bundles/releases/download/v0.1.0/suite.schema.json",
   "name": "devtools",
   "members": [
     {
