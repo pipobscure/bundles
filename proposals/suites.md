@@ -132,7 +132,19 @@ its members' bytes. Permitting a suite whose member requires only `published@<pu
 that publisher's next release too. That is often what an IT department wants, and the audit
 skill says so plainly when it is asked to vet one. To pin bytes, permit the bundle itself.
 
+## For now: plugins only with their apps
+
+`bundle suite add`, `validate` and `publish` hold to one more rule: a plugin goes into a suite
+only with its app, and nothing goes into a shared scope. Suites of plugins alone (a set of
+plugins for some app that go together) may well be worth having, but how they should install,
+update and be attested is not settled. A suite published now would be a precedent that has to
+be supported. So the tool does not write such suites. It is a rule of the authoring commands
+only: the lexicon, the schema, reading a suite and installing one say nothing about it, so a
+suite published some other way installs as it is, and lifting the rule breaks nothing.
+
 ## Open questions
+
+- **Suites of plugins.** See above.
 
 - **Search.** Suites have a concept hash, but the local index does not sync them yet, so
   `bundle search` does not find them.

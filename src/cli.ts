@@ -198,7 +198,7 @@ export const HELP: Record<string, string> = {
   -s, --suite <file>    the suite's spec (default: suite.json)
       --for <app>       add: install it as a plugin, for the app installed
                         from this listing (@<handle or did>/<name>, or an
-                        at:// address), or into this scope
+                        at:// address) — for now, an app in the suite
   -y, --yes             add, update: require everything shown that can be
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --no-discover     do not ask the backlink index who has attested it
@@ -551,8 +551,7 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
                         it is not there, named after the file
       --for <app>       install them as plugins: for the app installed from
                         this listing (@<handle or did>/<name>, or an at://
-                        address), or into this scope (a package name, such
-                        as a suite's shared one)
+                        address) — for now, an app in the suite
   -y, --yes             require everything shown that can be
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --no-discover     do not ask the backlink index who has attested it
@@ -563,7 +562,12 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
   it. Then: which of that should the suite require? The signature and good
   attestations can be required. What is chosen becomes the member's
   "require": a member that does not carry it is refused wherever the suite is
-  installed. Adding a member again replaces it.`,
+  installed. Adding a member again replaces it.
+
+  for now, a plugin goes in only with its app: add the app first, then its
+  plugins. A plugin for an app not in the suite, and anything for a shared
+  scope, is refused — by this tool, as it writes suites, while how suites of
+  plugins alone should work is settled.`,
         remove: `suite remove options:               usage: suite remove [options] <listing>...
   -s, --suite <file>    the spec (default: suite.json)
 
@@ -589,7 +593,8 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
 
   checks that the file holds together — names, listings, scopes, the
   requirements' form — that every member's listing and every app one is for
-  is there, that a plugin is for the app its listing says, and then fetches
+  is there, that a plugin is for the app its listing says, and for now that
+  each plugin's app is in the suite too — and then fetches
   what each listing serves now and checks that it carries what the suite
   requires of it. Judged by the suite's requirements alone, not this
   machine's policy. Each member's line names the URL and the hash of what it
@@ -611,7 +616,8 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
 
   writes com.pipobscure.bundle.suite/<name> to the account's repository, so
   'bundle install @<handle>/<name>' installs it. Every member's listing, and
-  every app one is for, is checked to be there first, before signing in. A
+  every app one is for, is checked to be there first, before signing in —
+  and, for now, that every plugin's app is in the suite (see 'suite add'). A
   suite cannot share its name with a listing on the same account: that
   address installs the listing. Publishing it again replaces it, keeping
   when it was first published; every install of it follows on its next
@@ -2127,8 +2133,12 @@ async function suite(args: string[], io: Console): Promise<number> {
         if (!rest.length) throw new Error('suite add: name the listings to add, as @<handle or did>/<name> or at:// addresses');
         const spec = SUITE.readSpec(file, { create: true });
         const where = values.for !== undefined ? await suiteFor(values.for) : undefined;
+        if (where) {
+            const outside = await pluginOutside(where.for, spec.members);
+            if (outside) throw new Error(`suite add: --for ${where.label}: ${outside}`);
+        }
         for (const target of rest) {
-            const member = await suiteMember(target, where, values, io);
+            const member = await suiteMember(target, where, spec.members, values, io);
             const at = spec.members.findIndex((each) => each.listing === member.listing);
             if (at >= 0) spec.members[at] = member;
             else spec.members.push(member);
@@ -2157,7 +2167,7 @@ async function suite(args: string[], io: Console): Promise<number> {
             spec.members.splice(at, 1);
             io.out(`removed ${target} from ${spec.name} (${file})`);
             const dependent = spec.members.filter((each) => each.for === uri);
-            if (dependent.length) io.err(`  ! still for it: ${dependent.map((each) => each.label ?? each.listing).join(', ')} — they install only where it is installed already`);
+            if (dependent.length) io.err(`  ! still for it: ${dependent.map((each) => each.label ?? each.listing).join(', ')} — remove them too: for now, 'suite publish' refuses plugins for an app not in the suite`);
         }
         SUITE.writeSpec(file, spec, version());
         return missing ? 1 : 0;
@@ -2178,9 +2188,7 @@ async function suite(args: string[], io: Console): Promise<number> {
         const LISTING = await import('./listing.ts');
         const POLICY = await import('./policy.ts');
         const problems: string[] = [];
-        const notes: string[] = [];
         if (!spec.members.length) problems.push('it has no members');
-        const listed = new Set(spec.members.map((member) => member.listing));
         const apps = new Map<string, Promise<string | undefined>>();
         const appProblem = (uri: string) => apps.get(uri) ?? apps.set(uri, LISTING.followListing(uri).then(
             (found) => (LISTING.appOf(found.record) ? `it is for ${uri}, which is itself a plugin` : undefined),
@@ -2203,8 +2211,8 @@ async function suite(args: string[], io: Console): Promise<number> {
                 if (wrong) mine.push(wrong);
                 if (app !== undefined && app !== member.for) mine.push(`its listing says it is a plugin for ${app}, not for ${member.for}`);
             }
-            const host = member.for !== undefined && LISTING.parseListingUri(member.for) ? member.for : member.for === undefined ? app : undefined;
-            if (host !== undefined && !listed.has(host)) notes.push(`${label} is a plugin for ${host}, which is not in the suite: it installs only where that is installed already`);
+            const outside = await pluginOutside(member.for ?? app, spec.members);
+            if (outside) mine.push(outside);
             const review = REVIEW.judge(inspected.gathered, { policy: { ...POLICY.emptyPolicy(), discovery: false }, minimum: floor ? [floor] : [] });
             mine.push(...review.unmet);
             problems.push(...mine.map((problem) => `${label}: ${problem}`));
@@ -2212,7 +2220,6 @@ async function suite(args: string[], io: Console): Promise<number> {
             for (const problem of mine) io.out(`      ${problem}`);
             if (!mine.length) io.out(`      requires ${describeRequire(member.require)}`);
         }
-        for (const note of notes) io.err(`  ! ${note}`);
         io.out(problems.length
             ? `${spec.name}: ${problems.length} problem${problems.length === 1 ? '' : 's'}`
             : `${spec.name}: consistent, and every member carries what it requires`);
@@ -2297,9 +2304,16 @@ async function suite(args: string[], io: Console): Promise<number> {
         // Before anyone signs in: every member, and every app one is for, must
         // be a listing that is there.
         const LISTING = await import('./listing.ts');
+        const apps = new Map<string, string | undefined>();
         for (const uri of new Set(spec.members.flatMap((each) => [each.listing, ...(each.for !== undefined && LISTING.parseListingUri(each.for) ? [each.for] : [])]))) {
-            await LISTING.followListing(uri);
+            apps.set(uri, LISTING.appOf((await LISTING.followListing(uri)).record));
         }
+        const outside: string[] = [];
+        for (const member of spec.members) {
+            const why = await pluginOutside(member.for ?? apps.get(member.listing), spec.members);
+            if (why) outside.push(`${member.label ?? member.listing}: ${why}`);
+        }
+        if (outside.length) throw new Error(`suite publish: ${outside.join('; ')}`);
         const session = await signIn('suite publish', values, io, `atproto repo:${SUITE.SUITE}`);
         try {
             // `@<account>/<name>` installs a listing of that name when there is one.
@@ -2445,8 +2459,28 @@ function describeMissing(require: import('./suite.ts').SuiteRequire, carried: RE
     return missing;
 }
 
+// For now, 'bundle suite' writes suites of apps and of plugins for the apps
+// in them, and nothing else: a plugin goes in only with its app, and nothing
+// goes into a shared scope. How suites of plugins alone should work is not
+// settled, and a suite published now would be a precedent to support. So
+// the rule is this tool's, as it writes suites — add, validate and publish —
+// and nothing else's: the lexicon, the schema and installing say nothing of
+// it, and lifting it later breaks nothing. Why `host`, where a member is to
+// be installed, keeps it out; or undefined.
+async function pluginOutside(host: string | undefined, members: SpecMember[]): Promise<string | undefined> {
+    if (host === undefined) return undefined;
+    const LISTING = await import('./listing.ts');
+    if (!LISTING.parseListingUri(host)) {
+        return `it would go into the scope '${host}', and for now a suite holds plugins only for the apps in it`;
+    }
+    if (!members.some((member) => member.listing === host)) {
+        return `it is a plugin for ${host}, which is not in the suite — for now a suite holds plugins only for the apps in it: add the app first`;
+    }
+    return undefined;
+}
+
 // One listing, made a member of a spec: inspected, and what to require of it asked.
-async function suiteMember(target: string, where: { for: string; label: string } | undefined, values: SuiteValues, io: Console): Promise<SpecMember> {
+async function suiteMember(target: string, where: { for: string; label: string } | undefined, members: SpecMember[], values: SuiteValues, io: Console): Promise<SpecMember> {
     const LISTING = await import('./listing.ts');
     const inspected = await inspectMember(target, values);
     const { found, url } = inspected;
@@ -2454,6 +2488,8 @@ async function suiteMember(target: string, where: { for: string; label: string }
     if (where && app && where.for !== app && LISTING.parseListingUri(where.for)) {
         throw new Error(`suite add: ${target} is a plugin for ${app}, not for ${where.label}`);
     }
+    const outside = where ? undefined : await pluginOutside(app, members);
+    if (outside) throw new Error(`suite add: ${target}: ${outside}`);
     io.err(`* ${target} is ${found.uri}, at ${url}`);
     const require = await chooseRequire(target, inspected, values, io);
     return {

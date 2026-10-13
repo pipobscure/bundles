@@ -629,16 +629,23 @@ Any other setting is an error, so a typo cannot quietly drop a requirement.
   addresses. Each listing is fetched from its publisher's PDS and verified, the archive it names
   is fetched, and everything that vouches for it is shown, numbered, as an install shows it.
   Then you're asked which of that the suite should require. The signature and good attestations
-  can be required. `--yes` requires all of it. `--for` adds them as plugins: for an app's listing
-  (`@<handle or did>/<name>`, or an `at://` address), or into a scope. Adding a
-  member again replaces it. A spec that is not there yet is made, named after the file.
+  can be required. `--yes` requires all of it. `--for` adds them as plugins, for an app's listing
+  (`@<handle or did>/<name>`, or an `at://` address). Adding a member again replaces it. A spec
+  that is not there yet is made, named after the file.
+- **For now, a plugin goes in only with its app.** Add the app first, then its plugins. `add`,
+  `validate` and `publish` refuse a plugin for an app that is not in the suite, and anything
+  for a shared scope. How suites of plugins alone should work is not settled yet, and a suite
+  published now would be a precedent to support. This is a rule of these commands only: the
+  lexicon and the schema allow more, and `install` installs a suite published some other way
+  as it is. So lifting it later breaks nothing.
 - **`remove <listing>...`** takes members out, by what they were added as, their address, or
   `@<handle or did>/<name>`. Exits `1` when one was not a member.
 - **`update [listing]...`** asks again, for the members named or all of them, what to require.
   Each is fetched as `add` fetches it and shown with what is required now marked, and with
   anything required that it no longer carries. Enter keeps what is required now.
 - **`validate`** checks that the file holds together. Every member's listing, and every app one
-  is for, must be there, and a plugin must be for the app its listing says. Then it fetches what
+  is for, must be there, a plugin must be for the app its listing says, and (for now) every
+  plugin's app must be in the suite. Then it fetches what
   each listing serves now and checks that it carries what the suite requires of it. That is
   judged by the suite's requirements alone, not this machine's policy. Each member's line names the
   URL and the hash of what it serves now. It exits `1` when anything does not hold, so it can gate
@@ -647,7 +654,8 @@ Any other setting is an error, so a typo cannot quietly drop a requirement.
 - **`show [suite]`** prints the suite, a spec or a published one: its hash (what an attestation
   of it names), and each member with what it requires. `--json` prints it as a spec.
 - **`publish`** writes the spec as `at://<your DID>/com.pipobscure.bundle.suite/<name>`. First it
-  checks that every member's listing, and every app one is for, is there, before signing in with
+  checks that every member's listing, and every app one is for, is there, and (for now) that
+  every plugin's app is in the suite, before signing in with
   write access to suite records only. A suite can't share its name with a listing on the same
   account, because `@<account>/<name>` installs the listing. Publishing again replaces it, keeping
   when it was first published, and every install of it follows on its next update.
@@ -703,7 +711,7 @@ Then it permits whole suites, or single bundles, from its own account, and prohi
 | Option | |
 |---|---|
 | `-s, --suite <file>` | the spec (default: `suite.json`) |
-| `--for <app>` | `add`: install them as plugins, for the app installed from this listing (`@<handle or did>/<name>`, or an `at://` address), or into this scope |
+| `--for <app>` | `add`: install them as plugins, for the app installed from this listing (`@<handle or did>/<name>`, or an `at://` address). For now, the app must be in the suite |
 | `-y, --yes` | `add`, `update`: require everything shown that can be |
 | `-r, --root <file>` | an extra trusted root, for checking archives; repeatable |
 | `--no-discover` | do not ask the backlink index who has attested an archive |

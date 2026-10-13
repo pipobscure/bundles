@@ -1965,8 +1965,18 @@ test('bundle suite add, validate, update, remove and publish a spec — and inst
     DOWNLOADS.set('/cli-suite/host.nzip', FS.readFileSync(host));
     DOWNLOADS.set('/cli-suite/extra.nzip', FS.readFileSync(extra));
     const hostListing = await LISTINGS.publish(await ATPROTO.login(author.did, author.password), { name: 'cli-host', url: 'https://dl.test/cli-suite/host.nzip' });
-    await LISTINGS.publish(await ATPROTO.login(extender.did, extender.password), { name: 'cli-extra', url: 'https://dl.test/cli-suite/extra.nzip', for: hostListing.uri });
+    const extraListing = await LISTINGS.publish(await ATPROTO.login(extender.did, extender.password), { name: 'cli-extra', url: 'https://dl.test/cli-suite/extra.nzip', for: hostListing.uri });
     const file = PATH.join(tmp, 'cli-kit.json');
+
+    // For now, a plugin goes in only with its app: not before it is added,
+    // and not into a shared scope. The tool says so before fetching anything.
+    const early = collector();
+    assert.equal(await main(['suite', 'add', '--suite', file, '--yes', `@${extender.did}/cli-extra`], early), 70);
+    assert.match(early.stderr.join('\n'), /is a plugin for .*cli-host, which is not in the suite — for now a suite holds plugins only for the apps in it: add the app first/);
+    const scoped = collector();
+    assert.equal(await main(['suite', 'add', '--suite', file, '--yes', '--for', '@cli/shared', `@${extender.did}/cli-extra`], scoped), 70);
+    assert.match(scoped.stderr.join('\n'), /would go into the scope '@cli\/shared', and for now a suite holds plugins only for the apps in it/);
+    assert.equal(FS.existsSync(file), false, 'nothing written');
 
     // Added with --yes: everything it carries is required of it.
     const added = collector();
@@ -2031,6 +2041,24 @@ test('bundle suite add, validate, update, remove and publish a spec — and inst
     // Taken out of the spec: gone from it, and an unknown member is exit 1.
     assert.equal(await main(['suite', 'remove', '--suite', file, `@${extender.did}/cli-extra`], collector()), 0);
     assert.equal(await main(['suite', 'remove', '--suite', file, `@${extender.did}/cli-extra`], collector()), 1);
+
+    // A spec edited by hand to hold the plugin alone: validate says why, and
+    // publish refuses it before signing in. Only the tool holds to this; a
+    // suite like it, published some other way, still installs.
+    const alone = PATH.join(tmp, 'cli-alone.json');
+    FS.writeFileSync(alone, JSON.stringify({ name: 'cli-alone', members: [{ listing: extraListing.uri }] }));
+    const lonely = collector();
+    assert.equal(await main(['suite', 'validate', '--suite', alone], lonely), 1);
+    assert.match(lonely.stdout.join('\n'), /FAIL .*cli-extra[\s\S]*which is not in the suite/);
+    requests.length = 0;
+    const refusedPublish = collector();
+    assert.equal(await main(['suite', 'publish', '--suite', alone, '--as', curator.did], refusedPublish), 70);
+    assert.match(refusedPublish.stderr.join('\n'), /suite publish: .*cli-extra: it is a plugin for .*, which is not in the suite/);
+    assert.ok(!requests.some((line) => line.includes('createSession') || line.includes('applyWrites')), 'nobody signed in');
+    await SUITE_RECORD.publishSuite(await ATPROTO.login(curator.did, curator.password), SUITE_RECORD.readSpec(alone));
+    const elsewhere = await SUITES.installSuite(`@${curator.did}/cli-alone`, { confirm: acceptAll, decide: async (review) => selectable(review) });
+    assert.deepEqual(elsewhere.members.map(({ state }) => state), ['present'], 'installs as ever: its app is here');
+    await SUITES.uninstallSuite('cli-alone');
 
     const removed = collector();
     assert.equal(await main(['uninstall', 'cli-kit'], removed), 0, removed.stderr.join('\n'));
