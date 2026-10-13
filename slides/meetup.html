@@ -519,7 +519,7 @@ has marked it bad since it was last checked</span>
 <section class="slide" data-act="III · what's in it for you" data-t="60">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>
   <div class="eyebrow">Publishing, without a registry</div>
-  <h2>Your Bluesky handle is your publisher name.</h2>
+  <h2>Publish under your handle.</h2>
   <div class="cmd sm" style="margin-top:22px"><span class="p">$</span> bundle publish --as you.example --description 'preview markdown in the terminal' \
     mdview https://github.com/you/mdview/releases/latest/download/mdview.nzip
 <span class="g">published mdview as did:plc:…</span>
@@ -530,7 +530,7 @@ has marked it bad since it was last checked</span>
 <span class="p">$</span> bundle install @you.example/mdview</div>
   <div class="grid3" style="margin-top:18px">
     <div class="card"><h3 style="font-size:17px;color:var(--accent)">A record in your account</h3>
-      <p style="margin-top:6px">atproto, the protocol behind Bluesky. It points at your release URL.</p></div>
+      <p style="margin-top:6px">Your Atmosphere account, with any provider. It points at your release URL.</p></div>
     <div class="card"><h3 style="font-size:17px;color:var(--accent)">Releases stay releases</h3>
       <p style="margin-top:6px">A new version is a new GitHub release. The listing never changes.</p></div>
     <div class="card"><h3 style="font-size:17px;color:var(--accent)">No registry to run</h3>
@@ -538,7 +538,7 @@ has marked it bad since it was last checked</span>
   </div>
   <div class="kicker"><span class="mono">publish · search · install @you/name</span><span></span></div>
   <div class="notes" hidden>
-    <p class="say">"There's no new registry here. If you have a Bluesky account, you already have a place to publish: the listing lives in your own account and says where the file is."</p>
+    <p class="say">"There's no new registry here. If you have an Atmosphere account, from whichever provider, you already have a place to publish: the listing lives in your own account and says where the file is."</p>
     <p><b>If asked "why atproto?":</b> accounts that already exist, records anyone can verify without trusting the server, and an open index (Constellation) that lets everyone find listings. A domain with a TXT record works too, for people who'd rather not.</p>
   </div>
 </section>
@@ -596,6 +596,74 @@ use('bled', { verify: { attesters: ['audited@did:web:bled.dev'] } });</div>
     <p class="say">"If your app takes plugins today, they're probably npm packages in node_modules. Same code, but now they're signed files, installed for your app, and you can require that they're audited."</p>
     <p><b>Key safety property (say it):</b> plugins resolve <i>last</i>. A plugin called lodash can't swap out your lodash.</p>
     <p><b>Judged as plugins:</b> your app's signing rules don't apply to plugins, because someone else wrote them. Attestation rules do. Don't go deeper unless asked.</p>
+  </div>
+</section>
+
+<!-- ═══ the ecosystem ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="75">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">The whole picture</div>
+  <h2>Everyone writes to their own account.</h2>
+  <div class="grid3" style="margin-top:26px">
+    <div class="card"><span class="tag acc">publisher</span>
+      <h3 style="font-size:18px;margin-top:10px">Listings</h3>
+      <p style="margin-top:6px">"<code>bled</code> is at this URL." An app, or a plugin for one. Releases stay on GitHub.</p></div>
+    <div class="card"><span class="tag acc">curator</span>
+      <h3 style="font-size:18px;margin-top:10px">Suites</h3>
+      <p style="margin-top:6px">"These go together, and each must carry this signer or that attestation."</p></div>
+    <div class="card"><span class="tag acc">auditor · scanner · IT</span>
+      <h3 style="font-size:18px;margin-top:10px">Attestations</h3>
+      <p style="margin-top:6px">"Audited", "permitted", "malware", about one file's hash, or a whole suite's.</p></div>
+  </div>
+  <div class="cols w" style="margin-top:22px">
+    <div class="cmd sm"><span class="c"># one record each, in their own atproto repository</span>
+at://you.example/<span class="y">com.pipobscure.bundle.listing</span>/mdview
+at://curator.example/<span class="y">com.pipobscure.bundle.suite</span>/devtools
+at://it.acme.com/<span class="y">com.pipobscure.bundle.attestation</span>/3f1a…</div>
+    <ul class="bullets">
+      <li><b>You hold the policy.</b> Whom you trust, what you require, whose warning stops an install.</li>
+      <li><b>Nothing in the middle to compromise.</b> No registry, no service of ours; an open index only says whom to ask.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">listing · suite · attestation · policy</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Here's the whole ecosystem on one slide. Four kinds of people, and every one of them writes only to their own account. Nobody runs a registry."</p>
+    <p><b>75 seconds.</b> Walk left to right: the publisher says where; the curator says what goes together and what it must carry; the auditor, the scanner, or your IT department says what they think of it. The fourth person is you, and your policy decides whose word counts.</p>
+    <p><b>If asked how anyone finds anything:</b> each kind of record carries a fixed value that an open backlink index (Constellation) can be asked about. It only says whom to ask: every record is fetched from its owner's server and checked against their key.</p>
+  </div>
+</section>
+
+<!-- ═══ suites ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="80">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Suites</div>
+  <h2>A whole toolset, one question.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm"><span class="p">$</span> bundle install @acme.com/devtools
+<span class="o">* suite devtools expects its members to carry:</span>
+<span class="o">   1 signed by   …/acme/cli/…/release.yml@refs/heads/main — for cli</span>
+<span class="o">   2 attested by published@did:plc:… — for cli-git, cli-k8s</span>
+<span class="o">  accept which, for those members? </span><span class="y">all</span>
+<span class="g">suite devtools: 3 installed</span></div>
+      <div class="cmd sm"><span class="c"># IT pushes one rule to every laptop:</span>
+{ "require": { "attesters": ["permitted@did:web:it.acme.com"] },
+  "block": ["did:web:it.acme.com"] }
+<span class="p">$</span> bundle suite attest --kind permitted @acme.com/devtools</div>
+    </div>
+    <ul class="bullets">
+      <li><b>The suite vouches for nothing.</b> Each member is reviewed on its own. The suite sets a floor, and you're asked once.</li>
+      <li><b>Updates follow the suite.</b> Members added get installed, members dropped get removed, and only what it brought.</li>
+      <li><b>IT permits suites or single bundles,</b> and what it says of a bundle wins: permit the suite, prohibit one tool in it.</li>
+      <li><b>Prohibiting a suite stays with the suite.</b> Its tools can still be permitted one by one.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">suite add · validate · publish · attest</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"A suite is a list of things that go together, like your team's toolset. It doesn't vouch for anything. It says what each tool should carry, so you get asked once instead of ten times."</p>
+    <p><b>80 seconds.</b> Then the company case: IT requires 'permitted by us' of everything and blocks on itself. It permits a suite with one attestation, and can still prohibit a single tool inside it, or permit one tool from a suite it prohibited.</p>
+    <p><b>If asked "so a suite is a trust shortcut?":</b> no. Attesting a suite pins its requirements, not the files, so a permit is only as strong as what the suite requires. The audit skill says exactly that when it's asked to vet one.</p>
+    <p>A suite is plain JSON, so it can also be served from a URL or named in a DNS TXT record, with no atproto at all.</p>
   </div>
 </section>
 
@@ -705,7 +773,7 @@ steps:
     <ul>
       <li><b>"Native addons?"</b> Yes. Node loads them straight out of the archive.</li>
       <li><b>"How big is a bundle?"</b> Only the files the app read. A small CLI is kilobytes. The standalone executable is a copy of Node, about 155 MB.</li>
-      <li><b>"Do I need Bluesky?"</b> No. Install by URL or domain, sign with sigstore or your own CA. Accounts are only for publishing names and attestations.</li>
+      <li><b>"Do I need an Atmosphere account?"</b> No. Install by URL or domain, sign with sigstore or your own CA. Accounts are only for publishing names and attestations.</li>
       <li><b>"Windows?"</b> Yes, tested in CI. <em>bundle install</em> sets up a <em>.nzip</em> file association so apps run by name.</li>
       <li><b>"Isn't npm provenance enough?"</b> It's good, and it's about packages you're about to install from npm. This is about the finished app you hand over.</li>
       <li><b>"Reproducible builds?"</b> Complementary. A "reproduced" attestation is someone saying "I rebuilt it and got these exact bytes".</li>
