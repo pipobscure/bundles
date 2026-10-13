@@ -27,7 +27,7 @@ at://did:plc:…/com.pipobscure.bundle.suite/devtools
 
 ```console
 $ bundle suite add --suite devtools.json @pipobscure.com/bled
-$ bundle suite add --suite devtools.json --for '#pipobscure.com/bled' @alice.example/bled-gpio
+$ bundle suite add --suite devtools.json --for @pipobscure.com/bled @alice.example/bled-gpio
 $ bundle suite validate --suite devtools.json
 $ bundle suite publish --suite devtools.json --as pipobscure.com
 $ bundle install @pipobscure.com/devtools

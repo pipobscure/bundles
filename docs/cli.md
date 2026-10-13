@@ -551,7 +551,7 @@ bundle suite unpublish [options] <name>
 bundle suite attest [options] [suite]           # vouch for it, or prohibit it, as a whole
 
 bundle suite add --suite devtools.json @pipobscure.com/bled
-bundle suite add --suite devtools.json --for '#pipobscure.com/bled' @alice.example/bled-gpio
+bundle suite add --suite devtools.json --for @pipobscure.com/bled @alice.example/bled-gpio
 bundle suite validate --suite devtools.json
 bundle suite publish --suite devtools.json --as pipobscure.com
 bundle install @pipobscure.com/devtools
@@ -630,7 +630,7 @@ Any other setting is an error, so a typo cannot quietly drop a requirement.
   is fetched, and everything that vouches for it is shown, numbered, as an install shows it.
   Then you're asked which of that the suite should require. The signature and good attestations
   can be required. `--yes` requires all of it. `--for` adds them as plugins: for an app's listing
-  (`@<handle or did>/<name>`, `#` for `@` as well, or an `at://` address), or into a scope. Adding a
+  (`@<handle or did>/<name>`, or an `at://` address), or into a scope. Adding a
   member again replaces it. A spec that is not there yet is made, named after the file.
 - **`remove <listing>...`** takes members out, by what they were added as, their address, or
   `@<handle or did>/<name>`. Exits `1` when one was not a member.
@@ -703,7 +703,7 @@ Then it permits whole suites, or single bundles, from its own account, and prohi
 | Option | |
 |---|---|
 | `-s, --suite <file>` | the spec (default: `suite.json`) |
-| `--for <app>` | `add`: install them as plugins, for the app installed from this listing (`@<handle or did>/<name>`, `#` for `@` too, or an `at://` address), or into this scope |
+| `--for <app>` | `add`: install them as plugins, for the app installed from this listing (`@<handle or did>/<name>`, or an `at://` address), or into this scope |
 | `-y, --yes` | `add`, `update`: require everything shown that can be |
 | `-r, --root <file>` | an extra trusted root, for checking archives; repeatable |
 | `--no-discover` | do not ask the backlink index who has attested an archive |

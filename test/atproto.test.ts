@@ -1972,10 +1972,14 @@ test('bundle suite add, validate, update, remove and publish a spec — and inst
     const added = collector();
     assert.equal(await main(['suite', 'add', '--suite', file, '--yes', `@${author.did}/cli-host`], added), 0, added.stderr.join('\n'));
     assert.match(added.stdout.join('\n'), /added .*\/cli-host in cli-kit .*\n  requiring: attested by published@did:/);
-    // Asked, on a terminal: the plugin, for that app, '#' standing for '@'.
+    // Asked, on a terminal: the plugin, for that app.
     const answers = ['1'];
     const asked = { ...collector(), ask: async () => answers.shift()! };
-    assert.equal(await main(['suite', 'add', '--suite', file, '--for', `#${author.did}/cli-host`, `@${extender.did}/cli-extra`], asked), 0, asked.stderr.join('\n'));
+    assert.equal(await main(['suite', 'add', '--suite', file, '--for', `@${author.did}/cli-host`, `@${extender.did}/cli-extra`], asked), 0, asked.stderr.join('\n'));
+    // '#' is not another way to write '@': it names nothing, and is refused.
+    const hashed = collector();
+    assert.equal(await main(['suite', 'add', '--suite', file, '--yes', '--for', `#${author.did}/cli-host`, `@${extender.did}/cli-extra`], hashed), 70);
+    assert.match(hashed.stderr.join('\n'), /--for takes an app's listing .* or a scope .*; '#did:.*' is neither/);
     const spec = JSON.parse(FS.readFileSync(file, 'utf-8')) as SUITE_RECORD.SuiteSpec;
     assert.equal(spec.name, 'cli-kit', 'named after the file');
     assert.match(spec.$schema!, /suite\.schema\.json$/);

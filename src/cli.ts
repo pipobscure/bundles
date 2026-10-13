@@ -197,8 +197,8 @@ export const HELP: Record<string, string> = {
     suite: `suite options:                      usage: suite <add | remove | update | validate | show | publish | unpublish | attest> [options]
   -s, --suite <file>    the suite's spec (default: suite.json)
       --for <app>       add: install it as a plugin, for the app installed
-                        from this listing (@<handle or did>/<name>, '#' for
-                        '@' too, or an at:// address), or into this scope
+                        from this listing (@<handle or did>/<name>, or an
+                        at:// address), or into this scope
   -y, --yes             add, update: require everything shown that can be
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --no-discover     do not ask the backlink index who has attested it
@@ -550,9 +550,9 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
   -s, --suite <file>    the spec to add to (default: suite.json), made if
                         it is not there, named after the file
       --for <app>       install them as plugins: for the app installed from
-                        this listing (@<handle or did>/<name>, '#' for '@'
-                        too, or an at:// address), or into this scope (a
-                        package name, such as a suite's shared one)
+                        this listing (@<handle or did>/<name>, or an at://
+                        address), or into this scope (a package name, such
+                        as a suite's shared one)
   -y, --yes             require everything shown that can be
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --no-discover     do not ask the backlink index who has attested it
@@ -2334,16 +2334,15 @@ async function suite(args: string[], io: Console): Promise<number> {
 }
 
 // What 'suite add --for' names: an app's listing — '@<handle or did>/<name>',
-// with '#' for '@' as well, or an at:// address — or a scope, a package name,
-// such as a suite's shared one. '@acme/suite' is a scope; '@acme.dev/app',
-// whose account is a handle or a DID, is a listing; '#' always is.
+// or an at:// address — or a scope, a package name, such as a suite's shared
+// one. '@acme/suite' is a scope; '@acme.dev/app', whose account is a handle or
+// a DID, is a listing.
 async function suiteFor(value: string): Promise<{ for: string; label: string }> {
     const LISTING = await import('./listing.ts');
-    if (value.startsWith('#') || /^@(?:did:|[^/]*\.)/.test(value)) {
-        const typed = value.replace(/^#/, '@');
-        const found = await LISTING.resolveListing(typed);
+    if (/^@(?:did:|[^/]*\.)/.test(value)) {
+        const found = await LISTING.resolveListing(value);
         if (LISTING.appOf(found.record)) throw new Error(`suite: ${value} is itself a plugin, for ${LISTING.appOf(found.record)}`);
-        return { for: found.uri, label: typed };
+        return { for: found.uri, label: value };
     }
     if (LISTING.parseListingUri(value)) {
         const found = await LISTING.followListing(value);
@@ -2365,8 +2364,7 @@ async function inspectMember(target: string, values: SuiteValues, ask: string[] 
     const LISTING = await import('./listing.ts');
     const INSTALL = await import('./install.ts');
     const POLICY = await import('./policy.ts');
-    const typed = target.replace(/^#/, '@');
-    const found = LISTING.parseListingUri(typed) ? await LISTING.followListing(typed) : await LISTING.resolveListing(typed);
+    const found = LISTING.parseListingUri(target) ? await LISTING.followListing(target) : await LISTING.resolveListing(target);
     const url = found.record.domain ? (await INSTALL.resolveAlias(found.record.domain)).url : found.record.url!;
     const { patientFetch } = await import('./ratelimit.ts');
     const response = await patientFetch()(url, { redirect: 'follow' });
@@ -2376,7 +2374,7 @@ async function inspectMember(target: string, values: SuiteValues, ask: string[] 
     const gathered = await REVIEW.gather(bytes, {
         roots: values.root ?? [], candidates: ask, discovery: values.discover === false ? false : policy.discovery, ignore: policy.ignore,
     });
-    return { typed, found, url, gathered, policy };
+    return { found, url, gathered, policy };
 }
 
 // Which of what vouches for a member the suite should require of it: shown,
@@ -2451,7 +2449,7 @@ function describeMissing(require: import('./suite.ts').SuiteRequire, carried: RE
 async function suiteMember(target: string, where: { for: string; label: string } | undefined, values: SuiteValues, io: Console): Promise<SpecMember> {
     const LISTING = await import('./listing.ts');
     const inspected = await inspectMember(target, values);
-    const { typed, found, url } = inspected;
+    const { found, url } = inspected;
     const app = LISTING.appOf(found.record);
     if (where && app && where.for !== app && LISTING.parseListingUri(where.for)) {
         throw new Error(`suite add: ${target} is a plugin for ${app}, not for ${where.label}`);
@@ -2460,7 +2458,7 @@ async function suiteMember(target: string, where: { for: string; label: string }
     const require = await chooseRequire(target, inspected, values, io);
     return {
         listing: found.uri,
-        label: typed.startsWith('@') ? typed : undefined,
+        label: target.startsWith('@') ? target : undefined,
         ...(where ? { for: where.for, forLabel: where.label !== where.for ? where.label : undefined } : {}),
         ...(require ? { require } : {}),
     };
@@ -2469,12 +2467,11 @@ async function suiteMember(target: string, where: { for: string; label: string }
 // Which member of a spec 'suite remove' means: as it was added, by its
 // address, or by '@<handle or did>/<name>', resolved.
 async function memberUri(target: string, spec: import('./suite.ts').SuiteSpec): Promise<string> {
-    const typed = target.replace(/^#/, '@');
-    const known = spec.members.find((each) => each.listing === typed || each.label === typed);
+    const known = spec.members.find((each) => each.listing === target || each.label === target);
     if (known) return known.listing;
     const LISTING = await import('./listing.ts');
-    const parsed = LISTING.parseListingTarget(typed);
-    if (!parsed) return typed;
+    const parsed = LISTING.parseListingTarget(target);
+    if (!parsed) return target;
     if (parsed.who.startsWith('did:')) return LISTING.listingUri(parsed.who, parsed.name);
     const ATPROTO = await import('./atproto.ts');
     return LISTING.listingUri((await ATPROTO.resolveHandle(parsed.who)).did, parsed.name);

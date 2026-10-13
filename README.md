@@ -215,7 +215,7 @@ A suite is a set of listings installed together: apps, and plugins for them.
 
 ```sh
 bundle suite add --suite devtools.json @pipobscure.com/bled               # asks what to require of it
-bundle suite add --suite devtools.json --for '#pipobscure.com/bled' @alice.example/bled-gpio
+bundle suite add --suite devtools.json --for @pipobscure.com/bled @alice.example/bled-gpio
 bundle suite validate --suite devtools.json                               # does what is published meet it?
 bundle suite publish --suite devtools.json --as pipobscure.com
 bundle install @pipobscure.com/devtools                                   # everything in it
