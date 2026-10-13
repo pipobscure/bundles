@@ -3,6 +3,13 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## 0.1.1
+
+- **`suite add --for` no longer takes `#` in place of `@`.** 0.1.0 read `--for
+  '#<account>/<name>'` as an app's listing. That form was never meant to exist, and is refused
+  now: name the app as `@<handle or did>/<name>` or by its `at://` address. Specs written with it
+  are unaffected, since a spec stores the listing's address.
+
 ## 0.1.0
 
 - **Suites: listings installed together.** A suite names listings, apps and plugins for them,
