@@ -3,6 +3,28 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **Suites: listings installed together.** A suite names listings, apps and plugins for them,
+  and what each must carry: a signer, attesters. `bundle install @<account>/<suite>` installs
+  each member as it would be installed by itself. Everyone the suite expects is shown once, and
+  whom you accept counts for every member that names them. A member that does not carry what
+  the suite requires is refused, and the rest still install. `update` follows the suite as
+  members are added and taken out, and `uninstall` removes what it brought and nothing else. A
+  new lexicon, `com.pipobscure.bundle.suite`; installed suites are kept in `suites.json`.
+- **`bundle suite`** writes a suite as a JSON spec ([schema](schemas/suite.schema.json)).
+  `add` fetches each listing, shows what vouches for it, and asks what to require; `remove`
+  takes members out; `update` asks again; `validate` checks the spec, and what every member
+  serves now, against it; `show`; `publish` and `unpublish`.
+- **Suites without atproto.** A URL that serves a suite's JSON rather than an archive installs
+  as a suite, and so does a domain whose TXT record is `nsuite:<url>`.
+- **Suites can be attested**, by the hash of what they say (`bundle suite attest`). A good
+  attestation counts for each member, so an IT department that requires `permitted@<its DID>`
+  can permit a whole suite at once. What it says of a bundle itself still wins, and a
+  prohibited suite is refused without its bundles being prohibited. The attestation lexicon
+  knows the kinds `permitted` and `prohibited`.
+- **`update` takes several names** in the API (`update(['a', 'b'])`).
+
 ## 0.0.21
 
 - **The listing index syncs a publisher whose listings changed.** Re-indexing deleted their

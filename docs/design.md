@@ -320,6 +320,29 @@ refetch only where a repository moved. Plugins are followed only for apps instal
 [proposals/atproto-listings.md](../proposals/atproto-listings.md) has the details, and what
 replaces Constellation once it stops scaling.
 
+## Suites
+
+A suite is a record in the publisher's repository (`com.pipobscure.bundle.suite`), or the same
+JSON served from a URL or named by a domain's `nsuite:` TXT record, listing other listings to
+install together. The decisions that shape it:
+
+- **It vouches for nothing.** Each member is installed exactly as it would be by itself,
+  reviewed under the machine's policy. A suite from a stranger gains no more trust than a
+  listing from one.
+- **A floor, and one question.** Each member can carry a `require`: a signer, attesters. That
+  is a minimum (an unmet one refuses the member), never trust. Because it is known up front,
+  installing asks once whom of those to accept, and the person's answer is what counts.
+- **What it brought, it takes away.** `suites.json` remembers which install came from which
+  member and whether the suite installed it, so uninstalling or shrinking a suite removes only
+  what it brought. It is kept apart from `installed.json`, so an older `bundle` cannot drop it.
+- **Attested by what it says.** A suite's hash is the sha256 of the DAG-CBOR encoding of its
+  members and their requirements, and an attestation of it is an ordinary attestation. Good
+  ones carry over to members, bad ones stay with the suite, and what is said of a bundle itself
+  always wins. That is enough for an IT department to permit whole suites and still permit or
+  prohibit single bundles.
+
+[proposals/suites.md](../proposals/suites.md) has the reasoning in full.
+
 ## Plugins
 
 A plugin is a bundle an app loads by package name. The decisions that shape it:

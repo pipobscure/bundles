@@ -538,6 +538,183 @@ checking the URL it last named; [`update`](#update) says the listing is gone.
 | `--as <handle or did>` | the account the listing is in (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 
+### `suite`
+
+```
+bundle suite add [options] <listing>...         # add to a spec, asking what to require of each
+bundle suite remove [options] <listing>...
+bundle suite update [options] [listing]...      # ask again what to require
+bundle suite validate [options] [suite]         # consistent, and does everything published still meet it?
+bundle suite show [options] [suite]
+bundle suite publish [options]                  # write it to an atproto account
+bundle suite unpublish [options] <name>
+bundle suite attest [options] [suite]           # vouch for it, or prohibit it, as a whole
+
+bundle suite add --suite devtools.json @pipobscure.com/bled
+bundle suite add --suite devtools.json --for '#pipobscure.com/bled' @alice.example/bled-gpio
+bundle suite validate --suite devtools.json
+bundle suite publish --suite devtools.json --as pipobscure.com
+bundle install @pipobscure.com/devtools
+```
+
+A **suite** is a set of listings installed together. `bundle install @<account>/<suite>` installs
+each member as `bundle install` would install it by itself, and [`update`](#update) keeps the
+installed suite in step with it: members added are installed, members taken out are removed.
+
+**A suite vouches for nothing.** Each member is reviewed and verified on its own, under the
+installing machine's policy. What a suite can do is set a **minimum** for each member: a signer,
+attesters. A member that does not carry its minimum is refused, at install and at every update,
+and [`installed`](#installed) says so. Meeting it accepts nothing by itself.
+
+**Asked once.** Because the suite says up front whom it expects its members to carry, installing
+it shows all of them together, once:
+
+```
+* suite devtools expects its members to carry:
+   1 signed by   https://github.com/pipobscure/bled/.github/workflows/publish.yml@refs/heads/main via https://token.actions.githubusercontent.com — for bled
+   2 attested by published@did:plc:… — for bled-gpio
+  accept which, for those members? numbers (1,2), 'all', or Enter to decide each on its own:
+```
+
+Whoever you accept counts as accepted for each member that names them, so the rest installs
+without asking, and later updates remember it. A member that carries something else is still a
+question of its own. `--yes` accepts everything shown.
+
+#### The spec
+
+A suite is written as a JSON file, its **spec**: the record as it will be published, plus its
+name. [`schemas/suite.schema.json`](../schemas/suite.schema.json) describes it, and `suite add`
+writes a `$schema` that points at the released copy, so an editor can complete and check it.
+
+```json
+{
+  "$schema": "https://github.com/pipobscure/bundles/releases/download/v0.0.22/suite.schema.json",
+  "name": "devtools",
+  "members": [
+    {
+      "listing": "at://did:plc:…/com.pipobscure.bundle.listing/bled",
+      "label": "@pipobscure.com/bled",
+      "require": {
+        "identity": "https://github.com/pipobscure/bled/.github/workflows/publish.yml@refs/heads/main",
+        "issuer": "https://token.actions.githubusercontent.com"
+      }
+    },
+    {
+      "listing": "at://did:plc:…/com.pipobscure.bundle.listing/bled-gpio",
+      "label": "@alice.example/bled-gpio",
+      "for": "at://did:plc:…/com.pipobscure.bundle.listing/bled",
+      "require": { "attesters": ["published@did:plc:…"] }
+    }
+  ]
+}
+```
+
+- **`listing`** is the member's listing, by its `at://` address with the publisher's DID.
+- **`for`** installs it as a plugin. It names either the listing of the app it is for, which
+  installs it into that app's scope wherever the app is installed from that listing, or a scope
+  directly (a package name, such as a suite's shared one). Without it, an app installs onto the
+  PATH, and a plugin's listing says which app it is for. Apps are installed before plugins,
+  whatever the order in the file.
+- **`require`** is the member's minimum: `identity` and `issuer` of the sigstore signature,
+  `attesters` as `[kind@]<did>`, and `quorum`, how many of those must have attested (default:
+  all).
+- **`label`** and **`forLabel`** are what was typed, kept for whoever reads the file. They are
+  not published.
+
+Any other setting is an error, so a typo cannot quietly drop a requirement.
+
+#### Subcommands
+
+- **`add <listing>...`** adds listings, given as `@<handle or did>/<name>` or `at://`
+  addresses. Each listing is fetched from its publisher's PDS and verified, the archive it names
+  is fetched, and everything that vouches for it is shown, numbered, as an install shows it.
+  Then you're asked which of that the suite should require. The signature and good attestations
+  can be required. `--yes` requires all of it. `--for` adds them as plugins: for an app's listing
+  (`@<handle or did>/<name>`, `#` for `@` as well, or an `at://` address), or into a scope. Adding a
+  member again replaces it. A spec that is not there yet is made, named after the file.
+- **`remove <listing>...`** takes members out, by what they were added as, their address, or
+  `@<handle or did>/<name>`. Exits `1` when one was not a member.
+- **`update [listing]...`** asks again, for the members named or all of them, what to require.
+  Each is fetched as `add` fetches it and shown with what is required now marked, and with
+  anything required that it no longer carries. Enter keeps what is required now.
+- **`validate`** checks that the file holds together. Every member's listing, and every app one
+  is for, must be there, and a plugin must be for the app its listing says. Then it fetches what
+  each listing serves now and checks that it carries what the suite requires of it. That is
+  judged by the suite's requirements alone, not this machine's policy. Each member's line names the
+  URL and the hash of what it serves now. It exits `1` when anything does not hold, so it can gate
+  a release. Given a published suite (as `install` takes one) it checks that instead of a spec,
+  which is what to run before permitting one.
+- **`show [suite]`** prints the suite, a spec or a published one: its hash (what an attestation
+  of it names), and each member with what it requires. `--json` prints it as a spec.
+- **`publish`** writes the spec as `at://<your DID>/com.pipobscure.bundle.suite/<name>`. First it
+  checks that every member's listing, and every app one is for, is there, before signing in with
+  write access to suite records only. A suite can't share its name with a listing on the same
+  account, because `@<account>/<name>` installs the listing. Publishing again replaces it, keeping
+  when it was first published, and every install of it follows on its next update.
+- **`unpublish <name>`** takes it down. Installs keep what they have, and their updates say it
+  is gone.
+- **`attest [suite]`** attests a suite: the spec, or a published one named as `install` takes it.
+  See [Attesting a suite](#attesting-a-suite).
+
+#### Publishing without atproto
+
+The spec is also what a suite is when it is served by itself. Put the file at an `https:` URL,
+and `bundle install <url>` installs it: what comes back starting with `{` is a suite, not an
+archive. Or name that URL in a TXT record on a domain:
+
+```
+devtools.example.com.  TXT  "nsuite:https://example.com/devtools.json"
+```
+
+Then `bundle install devtools.example.com` installs it. As with `nzip:`, a relative URL is
+resolved against `https://<domain>/`, and the record only says where. A domain that publishes
+both an `nzip:` and an `nsuite:` record is refused, since it would not be clear which is meant.
+An installed suite remembers the URL or domain, and `update` asks it again.
+
+#### Attesting a suite
+
+A suite has a hash: the sha256 of the DAG-CBOR encoding of `{ members }`, each member as it is
+published. Its title and description are left out. It is the same wherever the suite is
+published, and any change to what it says makes another. `bundle suite attest` writes an
+ordinary `com.pipobscure.bundle.attestation` of that hash, so discovery, the cache and
+withdrawal all work as they do for archives.
+
+- **A good attestation carries over.** Installing a member of the suite, it counts as an
+  attestation of the member, shown as `via suite <name>`, so a policy that requires
+  `permitted@<did>` is met by a suite that DID attests `permitted`. It holds only while the
+  suite is as it was attested, and only for members that carry what the suite requires, which
+  is what was reviewed.
+- **What is said of a bundle itself wins.** An attester's attestation of the member is used
+  instead of theirs of the suite. So a suite can be permitted while one bundle in it is
+  prohibited, and the bundle is refused where the policy blocks on that attester.
+- **A bad verdict stays with the suite.** Attested bad (`--kind prohibited --verdict bad`), the
+  suite is refused by any machine whose policy blocks on that attester, at install and on update,
+  and its members are left as they are. It does not carry over: a bundle in a prohibited suite
+  can still be permitted, and installed, on its own.
+
+This is what an IT department needs to push out one rule:
+
+```json
+{ "require": { "attesters": ["permitted@did:web:it.example.com"] }, "block": ["did:web:it.example.com"] }
+```
+
+Then it permits whole suites, or single bundles, from its own account, and prohibits either.
+
+| Option | |
+|---|---|
+| `-s, --suite <file>` | the spec (default: `suite.json`) |
+| `--for <app>` | `add`: install them as plugins, for the app installed from this listing (`@<handle or did>/<name>`, `#` for `@` too, or an `at://` address), or into this scope |
+| `-y, --yes` | `add`, `update`: require everything shown that can be |
+| `-r, --root <file>` | an extra trusted root, for checking archives; repeatable |
+| `--no-discover` | do not ask the backlink index who has attested an archive |
+| `--json` | `show`: print the spec as it is |
+| `--as <handle or did>` | `publish`, `unpublish`, `attest`: the account (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
+| `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
+| `--kind <kind>` | `attest`: what is vouched for: `permitted`, `prohibited`, … |
+| `--verdict <good or bad>` | `attest`: vouch for it, or warn against it (default: `good`) |
+| `--note <text>` | `attest`: a short note, for information |
+| `--revoke` | `attest`: withdraw the account's attestation of it |
+
 ### `search`
 
 ```
@@ -612,6 +789,7 @@ bundle install https://example.com/tool.nzip     # fetch, review, put on PATH
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
 bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into bled's scope
+bundle install @pipobscure.com/devtools         # a suite: every listing in it
 bundle install                                  # this package, from its own release
 ```
 
@@ -712,6 +890,15 @@ it. `installed` reports it as linked, and as `changed` if the folder stops being
 `update` leaves it alone. Installing the plugin replaces the link, and linking replaces the
 installed plugin. `uninstall` removes the link and never the folder.
 
+**A suite installs every listing in it** (see [`suite`](#suite)). That is `@<account>/<name>`
+where the account has a suite of that name and no listing of it; a domain whose TXT record is
+`nsuite:<url>`; or a URL that serves a suite's JSON rather than an archive. Everyone the suite
+expects its members to carry is shown once, and whom you accept counts for each member that
+names them. Then each member is installed as it would be by itself, reviewed on its own. A
+member that does not carry what the suite requires is refused, and one that is refused or
+declined does not stop the others. A suite that an attester the policy blocks on has marked bad
+is refused as a whole. `--dir` applies to its apps; `--name` and `--for` do not apply.
+
 **With neither, it installs this package itself**, from its own GitHub release, accepting
 the identity its [publish workflow](../.github/workflows/publish.yml) signs with. `npx
 @pipobscure/bundle install` is therefore the whole bootstrap. It then offers to set up the
@@ -738,9 +925,17 @@ shells, `bundle install` is all it takes.
 
 ```
 bundle update [options] [name]
-bundle update            # everything installed
+bundle update            # everything installed, and every suite
 bundle update tool       # one
+bundle update devtools   # a suite, and its members
 ```
+
+**Suites are asked first.** Each installed [suite](#suite) is fetched again from where it was
+found: its repository, its URL, or its domain's `nsuite:` record. Members added are installed,
+with the one question about whom to accept. Members taken out are removed if the suite brought
+them and no other suite has them, and kept otherwise. A suite that cannot be asked, has been
+taken down, or is now prohibited by an attester the policy blocks on is reported, and its members
+are left as they are. Then every install is updated as below; naming a suite updates its members.
 
 Asks each install's source where the archive is now: a domain's `nzip:` record, or the
 listing it was installed from, fetched and verified again. If the source cannot be asked, or a
@@ -847,8 +1042,14 @@ bundle uninstall tool                              # by name
 bundle uninstall https://example.com/tool.nzip     # by where it came from
 bundle uninstall tool.example.com                  # by the domain it was installed by
 bundle uninstall @did:plc:…/bled                   # by the listing it was installed from
+bundle uninstall devtools                          # a suite, and what it brought
 bundle uninstall                                   # this package's own install
 ```
+
+**A suite takes away what it brought, and nothing else.** An install that was there before the
+suite, or that you have since installed by hand, stays, and so does one another suite also has.
+An install a suite has, uninstalled by itself, is left out of that suite from then on, until it
+is installed again.
 
 Deletes the file and forgets the record. With no argument it removes what `bundle install`
 left behind, found by the URL it came from whatever it ended up called, and also takes the
@@ -1071,6 +1272,7 @@ a file that is already there unless forced, so local edits survive.
 |---|---|---|
 | Installed programs | `~/.local/bin`; `%LOCALAPPDATA%\bundle\bin` on Windows | `BUNDLE_INSTALL_DIR`, or `--dir` |
 | Install records | `installed.json` in the state directory | |
+| Installed suites | `suites.json` in the state directory: which install came from which member, and what each suite brought | |
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
 | Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
 | Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows | `BUNDLE_PLUGINS` |

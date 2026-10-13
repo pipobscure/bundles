@@ -35,6 +35,9 @@ test('commands, their options and their values are offered', async () => {
     assert.deepEqual(await values(['shell'], 'f'), ['fish']);
     assert.deepEqual(await values(['shell'], 'p'), ['powershell']);
     assert.deepEqual(await values(['lexicon', 'check'], ''), []);
+    assert.deepEqual(await values(['suite'], ''), ['add', 'remove', 'update', 'validate', 'show', 'publish', 'unpublish', 'attest']);
+    assert.deepEqual(await values(['suite', 'attest', '--kind'], 'p'), ['permitted', 'prohibited', 'published']);
+    assert.equal((await complete(['suite', 'add', '--suite'], '')).files, true, 'a spec is a file');
 });
 
 test('files are left to the shell, where a file goes', async () => {

@@ -1,0 +1,109 @@
+{
+  "lexicon": 1,
+  "id": "com.pipobscure.bundle.suite",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A set of listed bundles the repository's owner makes available to install together, under a name: the record key. Installing the suite installs each member as it would be installed by itself, and an update follows the suite as members are added and taken out. The suite vouches for none of them: each member is reviewed and verified on its own. What it can do is set a minimum — a signer and attesters a member must carry — below which that member is refused.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "subject",
+          "members",
+          "createdAt"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "format": "uri",
+            "description": "'sha256:44d3324ff44da0b4d3efde1810c8cb88bdad5e673d99b011d9072714d884670d', the sha256 of this lexicon's NSID, the same in every suite, so that a backlink index can enumerate every suite on the network.",
+            "maxLength": 2048
+          },
+          "members": {
+            "type": "array",
+            "description": "The listings installed together.",
+            "minLength": 1,
+            "maxLength": 64,
+            "items": {
+              "type": "ref",
+              "ref": "#member"
+            }
+          },
+          "title": {
+            "type": "string",
+            "description": "A display name; the record key stands in when it is absent.",
+            "maxLength": 640,
+            "maxGraphemes": 64
+          },
+          "description": {
+            "type": "string",
+            "description": "What the suite is for, in a sentence or two.",
+            "maxLength": 3000,
+            "maxGraphemes": 300
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the suite was first published, by the publisher's clock."
+          }
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "description": "One listed bundle in a suite, where it goes, and what it must carry.",
+      "required": [
+        "listing"
+      ],
+      "properties": {
+        "listing": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "The at:// address of a com.pipobscure.bundle.listing record, with the publisher's DID. It may be anyone's.",
+          "maxLength": 2048
+        },
+        "for": {
+          "type": "string",
+          "description": "Install it as a plugin, rather than onto the PATH: for the app installed from the listing at this at:// address, or into this scope — a package name, such as a suite's shared scope. Without it, an app's listing installs onto the PATH, and a plugin's for the app its listing names.",
+          "maxLength": 2048
+        },
+        "require": {
+          "type": "ref",
+          "ref": "#require"
+        }
+      }
+    },
+    "require": {
+      "type": "object",
+      "description": "What a member must carry to be installed at all: the suite's minimum, checked at install and at every update. Meeting it vouches for nothing; whoever installs still decides whom to accept.",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "description": "The sigstore identity that must have signed it.",
+          "maxLength": 2048
+        },
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "description": "The OIDC issuer that must have vouched for that identity: an https URL.",
+          "maxLength": 2048
+        },
+        "attesters": {
+          "type": "array",
+          "description": "Who must have attested it, each as '[kind@]<did>'.",
+          "maxLength": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "quorum": {
+          "type": "integer",
+          "description": "How many of the attesters must have attested it (default: all of them).",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

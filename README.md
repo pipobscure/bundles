@@ -28,6 +28,9 @@ Node runs the app straight out of the file.
   for it ("I audited this", "I rebuilt it and got the same bytes") or warn against it.
 - **Find apps.** Publish your app under a name; anyone can `bundle search` for it and install
   it by that name.
+- **Install a whole toolset at once.** A suite names apps and plugins that go together, and
+  what each must carry; `bundle install @you/devtools` installs them all with one question,
+  and an IT department can permit or prohibit a suite, or single bundles, for everyone.
 - **Keep everything current.** `bundle update` follows each app to its new releases, and a
   quiet check at shell start tells you when someone has flagged something you installed.
 - **Let your app take plugins** that are signed bundles too, installed per app, and checked as
@@ -37,7 +40,7 @@ Node runs the app straight out of the file.
 
 - [Install bundle](#install-bundle) · [Installing apps](#installing-apps) · [Finding apps](#finding-apps)
 - [Shipping your own app](#shipping-your-own-app) · [Standalone executables](#standalone-executables)
-- [Deciding whom you trust](#deciding-whom-you-trust) · [Plugins](#plugins)
+- [Deciding whom you trust](#deciding-whom-you-trust) · [Suites](#suites) · [Plugins](#plugins)
 - [Commands at a glance](#commands-at-a-glance) · [From code](#from-code) · [Learn more](#learn-more)
 
 ## Install bundle
@@ -201,10 +204,37 @@ starting point, and `bundle policy` shows what is in force:
 }
 ```
 
-Anyone with an atproto (Bluesky) account can attest: vouch for an archive, warn against it,
+Anyone with an Atmosphere (atproto) account can attest: vouch for an archive, warn against it,
 or withdraw that. `bundle attest --as you.example --kind audited app.nzip` is one sign-in in
 the browser, and the record lives in your own account. `bundle trust` keeps the cached
 attestations fresh for checks that can't reach the network.
+
+## Suites
+
+A suite is a set of listings installed together: apps, and plugins for them.
+
+```sh
+bundle suite add --suite devtools.json @pipobscure.com/bled               # asks what to require of it
+bundle suite add --suite devtools.json --for '#pipobscure.com/bled' @alice.example/bled-gpio
+bundle suite validate --suite devtools.json                               # does what is published meet it?
+bundle suite publish --suite devtools.json --as pipobscure.com
+bundle install @pipobscure.com/devtools                                   # everything in it
+```
+
+A suite vouches for nothing: each member is reviewed on its own, as if installed by itself.
+What it does is say up front what each member must carry (a signer, attesters), so installing
+it asks you once whom to accept, for all of them. A member that does not carry what the suite
+requires is refused. `bundle update` follows the suite as members are added and taken out, and
+`bundle uninstall devtools` removes what it brought, and nothing else.
+
+The spec is a plain JSON file ([schema](schemas/suite.schema.json)), so it can also be served
+from a URL, or named by a domain's `nsuite:<url>` TXT record, without atproto at all.
+
+A suite can be attested like an archive. With a policy that requires `permitted@<IT's DID>`
+and blocks on it, an IT department permits a whole suite with one `bundle suite attest --kind
+permitted`, and still permits or prohibits single bundles; what it says of a bundle wins.
+Prohibiting a suite refuses the suite, not the bundles in it. See
+[docs/cli.md](docs/cli.md#suite).
 
 ## Plugins
 
@@ -288,12 +318,13 @@ lists the commands.
 |---|---|
 | [`publish`](docs/cli.md#publish) | list an archive's URL under a name, so others can find and install it |
 | [`unpublish`](docs/cli.md#unpublish) | take a listing down again |
+| [`suite`](docs/cli.md#suite) | write, check, publish and attest a suite: listings installed together |
 | [`search`](docs/cli.md#search) | search the listed archives by name, description and publisher |
 | [`listings`](docs/cli.md#listings) | every listed archive, from a local index kept in step with the network |
 
 | Installing and keeping current | |
 |---|---|
-| [`install`](docs/cli.md#install) | fetch an archive from a URL, a domain or a listing, review it, and put it on your PATH |
+| [`install`](docs/cli.md#install) | fetch an archive from a URL, a domain or a listing, review it, and put it on your PATH; or every archive in a suite |
 | [`update`](docs/cli.md#update) | refetch what was installed, and replace it if a new version is accepted |
 | [`installed`](docs/cli.md#installed) | list what is installed, and re-check each against its record |
 | [`validate`](docs/cli.md#validate) | re-check installs, and say what has been attested since |
@@ -328,7 +359,7 @@ npm install @pipobscure/bundle
 - **[docs/design.md](docs/design.md)**: how it works and why: the archive format, what is
   signed, the verifying mount, executables, and the trust model.
 - **[HISTORY.md](HISTORY.md)**: why this exists, and what it took in Node.
-- **[proposals/](proposals/)**: the design notes behind attestations, listings and plugins.
+- **[proposals/](proposals/)**: the design notes behind attestations, listings, plugins and suites.
 - **[examples/](examples/)**: example applications, built and signed this way.
 - **[slides/](slides/)**: two talks. *Ship the Tree* is the technical one, and the meetup talk
   is about what it can do for you.

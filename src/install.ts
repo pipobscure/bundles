@@ -14,8 +14,9 @@ import { loadPolicy, type Policy, type Signer } from './policy.ts';
 import { isScope, scopeDir, pluginFile, linkFile, pluginsDir, labelFile } from './scopes.ts';
 import {
     gather, gatherSync, judge, accept, noneAccepted, refusal,
-    type Accepted, type Demands, type Review, type ReviewItem, type Gathered,
+    type Accepted, type Demands, type Inherited, type Minimum, type Review, type ReviewItem, type Gathered,
 } from './review.ts';
+import { inheritFor, minimumsFor } from './suite-install.ts';
 import type { NetworkOptions } from './atproto.ts';
 
 const require = createRequire(import.meta.url);
@@ -175,6 +176,21 @@ export interface InstallOptions {
     block?: Attester[] | undefined;
     /** Signers accepted without asking, on top of the policy. */
     trust?: Signer[] | undefined;
+    /**
+     * Accepted already, by the person, as if for this install before: what
+     * they accepted once for a whole suite. Remembered with the install.
+     */
+    accepted?: Accepted | undefined;
+    /**
+     * Floors that must hold, and vouch for nothing: a suite's, for a member
+     * being installed. On an update, the suites it belongs to say.
+     */
+    minimum?: Minimum[] | undefined;
+    /**
+     * Hashes whose good attestations count as the archive's own: the suite a
+     * member is being installed from. On an update, the suites it is in say.
+     */
+    inherit?: Inherited[] | undefined;
     /** The policy to apply (default: the machine's, for the installed name). */
     policy?: Policy | undefined;
     /** Ask the backlink index who has attested it (default: what the policy says). */
@@ -206,7 +222,16 @@ export interface InstallOptions {
     log?: ((line: string) => void) | undefined;
     /** How a domain's TXT records are looked up (default: `node:dns`). For tests. */
     resolveTxt?: ((domain: string) => Promise<string[][]>) | undefined;
+    /**
+     * The listing the target names, already fetched from its PDS and
+     * verified — a suite's member, which suite.ts has read to learn where it
+     * goes — so it is not fetched again.
+     */
+    located?: Located | undefined;
 }
+
+/** A listing as fetched from its publisher's PDS and verified. */
+export type Located = Awaited<ReturnType<typeof import('./listing.ts').followListing>>;
 
 export interface UpdateResult {
     record: InstallRecord;
@@ -289,6 +314,13 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const response = await patientFetch()(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
+    // A URL that serves JSON rather than an archive serves a suite: installed
+    // as one, from the bytes already here.
+    if (source === url && bytes.length && (await import('./suite.ts')).looksLikeSuite(bytes)) {
+        const found = await (await import('./suite.ts')).fetchSuiteUrl(url, bytes);
+        throw Object.assign(new Error(`${url} is a suite, of ${found.record.members.length} listings: it installs as a suite, not as one bundle`),
+            { code: 'ERR_BUNDLE_SUITE', suite: found });
+    }
 
     // A plugin is found by the package name inside it, so that is what it is
     // installed as. The name is read before the review only to say what is
@@ -404,18 +436,18 @@ export function packageName(bytes: Buffer): string | undefined {
 
 /**
  * Re-check what an installed archive came from, and replace it if the publisher
- * has published something new. With no name, every install.
+ * has published something new. With no name, every install; with several, those.
  *
  * A new version goes through the same review as an install, against what has
  * been accepted for this one so far. One install that is refused, declined or
  * waiting on a decision does not stop the rest; each has its own result, and
  * the installed copy stays as it was.
  */
-export async function update(name: string | undefined, options: InstallOptions = {}): Promise<UpdateResult[]> {
+export async function update(name: string | string[] | undefined, options: InstallOptions = {}): Promise<UpdateResult[]> {
     const log = options.log ?? (() => {});
     const all = records();
-    const names = name ? [name] : Object.keys(all).sort();
-    if (name && !all[name]) throw new Error(`nothing installed as '${name}' — 'bundle install <url>' first`);
+    const names = name === undefined ? Object.keys(all).sort() : typeof name === 'string' ? [name] : name;
+    for (const each of names) if (!all[each]) throw new Error(`nothing installed as '${each}' — 'bundle install <url>' first`);
     if (!names.length) log('* nothing installed');
 
     const results: UpdateResult[] = [];
@@ -539,8 +571,15 @@ export async function resolveAlias(
 
     // A TXT record longer than 255 bytes arrives as several strings, which are
     // one value; and the same record published twice is still one answer.
-    const entries = [...new Set(answers.map((chunks) => chunks.join('').trim()).filter((text) => text.startsWith('nzip:')))];
+    const texts = [...new Set(answers.map((chunks) => chunks.join('').trim()))];
+    const entries = texts.filter((text) => text.startsWith('nzip:'));
+    // A domain that publishes a suite instead (`nsuite:`) says so, with the
+    // answers, for the caller to install that.
+    if (!entries.length && texts.some((text) => text.startsWith('nsuite:'))) {
+        throw Object.assign(new Error(`${host} publishes a suite ('nsuite:'), not an archive`), { code: 'ERR_BUNDLE_SUITE_DOMAIN', answers });
+    }
     if (!entries.length) throw new Error(`${host} publishes no 'nzip:<url>' TXT record`);
+    if (texts.some((text) => text.startsWith('nsuite:'))) throw new Error(`${host} publishes both an 'nzip:' and an 'nsuite:' record — refusing to guess which is meant`);
     if (entries.length > 1) throw new Error(`${host} publishes ${entries.length} different 'nzip:' records — refusing to guess between them`);
 
     const entry = entries[0]!;
@@ -577,9 +616,28 @@ export function sourceOf(record: InstallRecord): string {
 async function locate(target: string, options: InstallOptions, log: (line: string) => void): Promise<{ source: string; url: string; name?: string | undefined; app?: string | undefined }> {
     if (target.startsWith('@') || target.startsWith('at://')) {
         const LISTING = await import('./listing.ts');
-        const found = target.startsWith('@')
-            ? await LISTING.resolveListing(target, options.network)
-            : await LISTING.followListing(target, options.network);
+        const SUITE = await import('./suite.ts');
+        // A suite is not a bundle but a set of listings, which suite-install.ts
+        // installs one by one: said with the suite, fetched and verified, so
+        // it is not fetched again. `@<who>/<name>` is a listing when there is
+        // one, and only otherwise a suite.
+        const suite = (found: import('./suite.ts').FoundSuite) => Object.assign(
+            new Error(`${target} is a suite, of ${found.record.members.length} listings: it installs as a suite, not as one bundle`),
+            { code: 'ERR_BUNDLE_SUITE', suite: found });
+        if (SUITE.parseSuiteUri(target)) throw suite(await SUITE.followSuite(target, options.network));
+        let found: Located;
+        try {
+            found = options.located?.uri === target ? options.located
+                : target.startsWith('@')
+                ? await LISTING.resolveListing(target, options.network)
+                : await LISTING.followListing(target, options.network);
+        } catch (err) {
+            const { code, did, name } = err as { code?: string; did?: string; name?: string };
+            if (code !== 'ERR_BUNDLE_NOT_LISTED') throw err;
+            const instead = await SUITE.fetchSuite(did!, name!, options.network);
+            if (!instead) throw new Error(`${target}: ${did} has no listing or suite called '${name}'`);
+            throw suite(instead);
+        }
         // A listing that names a domain leaves the URL to the domain's TXT
         // record — two hops, both asked again on every update.
         const url = found.record.domain ? (await resolveAlias(found.record.domain, options.resolveTxt)).url : found.record.url!;
@@ -588,7 +646,17 @@ async function locate(target: string, options: InstallOptions, log: (line: strin
     }
     if (hasScheme(target)) return { source: target, url: target };
     if (!isDomain(target)) throw new Error(`'${target}' is neither a URL, a domain name, a listing (@<handle>/<name>), nor a folder (./<path>)`);
-    const resolved = await resolveAlias(target, options.resolveTxt);
+    let resolved: Awaited<ReturnType<typeof resolveAlias>>;
+    try {
+        resolved = await resolveAlias(target, options.resolveTxt);
+    } catch (err) {
+        const { code, answers } = err as { code?: string; answers?: string[][] };
+        if (code !== 'ERR_BUNDLE_SUITE_DOMAIN') throw err;
+        const SUITE = await import('./suite.ts');
+        const found = await SUITE.resolveSuiteDomain(target, { answers });
+        throw Object.assign(new Error(`${target} is a suite, of ${found.record.members.length} listings: it installs as a suite, not as one bundle`),
+            { code: 'ERR_BUNDLE_SUITE', suite: found });
+    }
     log(`* ${resolved.domain} names ${resolved.name} at ${resolved.url}`);
     return { source: resolved.domain, url: resolved.url, name: resolved.name };
 }
@@ -670,7 +738,7 @@ async function refreshRecords(installs: InstallRecord[], network: NetworkOptions
         if (!hash || hash.length !== 2) continue;
         const [hashAlg, hex] = hash as [string, string];
         const policy = policyOf(record);
-        const dids = new Set([...candidates(record, policy), ...cachedFor(hex)]);
+        const dids = new Set([...candidates(record, policy, floorAttesters(minimumsFor(record.name))), ...cachedFor(hex)]);
         if (policy.discovery) {
             try {
                 for (const did of await discover(hashAlg, hex, { ...shared, index: policy.discovery })) dids.add(did);
@@ -678,13 +746,22 @@ async function refreshRecords(installs: InstallRecord[], network: NetworkOptions
                 problems.get(record.name)!.push(`${record.name}: could not ask ${policy.discovery}: ${message(err)}`);
             }
         }
+        // The suites it is in, whose good attestations count as its own:
+        // asked of the same people, and of whoever has attested a suite before.
+        const hashes = [{ hashAlg, hex }];
+        for (const suite of inheritFor(record.name)) {
+            hashes.push({ hashAlg: suite.hashAlg, hex: suite.hash });
+            for (const did of cachedFor(suite.hash)) dids.add(did);
+        }
         for (const did of policy.ignore) dids.delete(did);
         for (const did of dids) {
             const of = wanted.get(did) ?? new Map();
             wanted.set(did, of);
-            const entry = of.get(hex) ?? { hashAlg, hex, names: [] };
-            of.set(hex, entry);
-            entry.names.push(record.name);
+            for (const each of hashes) {
+                const entry = of.get(each.hex) ?? { ...each, names: [] };
+                of.set(each.hex, entry);
+                entry.names.push(record.name);
+            }
         }
     }
 
@@ -806,13 +883,17 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
     // accepted must still vouch for it, the policy must still hold, and nobody
     // it blocks on may have marked it bad since.
     const policy = policyOf(record);
+    const minimum = minimumsFor(record.name);
     let gathered: Gathered;
     try {
-        gathered = gatherSync(bytes, { roots, candidates: candidates(record, policy), ignore: policy.ignore, maxAge: policy.maxAge, everyCached: true });
+        gathered = gatherSync(bytes, {
+            roots, candidates: candidates(record, policy, floorAttesters(minimum)), ignore: policy.ignore, maxAge: policy.maxAge, everyCached: true,
+            inherit: inheritFor(record.name),
+        });
     } catch (err) {
         return { record, path, sha256, state: (err as { state?: VerificationState }).state ?? 'invalid', reason: message(err) };
     }
-    const review = judge(gathered, { policy, accepted: acceptedOf(record), trust: selfTrust(record.url) });
+    const review = judge(gathered, { policy, minimum, accepted: acceptedOf(record), trust: selfTrust(record.url) });
     const warnings = warningsOf(review);
     if (review.decision === 'refuse') return { record, path, sha256, state: review.state, reason: review.reason, review };
     if (review.decision === 'ask') {
@@ -857,6 +938,22 @@ function candidates(record: InstallRecord | undefined, policy: Policy, extra: At
     for (const { did } of [...policy.trust.attesters, ...policy.block, ...extra]) dids.add(did);
     for (const did of policy.ignore) dids.delete(did);
     return [...dids];
+}
+
+// The attesters floors name: asked about, so that whether they have attested
+// is known.
+function floorAttesters(minimum: Minimum[]): Attester[] {
+    return minimum.flatMap(({ attesters }) => attesters ?? []);
+}
+
+// What was accepted before, and what has been accepted on top for this one.
+function merged(previous: Accepted, more: Accepted | undefined): Accepted {
+    if (!more) return previous;
+    return {
+        signers: [...previous.signers, ...more.signers.filter((signer) => !previous.signers.some((each) => each.identity === signer.identity && each.issuer === signer.issuer))],
+        certificates: [...new Set([...previous.certificates, ...more.certificates])],
+        attesters: [...new Set([...previous.attesters, ...more.attesters])],
+    };
 }
 
 // This package's own release is signed by its publish workflow, and that is
@@ -997,20 +1094,22 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         quorum: options.quorum,
         block: options.block,
     };
-    const accepted = previous ? acceptedOf(previous) : noneAccepted();
+    const accepted = merged(previous ? acceptedOf(previous) : noneAccepted(), options.accepted);
+    const minimum = options.minimum ?? minimumsFor(name);
     const about = { name, url };
 
     const gathered = await gather(bytes, {
         roots: options.roots ?? [],
-        candidates: candidates(previous, policy, [...(options.attesters ?? []), ...(options.block ?? [])]),
+        candidates: [...candidates(previous, policy, [...(options.attesters ?? []), ...(options.block ?? []), ...floorAttesters(minimum)]), ...(options.accepted?.attesters ?? [])],
         discovery: options.discover === false ? false : policy.discovery,
         ignore: policy.ignore,
+        inherit: options.inherit ?? inheritFor(name),
         network: options.network,
     }).catch((err: unknown) => {
         throw refusal((err as { state?: VerificationState }).state ?? 'invalid', `refusing to install ${url}: ${message(err)}`);
     });
     const review = judge(gathered, {
-        policy, demands, accepted,
+        policy, demands, minimum, accepted,
         trust: [...(options.trust ?? []), ...selfTrust(url)],
         previousIssuer: previous?.issuer,
     });
@@ -1132,7 +1231,7 @@ export function fileName(response: Response, url: string): string {
 }
 
 /** `chosen` as it should sit on the PATH: with `.nzip` on Windows, without it elsewhere. */
-function commandName(chosen: string): string {
+export function commandName(chosen: string): string {
     if (process.platform === 'win32') return /\.nzip$/i.test(chosen) ? chosen : `${chosen}.nzip`;
     const bare = chosen.replace(/\.nzip$/i, '');
     // ...unless dropping it would leave nothing, as `.nzip` alone would.

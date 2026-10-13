@@ -51,6 +51,8 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
     skill: 'skills',
     policy: (positionals) => (positionals.length === 0 ? ['show', 'init', 'check'] : positionals[0] === 'check' ? 'files' : null),
     lexicon: (positionals) => (positionals.length === 0 ? ['check', 'publish'] : null),
+    suite: (positionals) => (positionals.length === 0 ? ['add', 'remove', 'update', 'validate', 'show', 'publish', 'unpublish', 'attest']
+        : positionals[0] === 'add' ? 'listed' : null),
     shell: (positionals) => (positionals.length === 0 ? ['bash', 'zsh', 'fish', 'powershell'] : null),
 };
 
@@ -58,7 +60,9 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
 // `command.option` first, then by the option's name wherever it appears.
 const VALUES: Record<string, Hint> = {
     'attest.verdict': ['good', 'bad'],
-    'attest.kind': ['published', 'audited', 'reproduced', 'malware', 'vulnerable', 'abandoned'],
+    'attest.kind': ['published', 'audited', 'reproduced', 'malware', 'vulnerable', 'abandoned', 'permitted', 'prohibited'],
+    'suite.kind': ['permitted', 'prohibited', 'audited', 'published'],
+    'suite.verdict': ['good', 'bad'],
     'audit.verdict': 'files',
     'audit.baseline': 'files',
     'create.base': 'files',
@@ -67,6 +71,7 @@ const VALUES: Record<string, Hint> = {
     'search.for': 'installed',
     'listings.for': 'installed',
     'publish.for': 'installed',
+    'suite.suite': 'files',
     root: 'files', output: 'files', files: 'files', key: 'files', chain: 'files', prefix: 'files',
     node: 'files', base: 'files', dir: 'files', archive: 'files', 'password-file': 'files', 'sigstore-root': 'files',
     flow: ['auto', 'ci', 'browser', 'device'],
@@ -148,7 +153,11 @@ async function offer(hint: Hint, prefix: string, filter: (candidates: Candidate[
     if (hint === 'files') return { candidates: [], files: true };
     if (hint === 'installed') {
         const { records } = await import('./install.ts');
-        return filter(Object.values(records()).map((record) => ({ value: record.name, description: record.url })), prefix);
+        const { suites } = await import('./suite-install.ts');
+        return filter([
+            ...Object.values(records()).map((record) => ({ value: record.name, description: record.url })),
+            ...Object.values(suites()).filter((suite) => !records()[suite.name]).map((suite) => ({ value: suite.name, description: `suite, from ${suite.label ?? suite.source}` })),
+        ], prefix);
     }
     if (hint === 'listed') {
         // The index as it is: completing never waits on the network.

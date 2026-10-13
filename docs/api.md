@@ -258,6 +258,7 @@ run read, so record a host that verifies its plugins from a run that does.
   "./oauth":    "signing in to a PDS: atproto OAuth with PAR, PKCE and DPoP",
   "./lexicon":  "this package's lexicons, and publishing them",
   "./listing":  "listings: publishing, resolving, and the local search index",
+  "./suite":    "suites: the record, the spec file, its hash, publishing and resolving",
   "./plugins":  "use() and list(): load plugin bundles by package name, verified when asked",
   "./oidc":     "identity tokens: CI, browser, or device code"
 }

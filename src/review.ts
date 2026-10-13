@@ -33,7 +33,23 @@ import type { Policy, Signer } from './policy.ts';
 export type Evidence =
     | { type: 'signature'; identity: string; issuer: string; signedAt?: Date | undefined }
     | { type: 'certificate'; subject: string; anchor: string; anchored: boolean }
-    | { type: 'attestation'; did: string; handle?: string | undefined; kind?: string | undefined; verdict: Verdict; createdAt?: string | undefined };
+    | { type: 'attestation'; did: string; handle?: string | undefined; kind?: string | undefined; verdict: Verdict; createdAt?: string | undefined;
+        /** Not of the archive itself but of a suite it is in, which carries over: `suite devtools`. */
+        via?: string | undefined };
+
+/**
+ * Another hash whose attestations count as the archive's own: a suite's, for
+ * its members — so that whoever attests a suite (an IT department marking it
+ * `permitted`) need not attest each member. The suite's hash covers what it
+ * requires of each member, and a member that does not carry that is refused,
+ * so what was attested is what holds.
+ */
+export interface Inherited {
+    hashAlg: string;
+    hash: string;
+    /** What it is, as the review says: `suite devtools`. */
+    via: string;
+}
 
 /** Who has been accepted for an install, across all its versions so far. */
 export interface Accepted {
@@ -63,6 +79,8 @@ export interface GatherOptions {
     discovery?: string | false | undefined;
     /** DIDs whose attestations are not looked at. */
     ignore?: string[] | undefined;
+    /** Other hashes whose attestations count as this archive's: its suites'. */
+    inherit?: Inherited[] | undefined;
     /** How stale a cached proof may be (for the offline `gatherSync`). */
     maxAge?: number | undefined;
     /**
@@ -111,6 +129,22 @@ export interface Demands {
     block?: Attester[] | undefined;
 }
 
+/**
+ * A floor someone else set — a suite, for its members: what must hold for the
+ * archive to be installed at all. Unlike a demand, meeting it vouches for
+ * nothing: the evidence it names is not thereby accepted, and whoever installs
+ * still decides whom to believe.
+ */
+export interface Minimum {
+    identity?: string | undefined;
+    issuer?: string | undefined;
+    attesters?: Attester[] | undefined;
+    /** How many of `attesters` must have attested (default: all of them). */
+    quorum?: number | undefined;
+    /** Who set it, as the refusal says: `suite devtools`. */
+    source: string;
+}
+
 // --------------------------------------------------------------- gathering ---
 
 /**
@@ -138,6 +172,22 @@ export async function gather(bytes: Buffer, options: GatherOptions = {}): Promis
     const attesters = [...dids].map((did) => ({ did }));
     for (const problem of await ATPROTO.refreshFor(attesters, hashed.hashAlg, hashed.hash, options.network)) {
         notes.push(`could not fetch an attestation: ${problem}`);
+    }
+    // A suite's attestations: asked of the same people, and of whoever the
+    // index says has attested the suite.
+    for (const { hashAlg, hash, via } of options.inherit ?? []) {
+        const theirs = new Set(dids);
+        if (options.discovery) {
+            try {
+                for (const did of await ATPROTO.discover(hashAlg, hash, { ...options.network, index: options.discovery })) if (!ignore.has(did)) theirs.add(did);
+            } catch (err) {
+                notes.push(`could not ask ${options.discovery} who has attested ${via}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+        for (const problem of await ATPROTO.refreshFor([...theirs].map((did) => ({ did })), hashAlg, hash, options.network)) {
+            notes.push(`could not fetch an attestation of ${via}: ${problem}`);
+        }
+        for (const did of theirs) dids.add(did);
     }
     return gatherSync(bytes, { ...options, candidates: [...dids] }, notes);
 }
@@ -168,15 +218,29 @@ export function gatherSync(bytes: Buffer, options: GatherOptions = {}, notes: st
         if (!found) continue;
         evidence.push({ type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: found.verdict ?? 'good', createdAt: found.createdAt });
     }
+    // Good attestations of a suite it is in count as its own, said as such —
+    // unless the attester has said something of the archive itself, which is
+    // closer. A bad one does not carry over: prohibiting a suite refuses the
+    // suite, and leaves each bundle in it to be judged on its own.
+    for (const { hashAlg: alg, hash: of, via } of options.inherit ?? []) {
+        for (const did of new Set([...dids, ...(options.everyCached ? cachedFor(of) : [])])) {
+            if (ignore.has(did) || evidence.some((each) => each.type === 'attestation' && each.did === did && each.via === undefined)) continue;
+            const found = cached(did, alg, of, { maxAge: options.maxAge });
+            if (!found || (found.verdict ?? 'good') !== 'good') continue;
+            evidence.push({ type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: 'good', createdAt: found.createdAt, via });
+        }
+    }
     return { hashAlg, hash, result, evidence, notes };
 }
 
 // ---------------------------------------------------------------- judging ---
 
 /** Weigh what was gathered against the policy, the flags, and what was accepted before. */
-export function judge(gathered: Gathered, { policy, demands = {}, accepted = noneAccepted(), trust = [], previousIssuer }: {
+export function judge(gathered: Gathered, { policy, demands = {}, minimum = [], accepted = noneAccepted(), trust = [], previousIssuer }: {
     policy: Policy;
     demands?: Demands | undefined;
+    /** Floors that must hold, and vouch for nothing — a suite's, for its members. */
+    minimum?: Minimum[] | undefined;
     accepted?: Accepted | undefined;
     /** Signers trusted for this install on top of the policy — this package's own, for itself. */
     trust?: Signer[] | undefined;
@@ -234,7 +298,7 @@ export function judge(gathered: Gathered, { policy, demands = {}, accepted = non
         }
     });
 
-    // Requirements: only flags and the policy make these.
+    // Requirements: flags and the policy make these, and a suite's floor.
     const counted = items.filter((item) => !item.excluded);
     const signatures = counted.filter((item) => item.evidence.type === 'signature').map((item) => item.evidence as Extract<Evidence, { type: 'signature' }>);
     if (demands.identity || demands.issuer) {
@@ -242,6 +306,12 @@ export function judge(gathered: Gathered, { policy, demands = {}, accepted = non
         if (!ok) {
             const wanted = `${demands.identity ?? 'any identity'} via ${demands.issuer ?? 'any issuer'}`;
             unmet.push(`a signature by ${wanted} is required, and ${signatures.length ? `it is signed by ${signatures.map((each) => each.identity).join(', ')}` : 'it carries no sigstore signature'}`);
+        }
+    }
+    for (const floor of minimum) {
+        if (!floor.identity && !floor.issuer) continue;
+        if (!signatures.some((each) => (!floor.identity || floor.identity === each.identity) && (!floor.issuer || floor.issuer === each.issuer))) {
+            unmet.push(`${floor.source} requires a signature by ${floor.identity ?? 'any identity'} via ${floor.issuer ?? 'any issuer'}, and ${signatures.length ? `it is signed by ${signatures.map((each) => each.identity).join(', ')}` : 'it carries no sigstore signature'}`);
         }
     }
     if (policy.signature.length && !counted.some((item) => item.evidence.type !== 'attestation')) {
@@ -252,6 +322,7 @@ export function judge(gathered: Gathered, { policy, demands = {}, accepted = non
     }
     const clauses = [...policy.attesters];
     if (demands.attesters?.length) clauses.push({ attesters: demands.attesters, quorum: demands.quorum, source: 'the command line' });
+    for (const { attesters, quorum, source } of minimum) if (attesters?.length) clauses.push({ attesters, quorum, source });
     const good = counted.filter((item) => item.evidence.type === 'attestation').map((item) => item.evidence as Extract<Evidence, { type: 'attestation' }>);
     for (const { attesters, quorum, source } of clauses) {
         const have = attesters.filter(({ did, kind }) => good.some((each) => each.did === did && (!kind || kind === each.kind)));
@@ -314,7 +385,7 @@ export function describe(evidence: Evidence): string {
     switch (evidence.type) {
         case 'signature': return `${evidence.identity} via ${evidence.issuer}`;
         case 'certificate': return `${evidence.subject.replace(/\n/g, ', ')}${evidence.anchored ? '' : ' (not anchored)'}`;
-        case 'attestation': return `${describeAttester(evidence)}${evidence.kind ? ` as ${evidence.kind}` : ''}`;
+        case 'attestation': return `${describeAttester(evidence)}${evidence.kind ? ` as ${evidence.kind}` : ''}${evidence.via ? `, via ${evidence.via}` : ''}`;
     }
 }
 

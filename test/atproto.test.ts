@@ -13,13 +13,16 @@ import { verifySync, wholeFileHash, STATES } from '../src/manifest.ts';
 import { open as openBundle } from '../src/provider.ts';
 import { main as launchMain } from '../src/launch.ts';
 import { main, UNDECIDED } from '../src/cli.ts';
-import { install, update, installed, records, warningsOf } from '../src/install.ts';
+import { install, update, installed, records, warningsOf, acceptedOf, uninstall } from '../src/install.ts';
 import { selectable, type Review } from '../src/review.ts';
 import { loadPolicy } from '../src/policy.ts';
 import { oauthLogin } from '../src/oauth.ts';
 import { lexicons, authorityOf, checkLexicons, publishLexicons, SCHEMA_COLLECTION } from '../src/lexicon.ts';
 import * as LISTINGS from '../src/listing.ts';
 import { LISTING, SUBJECT } from '../src/listing.ts';
+import { SUITE, SUITE_SUBJECT } from '../src/suite.ts';
+import * as SUITE_RECORD from '../src/suite.ts';
+import * as SUITES from '../src/suite-install.ts';
 import { APP, ROOT, build, collector, mount, scratch, tree } from './helpers.ts';
 
 // Attestations: proofs checked with nothing but node:crypto, a policy checked
@@ -1197,7 +1200,7 @@ test('bundle attest takes several archives under one sign-in, and checks them al
 
 test('the lexicons this package carries are where their NSIDs say, under the authority DNS needs', () => {
     const docs = lexicons();
-    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION, LISTING]);
+    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION, LISTING, SUITE]);
     assert.equal(authorityOf(COLLECTION), 'bundle.pipobscure.com');
     assert.equal(docs[0]!.defs['main'] && (docs[0]!.defs['main'] as { type: string }).type, 'record');
 });
@@ -1217,30 +1220,30 @@ test('lexicon publish needs DNS to name the account, writes with lexicon-only ac
     assert.equal(session.how, `OAuth (repo:${SCHEMA_COLLECTION})`);
 
     // Nothing resolves to this account yet: refused, unless forced.
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority', 'no-authority']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority', 'no-authority', 'no-authority']);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /_lexicon\.bundle\.pipobscure\.com has no 'did=' TXT record yet/);
     dns.set('_lexicon.bundle.pipobscure.com', account().did);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /names did:plc:.*, not did:plc:.* — publish from that account/);
 
     // Pointed at this account: unpublished, then published and current.
     dns.set('_lexicon.bundle.pipobscure.com', dana.did);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished', 'unpublished']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished', 'unpublished', 'unpublished']);
     const [written] = await publishLexicons(session, { resolveTxt });
     assert.equal(written!.uri, `at://${dana.did}/${SCHEMA_COLLECTION}/${COLLECTION}`);
     const record = dana.records.get(`${SCHEMA_COLLECTION}/${COLLECTION}`) as Record<string, unknown>;
     assert.equal(record['$type'], SCHEMA_COLLECTION);
     assert.equal(record['id'], COLLECTION);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current']);
 
     // Changed since: check says so, and publishing again replaces it — the
     // schemas listed once, and all of them written in one request.
     dana.records.set(`${SCHEMA_COLLECTION}/${COLLECTION}`, { ...record, description: 'an older version' });
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current', 'current']);
     requests.length = 0;
     await publishLexicons(session, { resolveTxt });
     assert.deepEqual(requests.filter((line) => line.includes(`${dana.pds}/xrpc/`)).map((line) => line.slice(line.lastIndexOf('/') + 1)),
         ['com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current']);
 });
 
 // ---------------------------------------------------------------- validate ---
@@ -1521,7 +1524,7 @@ test('install @account/name follows the listing, verified, and update follows it
     assert.ok(logged.some((line) => /no longer listed — checking the URL it last named/.test(line)), logged.join('\n'));
 
     // A listing that is not there, or not https, is refused before anything is fetched.
-    await assert.rejects(install(`@${ned.did}/nothing`), /has no listing called 'nothing'/);
+    await assert.rejects(install(`@${ned.did}/nothing`), /has no listing or suite called 'nothing'/);
     ned.records.set(`${LISTING}/plain`, listed('http://dl.test/listed/one.nzip'));
     await assert.rejects(install(`@${ned.did}/plain`), /not https/);
 
@@ -1736,5 +1739,343 @@ test('bundle publish, search, listings and unpublish, end to end', async () => {
     } finally {
         offline = false;
         delete process.env['BUNDLE_ATPROTO_PASSWORD'];
+    }
+});
+
+// ------------------------------------------------------------------ suites ---
+
+/** An unsigned archive whose package is called `pkg`, distinct from every other. */
+async function packaged(pkg: string): Promise<string> {
+    const n = ++versions;
+    const output = PATH.join(tmp, `p${n}.run`);
+    await build(tree(tmp, { ...APP, 'package.json': JSON.stringify({ name: pkg, type: 'module', main: 'index.js' }), 'greet.js': `export const greeting = 'p${n}';` }, `p${n}`),
+        output, { signed: false });
+    return output;
+}
+
+/** Everything an offer names, accepted. */
+const acceptAll = async (offer: SUITES.Offer) => ({ signers: offer.signers.map(({ identity, issuer }) => ({ identity, issuer })), certificates: [], attesters: offer.attesters.map(({ did }) => did) });
+
+test('a suite is read only when it is one: the subject, listings by address, scopes, requirements in form', () => {
+    assert.equal(SUITE_SUBJECT, `sha256:${CRYPTO.createHash('sha256').update('com.pipobscure.bundle.suite').digest('hex')}`);
+    const doc = lexicons().find((each) => each.id === SUITE)!;
+    const subject = ((doc.defs['main'] as { record: { properties: Record<string, { description?: string }> } }).record.properties['subject'])!;
+    assert.ok(subject.description?.includes(`'${SUITE_SUBJECT}'`), String(subject.description));
+
+    const app = `at://did:web:app.test/${LISTING}/bled`;
+    const suite = (members: unknown, extra: Record<string, unknown> = {}) => ({ $type: SUITE, subject: SUITE_SUBJECT, members, createdAt: '2026-10-13T00:00:00.000Z', ...extra }) as Value;
+    const refused = (value: Value, name = 'kit') => {
+        const read = SUITE_RECORD.readSuite(value, name);
+        return read.ok ? 'ok' : read.reason;
+    };
+    assert.equal(refused(suite([{ listing: app }, { listing: `at://did:web:app.test/${LISTING}/gpio`, for: app, require: { attesters: ['published@did:web:app.test'], quorum: 1 } }])), 'ok');
+    assert.equal(refused(suite([{ listing: app, for: '@acme/suite', require: { identity: 'https://github.com/x', issuer: 'https://token.actions.githubusercontent.com' } }])), 'ok');
+    assert.match(refused(suite([])), /at least one member/);
+    assert.match(refused(suite([{ listing: app }, { listing: app }])), /named twice/);
+    assert.match(refused(suite([{ listing: 'https://x.test/a.nzip' }])), /not the at:\/\/ address of a listing/);
+    assert.match(refused(suite([{ listing: app, for: 'Not A Scope' }])), /neither an app's listing nor a scope/);
+    assert.match(refused(suite([{ listing: app, require: { attesters: ['alice.test'] } }])), /not \[kind@\]<did>/);
+    assert.match(refused(suite([{ listing: app, require: { issuer: 'http://issuer.test' } }])), /not an https URL/);
+    assert.match(refused(suite([{ listing: app, require: { attesters: ['did:web:a.test'], quorum: 2 } }])), /quorum must be between 1 and/);
+    assert.match(refused(suite([{ listing: app }], { subject: SUBJECT })), /subject/);
+    assert.match(refused(suite([{ listing: app }]), 'Kit'), /not a usable name/);
+
+    // A spec is the record and its name; anything it does not know is a typo.
+    assert.deepEqual(SUITE_RECORD.checkSpec({ name: 'kit', members: [{ listing: app, label: '@app.test/bled' }] }), []);
+    assert.deepEqual(SUITE_RECORD.checkSpec({ name: 'kit', members: [{ listing: app }], requires: {} }), [`'requires' is not a suite setting`]);
+    assert.deepEqual(SUITE_RECORD.checkSpec({ name: 'kit', members: [{ listing: app, fro: app }] }), [`member ${app}: 'fro' is not a member setting`]);
+
+    // Fetched bytes are a suite when they are JSON, and an archive otherwise.
+    assert.equal(SUITE_RECORD.looksLikeSuite(Buffer.from('\n  {"name":"kit"}')), true);
+    assert.equal(SUITE_RECORD.looksLikeSuite(FS.readFileSync(SIGNED)), false);
+});
+
+test('the suite spec schema says what the checker accepts: the same names, settings and patterns', () => {
+    type Node = { properties?: Record<string, Node>; required?: string[]; pattern?: string; additionalProperties?: boolean; $ref?: string; items?: Node; anyOf?: Node[] };
+    const schema = JSON.parse(FS.readFileSync(PATH.join(ROOT, 'schemas', 'suite.schema.json'), 'utf-8')) as Node & { $defs: Record<string, Node> };
+    const member = schema.$defs['member']!;
+    const require = schema.$defs['require']!;
+    assert.deepEqual(Object.keys(schema.properties!).sort(), ['$schema', 'description', 'members', 'name', 'title']);
+    assert.deepEqual(Object.keys(member.properties!).sort(), ['for', 'forLabel', 'label', 'listing', 'require']);
+    assert.deepEqual(Object.keys(require.properties!).sort(), ['attesters', 'identity', 'issuer', 'quorum']);
+    assert.equal(schema.additionalProperties, false);
+    assert.equal(member.additionalProperties, false);
+    assert.equal(schema.properties!['name']!.pattern, LISTINGS.NAME_PATTERN);
+
+    const listing = new RegExp(schema.$defs['listing']!.pattern!);
+    assert.ok(listing.test(LISTINGS.listingUri('did:plc:abcdefghijklmnopqrstuvwx', 'bled')));
+    assert.ok(!listing.test(SUITE_RECORD.suiteUri('did:plc:abcdefghijklmnopqrstuvwx', 'bled')), 'a suite cannot be a member');
+    const attester = new RegExp(require.properties!['attesters']!.items!.pattern!);
+    assert.ok(attester.test('permitted@did:web:it.example.com') && !attester.test('it.example.com'));
+    // Every setting the schema allows, the checker accepts.
+    assert.deepEqual(SUITE_RECORD.checkSpec({
+        $schema: SUITE_RECORD.suiteSchemaUrl(), name: 'kit', title: 'Kit', description: 'tools',
+        members: [{ listing: LISTINGS.listingUri('did:plc:abcdefghijklmnopqrstuvwx', 'bled'), for: '@acme/suite', label: '@a.test/bled', forLabel: '@acme/suite',
+            require: { identity: 'https://github.com/x', issuer: 'https://token.actions.githubusercontent.com', attesters: ['permitted@did:web:it.example.com'], quorum: 1 } }],
+    }), []);
+});
+
+test('a suite installs each member as it would install by itself — asked about once — follows its publisher, and takes away only what it brought', async () => {
+    const author = account();
+    const extender = account();
+    const auditor = account();
+    const curator = account();
+    const host = await packaged('suite-host');
+    await attestAs(author, host, 'published');
+    const extra = await packaged('@suite/extra');
+    await attestAs(extender, extra, 'published');
+    const tool = await packaged('suite-tool');
+    await attestAs(author, tool, 'published');
+    const own = await packaged('suite-own');
+    await attestAs(author, own, 'published');
+    for (const [path, file] of [['host', host], ['extra', extra], ['tool', tool], ['own', own]] as const) DOWNLOADS.set(`/suite/${path}.nzip`, FS.readFileSync(file));
+
+    const authorSession = await ATPROTO.login(author.did, author.password);
+    const hostListing = await LISTINGS.publish(authorSession, { name: 'suite-host', url: 'https://dl.test/suite/host.nzip' });
+    const toolListing = await LISTINGS.publish(authorSession, { name: 'suite-tool', url: 'https://dl.test/suite/tool.nzip' });
+    const ownListing = await LISTINGS.publish(authorSession, { name: 'suite-own', url: 'https://dl.test/suite/own.nzip' });
+    const extraListing = await LISTINGS.publish(await ATPROTO.login(extender.did, extender.password),
+        { name: 'suite-extra', url: 'https://dl.test/suite/extra.nzip', for: hostListing.uri });
+    const curatorSession = await ATPROTO.login(curator.did, curator.password);
+    await SUITE_RECORD.publishSuite(curatorSession, {
+        name: 'kit',
+        members: [
+            { listing: hostListing.uri, require: { attesters: [`published@${author.did}`] } },
+            { listing: extraListing.uri, require: { attesters: [`published@${extender.did}`] } },
+            // Nobody has audited it yet: the suite's floor refuses it, for now.
+            { listing: toolListing.uri, require: { attesters: [`audited@${auditor.did}`] } },
+        ],
+    });
+
+    // Installed by hand before the suite: the suite will have it too, and leave it.
+    const mine = await install(ownListing.uri, { decide: async (review) => selectable(review) });
+
+    // install() says what it is, with the suite in hand.
+    const target = `@${curator.did}/kit`;
+    const said = await install(target).catch((err: unknown) => err) as { code?: string; suite?: SUITE_RECORD.FoundSuite };
+    assert.equal(said.code, 'ERR_BUNDLE_SUITE');
+    assert.equal(said.suite?.uri, `at://${curator.did}/${SUITE}/kit`);
+
+    // One question about everyone the suite expects; then nothing else is asked.
+    const offers: SUITES.Offer[] = [];
+    let asked = 0;
+    const result = await SUITES.installSuite(target, {
+        suite: said.suite,
+        confirm: async (offer) => { offers.push(offer); return acceptAll(offer); },
+        decide: async (review) => { asked++; return selectable(review); },
+    });
+    assert.equal(offers.length, 1);
+    assert.deepEqual(offers[0]!.attesters.map(({ did, kind }) => `${kind}@${did}`), [`published@${author.did}`, `published@${extender.did}`, `audited@${auditor.did}`]);
+    assert.equal(asked, 0, 'what was accepted once covers every member that carries it');
+    assert.deepEqual(result.members.map(({ state }) => state), ['installed', 'installed', 'refused']);
+    assert.match(result.members[2]!.reason!, /suite kit requires attestations from audited@/);
+    const app = records()[named('suite-host')]!;
+    assert.ok(acceptedOf(app).attesters.includes(author.did), 'remembered as accepted, for updates');
+    const plugin = records()['suite-host:@suite/extra']!;
+    assert.equal(plugin.scope, 'suite-host', 'a plugin goes where its app is');
+    assert.deepEqual(SUITES.suitesOf(app.name), ['kit']);
+
+    // The floor holds afterwards too: installed re-checks against it.
+    assert.equal(installed().find(({ record }) => record.name === app.name)?.state, 'ok');
+
+    // The publisher changes the suite: the plugin goes, their own install
+    // joins, and the tool is audited now — an update follows all of it.
+    await attestAs(auditor, tool, 'audited');
+    await SUITE_RECORD.publishSuite(curatorSession, {
+        name: 'kit',
+        members: [
+            { listing: hostListing.uri, require: { attesters: [`published@${author.did}`] } },
+            { listing: toolListing.uri, require: { attesters: [`audited@${auditor.did}`] } },
+            { listing: ownListing.uri },
+        ],
+    });
+    const [updated] = await SUITES.updateSuites('kit', { confirm: acceptAll, decide: async (review) => selectable(review) });
+    assert.deepEqual(Object.fromEntries(updated!.members.map(({ listing, state }) => [listing, state])), {
+        [extraListing.uri]: 'removed', [hostListing.uri]: 'present', [toolListing.uri]: 'installed', [ownListing.uri]: 'present',
+    });
+    assert.equal(records()['suite-host:@suite/extra'], undefined);
+    assert.ok(records()[named('suite-tool')]);
+
+    // Uninstalled by hand, a member is left out from then on.
+    uninstall(named('suite-tool'));
+    assert.deepEqual(SUITES.forget([named('suite-tool')]), ['kit']);
+    const [again] = await SUITES.updateSuites('kit', { confirm: acceptAll });
+    assert.equal(again!.members.find(({ listing }) => listing === toolListing.uri)?.state, 'left-out');
+    assert.equal(records()[named('suite-tool')], undefined);
+
+    // The suite goes with what it brought; what was here before it stays.
+    const gone = await SUITES.uninstallSuite(target);
+    assert.deepEqual(gone.members.map(({ state }) => state).sort(), ['kept', 'kept', 'removed']);
+    assert.equal(records()[named('suite-host')], undefined);
+    assert.ok(records()[mine.name], 'installed before the suite, so not the suite\'s to remove');
+    assert.equal(SUITES.findSuite('kit'), undefined);
+    uninstall(mine.name);
+});
+
+test('a suite can be served from a URL, or named by a domain\'s nsuite: record — and an update asks it again', async () => {
+    const author = account();
+    const first = await packaged('served-one');
+    const second = await packaged('served-two');
+    await attestAs(author, first, 'published');
+    await attestAs(author, second, 'published');
+    DOWNLOADS.set('/served/one.nzip', FS.readFileSync(first));
+    DOWNLOADS.set('/served/two.nzip', FS.readFileSync(second));
+    const session = await ATPROTO.login(author.did, author.password);
+    const one = await LISTINGS.publish(session, { name: 'served-one', url: 'https://dl.test/served/one.nzip' });
+    const two = await LISTINGS.publish(session, { name: 'served-two', url: 'https://dl.test/served/two.nzip' });
+    DOWNLOADS.set('/served/kit.json', Buffer.from(JSON.stringify({ name: 'served', members: [{ listing: one.uri }] })));
+
+    // A URL that answers with JSON, rather than an archive, is a suite.
+    const byUrl = await install('https://dl.test/served/kit.json').catch((err: unknown) => err) as { code?: string; suite?: SUITE_RECORD.FoundSuite };
+    assert.equal(byUrl.code, 'ERR_BUNDLE_SUITE');
+    assert.deepEqual({ name: byUrl.suite?.name, uri: byUrl.suite?.uri }, { name: 'served', uri: 'https://dl.test/served/kit.json' });
+
+    // A domain whose TXT record is nsuite:<url> — never one that says nzip: too.
+    let txt = [['nsuite:https://dl.test/served/kit.json']];
+    const dns = async (name: string) => (name === 'kit.example' ? txt : resolveTxt(name));
+    const byDomain = await install('kit.example', { resolveTxt: dns }).catch((err: unknown) => err) as { code?: string; suite?: SUITE_RECORD.FoundSuite };
+    assert.equal(byDomain.code, 'ERR_BUNDLE_SUITE');
+    assert.equal(byDomain.suite?.uri, 'kit.example', 'remembered by the domain, which an update asks again');
+    const decide = async (review: Review) => selectable(review);
+    const installedSuite = await SUITES.installSuite('kit.example', { suite: byDomain.suite, resolveTxt: dns, confirm: acceptAll, decide });
+    assert.deepEqual(installedSuite.members.map(({ state }) => state), ['installed']);
+
+    // The publisher adds a member by editing the file the record names.
+    DOWNLOADS.set('/served/kit.json', Buffer.from(JSON.stringify({ name: 'served', members: [{ listing: one.uri }, { listing: two.uri }] })));
+    const [followed] = await SUITES.updateSuites('kit.example', { resolveTxt: dns, confirm: acceptAll, decide });
+    assert.deepEqual(followed!.members.map(({ state }) => state), ['present', 'installed']);
+
+    txt = [['nsuite:https://dl.test/served/kit.json'], ['nzip:https://dl.test/served/one.nzip']];
+    await assert.rejects(install('kit.example', { resolveTxt: dns }), /both an 'nzip:' and an 'nsuite:' record/);
+    txt = [['nsuite:http://dl.test/served/kit.json']];
+    await assert.rejects(install('kit.example', { resolveTxt: dns }), /not https/);
+    await SUITES.uninstallSuite('served');
+    assert.equal(records()[named('served-two')], undefined);
+});
+
+test('bundle suite add, validate, update, remove and publish a spec — and install, installed, update and uninstall take the suite', async () => {
+    const author = account();
+    const extender = account();
+    const auditor = account();
+    const curator = account();
+    const host = await packaged('cli-host');
+    await attestAs(author, host, 'published');
+    const extra = await packaged('@cli/extra');
+    await attestAs(extender, extra, 'published');
+    DOWNLOADS.set('/cli-suite/host.nzip', FS.readFileSync(host));
+    DOWNLOADS.set('/cli-suite/extra.nzip', FS.readFileSync(extra));
+    const hostListing = await LISTINGS.publish(await ATPROTO.login(author.did, author.password), { name: 'cli-host', url: 'https://dl.test/cli-suite/host.nzip' });
+    await LISTINGS.publish(await ATPROTO.login(extender.did, extender.password), { name: 'cli-extra', url: 'https://dl.test/cli-suite/extra.nzip', for: hostListing.uri });
+    const file = PATH.join(tmp, 'cli-kit.json');
+
+    // Added with --yes: everything it carries is required of it.
+    const added = collector();
+    assert.equal(await main(['suite', 'add', '--suite', file, '--yes', `@${author.did}/cli-host`], added), 0, added.stderr.join('\n'));
+    assert.match(added.stdout.join('\n'), /added .*\/cli-host in cli-kit .*\n  requiring: attested by published@did:/);
+    // Asked, on a terminal: the plugin, for that app, '#' standing for '@'.
+    const answers = ['1'];
+    const asked = { ...collector(), ask: async () => answers.shift()! };
+    assert.equal(await main(['suite', 'add', '--suite', file, '--for', `#${author.did}/cli-host`, `@${extender.did}/cli-extra`], asked), 0, asked.stderr.join('\n'));
+    const spec = JSON.parse(FS.readFileSync(file, 'utf-8')) as SUITE_RECORD.SuiteSpec;
+    assert.equal(spec.name, 'cli-kit', 'named after the file');
+    assert.match(spec.$schema!, /suite\.schema\.json$/);
+    assert.deepEqual(spec.members.map(({ for: app, require }) => ({ for: app, require })), [
+        { for: undefined, require: { attesters: [`published@${author.did}`] } },
+        { for: hostListing.uri, require: { attesters: [`published@${extender.did}`] } },
+    ]);
+
+    const valid = collector();
+    assert.equal(await main(['suite', 'validate', '--suite', file], valid), 0, valid.stdout.join('\n'));
+    assert.match(valid.stdout.join('\n'), /consistent, and every member carries what it requires/);
+
+    // A requirement nothing meets is caught — and asked about again, fixed.
+    spec.members[0]!.require!.attesters!.push(`audited@${auditor.did}`);
+    FS.writeFileSync(file, JSON.stringify(spec));
+    const invalid = collector();
+    assert.equal(await main(['suite', 'validate', '--suite', file], invalid), 1);
+    assert.match(invalid.stdout.join('\n'), /FAIL .*cli-host[\s\S]*missing audited@/);
+    const again = { ...collector(), ask: async () => '1' };
+    assert.equal(await main(['suite', 'update', '--suite', file, `@${author.did}/cli-host`], again), 0, again.stderr.join('\n'));
+    assert.match(again.stderr.join('\n'), /required now: attested by published@.*, audited@[\s\S]*not carried by what it serves now: audited@/);
+    assert.equal(await main(['suite', 'validate', '--suite', file], collector()), 0);
+
+    const shown = collector();
+    assert.equal(await main(['suite', 'show', '--suite', file], shown), 0);
+    assert.match(shown.stdout.join('\n'), /cli-kit[\s\S]*cli-extra  for #?@?did:[\s\S]*attested by published@/);
+
+    // Published, under one sign-in; then installed from the account, at once.
+    process.env['BUNDLE_ATPROTO_PASSWORD'] = curator.password;
+    try {
+        const published = collector();
+        assert.equal(await main(['suite', 'publish', '--suite', file, '--as', curator.did], published), 0, published.stderr.join('\n'));
+        assert.ok(curator.records.has(`${SUITE}/cli-kit`));
+        assert.deepEqual((curator.records.get(`${SUITE}/cli-kit`) as { members: unknown[] }).members.map((member) => Object.keys(member as object).sort()),
+            [['listing', 'require'], ['for', 'listing', 'require']], 'labels stay in the file');
+    } finally {
+        delete process.env['BUNDLE_ATPROTO_PASSWORD'];
+    }
+    const installing = collector();
+    assert.equal(await main(['install', '--yes', `@${curator.did}/cli-kit`], installing), 0, installing.stderr.join('\n'));
+    assert.match(installing.stdout.join('\n'), /suite cli-kit: 2 installed/);
+    assert.match(installing.stderr.join('\n'), /suite cli-kit expects its members to carry:\n +1 attested by published@/);
+
+    const listed = collector();
+    await main(['installed'], listed);
+    assert.match(listed.stdout.join('\n'), new RegExp(`^${named('cli-host').replace('.', '\\.')} +OK\\n +suite: +cli-kit$`, 'm'));
+    assert.equal(await main(['update', 'cli-kit'], collector()), 0);
+
+    // Taken out of the spec: gone from it, and an unknown member is exit 1.
+    assert.equal(await main(['suite', 'remove', '--suite', file, `@${extender.did}/cli-extra`], collector()), 0);
+    assert.equal(await main(['suite', 'remove', '--suite', file, `@${extender.did}/cli-extra`], collector()), 1);
+
+    const removed = collector();
+    assert.equal(await main(['uninstall', 'cli-kit'], removed), 0, removed.stderr.join('\n'));
+    assert.match(removed.stdout.join('\n'), /removed suite cli-kit/);
+    assert.equal(records()[named('cli-host')], undefined);
+    assert.equal(records()['cli-host:@cli/extra'], undefined);
+});
+
+test('an IT department permits a whole suite or single bundles, and prohibits either — what it says of a bundle wins, and prohibiting a suite stays with the suite', async () => {
+    const author = account();
+    const curator = account();
+    const corp = account();
+    const alpha = await packaged('corp-alpha');
+    const beta = await packaged('corp-beta');
+    DOWNLOADS.set('/corp/alpha.nzip', FS.readFileSync(alpha));
+    DOWNLOADS.set('/corp/beta.nzip', FS.readFileSync(beta));
+    const authorSession = await ATPROTO.login(author.did, author.password);
+    const alphaListing = await LISTINGS.publish(authorSession, { name: 'corp-alpha', url: 'https://dl.test/corp/alpha.nzip' });
+    const betaListing = await LISTINGS.publish(authorSession, { name: 'corp-beta', url: 'https://dl.test/corp/beta.nzip' });
+    const { uri } = await SUITE_RECORD.publishSuite(await ATPROTO.login(curator.did, curator.password),
+        { name: 'corp-kit', members: [{ listing: alphaListing.uri }, { listing: betaListing.uri }] });
+    const kit = await SUITE_RECORD.followSuite(uri);
+    const { hashAlg, hex } = SUITE_RECORD.suiteHash(kit.record);
+    const it = await ATPROTO.login(corp.did, corp.password);
+
+    // Everything must be permitted by the IT department, which blocks what it prohibits.
+    writePolicy({ require: { attesters: [`permitted@${corp.did}`] }, block: [corp.did] });
+    try {
+        // The suite is permitted; one bundle in it is not.
+        await ATPROTO.attest(it, { hashAlg, hex, kind: 'permitted' });
+        await attestAs(corp, beta, 'prohibited', 'bad');
+        const permitted = await SUITES.installSuite(uri, {});
+        assert.deepEqual(permitted.members.map(({ state }) => state), ['installed', 'refused'], 'nobody was asked: the requirement is met, via the suite');
+        assert.match(permitted.members[1]!.reason!, /marked bad by .*which this machine blocks on/);
+        const check = installed().find(({ record }) => record.name === named('corp-alpha'))!;
+        assert.equal(check.state, 'ok', check.reason);
+        assert.ok(check.review?.items.some(({ evidence }) => evidence.type === 'attestation' && evidence.via === 'suite corp-kit' && evidence.kind === 'permitted'));
+        await SUITES.uninstallSuite('corp-kit');
+
+        // The other way round: the suite prohibited, one bundle in it permitted.
+        await ATPROTO.revoke(it, hex);
+        await ATPROTO.attest(it, { hashAlg, hex, kind: 'prohibited', verdict: 'bad' });
+        await attestAs(corp, alpha, 'permitted');
+        await assert.rejects(SUITES.installSuite(uri, {}), /refusing suite corp-kit: marked bad by .*\(prohibited\).*its bundles can still be installed by themselves/);
+        assert.equal(SUITES.findSuite('corp-kit'), undefined);
+        const alone = await install(alphaListing.uri);
+        assert.equal(alone.name, named('corp-alpha'), 'permitted by itself, the suite\'s prohibition notwithstanding');
+        uninstall(alone.name);
+    } finally {
+        writePolicy({});
     }
 });

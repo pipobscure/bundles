@@ -254,7 +254,7 @@ jobs:
 
       # The schema policy files point at, with its $id naming this release —
       # the URL `bundle policy init` writes into a file for this version.
-      - name: Stamp the policy schema with this version
+      - name: Stamp the policy and suite schemas with this version
         run: npm run schema:release
 
       - name: Keep the artifacts with the run
@@ -266,6 +266,7 @@ jobs:
             build/cli.manifest
             build/cli.audit.json
             build/policy.schema.json
+            build/suite.schema.json
 
       # prepublishOnly refuses a package whose signed CLI is missing, unsigned,
       # or stale relative to this tree. Trusted publishing needs npm 11.5.1 or
@@ -327,9 +328,12 @@ jobs:
           \`cli.audit.json\` is the audit verdict it was signed under, pinned to the unsigned archive's sha256.
 
           \`policy.schema.json\` is the JSON Schema for this version's policy files — what \`bundle policy init\` points a new file at, so an editor can complete and check it.
+
+          \`suite.schema.json\` is the same for suite specs — what \`bundle suite add\` points a new spec at.
           EOF
           cp build/cli.audit.json cli.audit.json
           cp build/policy.schema.json policy.schema.json
-          gh release create "v$VERSION" bundle.nzip cli.audit.json policy.schema.json \
+          cp build/suite.schema.json suite.schema.json
+          gh release create "v$VERSION" bundle.nzip cli.audit.json policy.schema.json suite.schema.json \
             --target "$TARGET" --title "v$VERSION" --notes-file notes.md --latest
 

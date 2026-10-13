@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pipobscure/bundles/releases/latest/download/suite.schema.json",
+  "title": "bundle suite",
+  "description": "A suite: listed bundles installed together (`bundle install @<handle>/<name>`), and what each must carry.\n\nThe suite vouches for none of its members. Each is installed as it would be by itself — reviewed on its own, under the installing machine's policy, and accepted or not by the person installing. What the suite can do is set a minimum per member, under `require`: a member that does not carry it is refused, at install and at every update.\n\n`bundle suite add` and `bundle suite remove` edit this file, `bundle suite update` asks again what to require, `bundle suite validate` checks it against what is published now, and `bundle suite publish` writes it to an atproto account as a com.pipobscure.bundle.suite record. Or serve the file itself at an https URL: `bundle install <url>` installs it, and so does `bundle install <domain>` for a domain whose TXT record is `nsuite:<url>`.\n\nUnknown settings are an error, so a typo cannot quietly drop a requirement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "members"],
+  "properties": {
+    "$schema": {
+      "description": "This schema, so an editor can help. `bundle suite add` writes it; nothing else reads it.",
+      "type": "string"
+    },
+    "name": {
+      "description": "What the suite is called: the record key it is published under, and what it is known by where it is installed.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "examples": ["devtools"]
+    },
+    "title": {
+      "description": "A display name; the name stands in when there is none.",
+      "type": "string",
+      "maxLength": 64
+    },
+    "description": {
+      "description": "What the suite is for, in a sentence or two.",
+      "type": "string",
+      "maxLength": 300
+    },
+    "members": {
+      "description": "The listings installed together, each once. Apps are installed before plugins, whatever the order here.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/member" }
+    }
+  },
+  "$defs": {
+    "listing": {
+      "description": "The at:// address of a com.pipobscure.bundle.listing record, with the publisher's DID.",
+      "type": "string",
+      "pattern": "^at://did:(?:plc:[a-z2-7]{24}|web:[A-Za-z0-9.%-]+)/com\\.pipobscure\\.bundle\\.listing/[a-z0-9][a-z0-9-]{0,63}$",
+      "examples": ["at://did:plc:abcdefghijklmnopqrstuvwx/com.pipobscure.bundle.listing/bled"]
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listing"],
+      "properties": {
+        "listing": { "$ref": "#/$defs/listing" },
+        "for": {
+          "description": "Install it as a plugin, rather than onto the PATH: for the app installed from this listing, or into this scope — a package name, such as a suite's shared one. Without it, an app installs onto the PATH, and a plugin for the app its own listing names.",
+          "anyOf": [
+            { "$ref": "#/$defs/listing" },
+            { "type": "string", "pattern": "^(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$", "maxLength": 214 }
+          ]
+        },
+        "require": { "$ref": "#/$defs/require" },
+        "label": {
+          "description": "What it was added as, as typed — `@pipobscure.com/bled` — for whoever reads this file. Not published.",
+          "type": "string"
+        },
+        "forLabel": {
+          "description": "What `for` was given as, as typed. Not published.",
+          "type": "string"
+        }
+      }
+    },
+    "require": {
+      "description": "What the member must carry to be installed at all. Meeting it vouches for nothing: whoever installs still decides whom to accept — though they are asked about everyone the suite names once, up front, rather than member by member.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "description": "The sigstore identity that must have signed it, e.g. a GitHub workflow.",
+          "type": "string",
+          "minLength": 1,
+          "examples": ["https://github.com/pipobscure/bled/.github/workflows/publish.yml@refs/heads/main"]
+        },
+        "issuer": {
+          "description": "The OIDC issuer that must have vouched for that identity.",
+          "type": "string",
+          "pattern": "^https://",
+          "examples": ["https://token.actions.githubusercontent.com"]
+        },
+        "attesters": {
+          "description": "Who must have attested it, as `[kind@]<did>`.",
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[A-Za-z0-9._-]+@)?did:(?:plc:[a-z2-7]{24}|web:[A-Za-z0-9.%-]+)$"
+          },
+          "examples": [["published@did:plc:abcdefghijklmnopqrstuvwx"]]
+        },
+        "quorum": {
+          "description": "How many of the attesters must have attested it (default: all of them).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@ import { members, parseDate } from './archive.ts';
 import { launcherPath, packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
-import { formatAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
+import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
 
 // Re-exported because this is where a CLI consumer looks for it; it is defined
 // in the format layer so the `bundle` launcher can report an exit code without
@@ -33,10 +33,11 @@ commands:
   attest    vouch for an archive from an atproto account, or withdraw that
   publish   list an archive's URL under a name, so others can find and install it
   unpublish take a listing down again
+  suite     write, check and publish a suite: listings installed together
   run       mount a signed archive and run it
   search    search the listed archives by name, description and publisher
   listings  every listed archive, from a local index kept in step with the network
-  install   fetch a signed archive from a URL, domain or listing and put it on your PATH
+  install   fetch a signed archive — or a suite of them — from a URL, domain or listing
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   validate  re-check installs, and say what has been attested since — at startup
@@ -193,6 +194,58 @@ export const HELP: Record<string, string> = {
 
   deletes the listings, as one batch. Installs made from one keep checking
   the URL it last named. Exits 1 when a name was not listed.`,
+    suite: `suite options:                      usage: suite <add | remove | update | validate | show | publish | unpublish | attest> [options]
+  -s, --suite <file>    the suite's spec (default: suite.json)
+      --for <app>       add: install it as a plugin, for the app installed
+                        from this listing (@<handle or did>/<name>, '#' for
+                        '@' too, or an at:// address), or into this scope
+  -y, --yes             add, update: require everything shown that can be
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --no-discover     do not ask the backlink index who has attested it
+      --json            show: print the spec as it is
+      --as <handle | did>  publish, unpublish, attest: the account
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --password-file <file>  an app password instead of signing in, for CI
+      --kind <kind>     attest: what is vouched for (permitted, prohibited, …)
+      --verdict <good | bad>  attest: vouch for it, or warn against it
+                        (default: good)
+      --note <text>     attest: a short note, for information
+      --revoke          attest: withdraw the account's attestation of it
+
+  a suite is a set of listings installed together: 'bundle install
+  @<handle>/<suite>' installs each as it would be installed by itself, and
+  'bundle update' keeps them in step — members added are installed, members
+  taken out are removed. It vouches for none of them; what it can do is set
+  a minimum per member — a signer, attesters — below which that member is
+  refused, at install and at every update. Installing, everyone the suite
+  expects is shown once, and whom you accept counts for every member that
+  names them: one answer, rather than one per member.
+
+  a suite is written as a spec, a JSON file (schemas/suite.schema.json):
+    add <listing>...    adds listings: fetches each, shows what vouches for
+                        it, and asks which of that to require
+    remove <listing>... takes members out
+    update [listing]... asks again what to require, of the members named or all
+    validate [suite]    checks the file holds together, and that what each
+                        member's listing serves now carries what it requires
+    show [suite]        prints it
+    publish             writes it to the account as com.pipobscure.bundle.suite
+    unpublish <name>    takes it down
+    attest [suite]      attests it — the spec, or one published — by the
+                        hash of what it says
+  'bundle suite <subcommand> --help' says more about each.
+
+  an attestation of a suite (see 'suite attest') counts for each member
+  installed from it, while the suite is as it was attested: so an IT
+  department that requires 'permitted@<its DID>' of everything can permit a
+  whole suite at once, and still permit or prohibit single bundles — what is
+  said of a bundle itself wins over what is said of its suite. A bad verdict
+  (prohibited) refuses the suite where the policy blocks on whoever said it,
+  and does not carry over: its bundles can still be installed by themselves.
+
+  a spec can be published without atproto, too: serve it at an https URL,
+  and 'bundle install <url>' installs it — or name that URL in a TXT record
+  'nsuite:<url>' on a domain, and 'bundle install <domain>' does.`,
     run: `run options:                        usage: run [options] <archive> [app args...]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --identity <san>  require this sigstore signing identity
@@ -284,6 +337,16 @@ export const HELP: Record<string, string> = {
   how it was installed — url, domain or listing — is remembered, and 'update'
   asks it again, so a listing or TXT record that moves moves the install too.
 
+  a suite installs every listing in it (see 'suite'): '@<handle>/<name>'
+  where the account has a suite and no listing of that name; a domain whose
+  TXT record is 'nsuite:<url>'; or a URL that serves a suite's JSON rather
+  than an archive. Each member is installed as it would be by itself, and
+  reviewed on its own. First, everyone the suite expects its members to
+  carry is shown once: whom you accept counts for every member that names
+  them, so the rest installs without asking. A member that does not carry
+  what the suite requires is refused; one refused or declined does not stop
+  the others. --dir applies to its apps; --name and --for do not apply.
+
   --for installs a plugin: a bundle an app loads by its package name, with
   '@pipobscure/bundle/plugins'. It goes into the app's scope — a directory of
   that app's own (BUNDLE_PLUGINS overrides where those are) — under the
@@ -325,7 +388,10 @@ export const HELP: Record<string, string> = {
       --no-discover     do not ask the backlink index who has attested it
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
 
-  with no name, every install is checked. A domain or listing it was installed
+  with no name, every install is checked — and first every suite is asked
+  what it holds now: members added are installed, and members taken out
+  removed, if the suite brought them. Named, a suite is that suite and its
+  members. A domain or listing it was installed
   from is asked again where the archive is now; then each is a conditional
   request with the recorded ETag, so nothing is downloaded twice. A new version is reviewed
   like an install, against what has been accepted for it so far: a new signer,
@@ -358,6 +424,11 @@ export const HELP: Record<string, string> = {
   blocked. Made for startup — e.g. 'bundle validate --quiet --every 1d' in a
   shell profile; offline, it answers from the cache.`,
     uninstall: `uninstall options:                  usage: uninstall [name | url | domain | @did/name]
+
+  a suite (by its name, how it was installed, or @did/name) is removed with
+  what it brought: what was installed before it, or that another suite has
+  too, stays. An install a suite has, uninstalled by itself, is left out of
+  that suite from then on, until it is installed again.
 
   deletes the file and forgets the record. With no argument it removes this
   package's own install — what 'bundle install' left behind. An app's plugins
@@ -474,6 +545,108 @@ export const HELP: Record<string, string> = {
  * have subcommands. The command's own help lists them all.
  */
 export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
+    suite: {
+        add: `suite add options:                  usage: suite add [options] <listing>...
+  -s, --suite <file>    the spec to add to (default: suite.json), made if
+                        it is not there, named after the file
+      --for <app>       install them as plugins: for the app installed from
+                        this listing (@<handle or did>/<name>, '#' for '@'
+                        too, or an at:// address), or into this scope (a
+                        package name, such as a suite's shared one)
+  -y, --yes             require everything shown that can be
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --no-discover     do not ask the backlink index who has attested it
+
+  each <listing> (@<handle or did>/<name>, or an at:// address) is fetched
+  from its publisher's PDS and verified, the archive it names is fetched,
+  and everything that vouches for it is shown, numbered, as an install shows
+  it. Then: which of that should the suite require? The signature and good
+  attestations can be required. What is chosen becomes the member's
+  "require": a member that does not carry it is refused wherever the suite is
+  installed. Adding a member again replaces it.`,
+        remove: `suite remove options:               usage: suite remove [options] <listing>...
+  -s, --suite <file>    the spec (default: suite.json)
+
+  takes members out, by what they were added as, their at:// address, or
+  @<handle or did>/<name>. Exits 1 when one was not a member. Once
+  published, an update removes them wherever the suite is installed and
+  brought them.`,
+        update: `suite update options:               usage: suite update [options] [listing]...
+  -s, --suite <file>    the spec (default: suite.json)
+  -y, --yes             require everything shown that can be
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --no-discover     do not ask the backlink index who has attested it
+
+  asks again, for the members named or all of them, what the suite should
+  require: each is fetched as 'add' fetches it, shown with what is required
+  now marked — and what is required but no longer carried — and Enter keeps
+  what is required now.`,
+        validate: `suite validate options:             usage: suite validate [options] [@account/name | at:// | url | domain]
+  -s, --suite <file>    the spec, when no published suite is named
+                        (default: suite.json)
+  -r, --root <file>     extra trusted root certificate (PEM); repeatable
+      --no-discover     do not ask the backlink index who has attested it
+
+  checks that the file holds together — names, listings, scopes, the
+  requirements' form — that every member's listing and every app one is for
+  is there, that a plugin is for the app its listing says, and then fetches
+  what each listing serves now and checks that it carries what the suite
+  requires of it. Judged by the suite's requirements alone, not this
+  machine's policy. Each member's line names the URL and the hash of what it
+  serves now. Exits 1 when anything does not hold. Named, a published suite
+  is checked instead of a spec — before permitting it, say.`,
+        show: `suite show options:                 usage: suite show [options] [@account/name | at:// | url | domain]
+  -s, --suite <file>    the spec, when no published suite is named
+                        (default: suite.json)
+      --json            print the spec as it is
+
+  prints the suite: its hash — what an attestation of it names — and each
+  member, what it is for, and what it requires.`,
+        publish: `suite publish options:              usage: suite publish [options]
+  -s, --suite <file>    the spec (default: suite.json)
+      --as <handle | did>  the account to publish from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  writes com.pipobscure.bundle.suite/<name> to the account's repository, so
+  'bundle install @<handle>/<name>' installs it. Every member's listing, and
+  every app one is for, is checked to be there first, before signing in. A
+  suite cannot share its name with a listing on the same account: that
+  address installs the listing. Publishing it again replaces it, keeping
+  when it was first published; every install of it follows on its next
+  update.`,
+        attest: `suite attest options:               usage: suite attest [options] [@account/name | at:// | url | domain]
+  -s, --suite <file>    the spec to attest, when no published suite is named
+                        (default: suite.json)
+      --as <handle | did>  the account to attest from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --kind <kind>     what is vouched for: permitted, prohibited, …
+      --verdict <good | bad>  vouch for it, or warn against it (default: good)
+      --note <text>     a short note, for information
+      --revoke          withdraw the account's attestation of it
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  writes a com.pipobscure.bundle.attestation of the suite's hash: the sha256
+  of what it says — its members, where each goes, and what each must carry,
+  not its title or description — so any change to the suite makes another
+  hash, which the attestation does not name. What is attested is shown first.
+
+  installing a member of the suite, a good attestation of it counts as one of
+  the member, said as coming 'via suite <name>' — unless the same attester
+  has said something of the member itself, which wins. A policy that
+  requires 'permitted@<did>' is met either way. A bad verdict refuses the
+  suite, where the policy blocks on the attester, and never carries over to
+  its members: they are judged on their own.`,
+        unpublish: `suite unpublish options:            usage: suite unpublish [options] <name>
+      --as <handle | did>  the account the suite is in
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --password-file <file>  an app password instead of signing in, for CI
+
+  deletes the suite. Installs of it keep what they have; their updates say
+  it is gone, and leave its members as they are. Exits 1 when there was none.`,
+    },
     policy: {
         show: `policy show options:                usage: policy show [options]
       --system          only the machine's file
@@ -565,7 +738,7 @@ export const UNDECIDED = 4;
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, attest, publish, unpublish, run, search, listings, install, update, installed, validate, uninstall,
+    create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, update, installed, validate, uninstall,
     sea, trust, policy: policyCommand, lexicon, skill, shell,
 };
 
@@ -1030,6 +1203,8 @@ async function install(args: string[], io: Console): Promise<number> {
             decide: decider(Boolean(values.yes), io),
             log: (line) => io.err(line),
         });
+        // Installed by hand, it is the person's own, whatever suite has it too.
+        if (record.link === undefined) (await import('./suite-install.ts')).adopt(record, INSTALL.sourceOf(record));
         io.out(record.link !== undefined
             ? `${record.label} (${record.package}) linked for ${record.scope}: loaded from ${record.link} as it is, and refused by anything that verifies plugins`
             : record.scope !== undefined
@@ -1040,8 +1215,95 @@ async function install(args: string[], io: Console): Promise<number> {
         if (!positionals[0] && values.shell) await offerShellHook(io);
         return 0;
     } catch (err) {
+        // A suite: its members, each installed as it would be by itself.
+        const { code, suite } = err as { code?: string; suite?: import('./suite.ts').FoundSuite };
+        if (code === 'ERR_BUNDLE_SUITE') {
+            if (values.name !== undefined || values.for !== undefined) throw new Error(`install: ${target} is a suite — its members say where each goes, so --name and --for do not apply`);
+            const SUITES = await import('./suite-install.ts');
+            try {
+                const result = await SUITES.installSuite(target, { ...suiteOptions(values, demands, io), dir: values.dir, suite });
+                return reportSuites([result], io);
+            } catch (refusedSuite) {
+                return refused(refusedSuite, io);
+            }
+        }
         return refused(err, io);
     }
+}
+
+// What installing or updating a suite is told: the same as any install, and
+// how to ask, once, about everyone the suite expects its members to carry.
+function suiteOptions(values: { root?: string[] | undefined; identity?: string | undefined; issuer?: string | undefined; discover?: boolean | undefined; yes?: boolean | undefined },
+    demands: Awaited<ReturnType<typeof policy>>, io: Console): import('./suite-install.ts').SuiteOptions {
+    return {
+        roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
+        attesters: demands.attesters.length ? demands.attesters : undefined, quorum: demands.quorum, block: demands.block,
+        discover: values.discover,
+        onReview: (review, about) => showReview(review, about, io),
+        decide: decider(Boolean(values.yes), io),
+        confirm: confirmer(Boolean(values.yes), io),
+        log: (line) => io.err(line),
+    };
+}
+
+// The one question a suite asks: whom, of everyone it expects its members to
+// carry, to accept for those members. All of them with --yes; the person's
+// choice on a terminal; otherwise none, and each member is its own question.
+function confirmer(yes: boolean, io: Console) {
+    return async (offer: import('./suite-install.ts').Offer, about: { name: string; source: string }): Promise<REVIEW.Accepted> => {
+        const lines = [
+            ...offer.signers.map((each) => ({ kind: 'signer' as const, each, text: `signed by   ${each.identity} via ${each.issuer}` })),
+            ...offer.attesters.map((each) => ({ kind: 'attester' as const, each, text: `attested by ${each.kind ? `${each.kind}@` : ''}${each.did}` })),
+        ];
+        const short = (uri: string) => uri.slice(uri.lastIndexOf('/') + 1);
+        io.err(`* suite ${about.name} expects its members to carry:`);
+        for (const [i, { each, text }] of lines.entries()) io.err(`  ${String(i + 1).padStart(2)} ${text} — for ${each.members.map(short).join(', ')}`);
+        let picked: typeof lines = [];
+        if (yes) picked = lines;
+        else if (io.ask) {
+            for (;;) {
+                const answer = (await io.ask(`  accept which, for those members? numbers (${lines.length > 1 ? '1,2' : '1'}), 'all', or Enter to decide each on its own: `)).trim().toLowerCase();
+                if (!answer || answer === 'n' || answer === 'no' || answer === 'none') break;
+                if (answer === 'all' || answer === 'a' || answer === 'y' || answer === 'yes') { picked = lines; break; }
+                const numbers = answer.split(/[\s,]+/).map(Number);
+                if (numbers.every((n) => Number.isInteger(n) && n >= 1 && n <= lines.length)) { picked = [...new Set(numbers)].map((n) => lines[n - 1]!); break; }
+                io.err(`  '${answer}' is not one of 1–${lines.length}`);
+            }
+        }
+        return {
+            signers: picked.flatMap(({ kind, each }) => (kind === 'signer' ? [{ identity: (each as { identity: string }).identity, issuer: (each as { issuer: string }).issuer }] : [])),
+            certificates: [],
+            attesters: picked.flatMap(({ kind, each }) => (kind === 'attester' ? [(each as { did: string }).did] : [])),
+        };
+    };
+}
+
+// What became of each suite's members, and the exit code the worst of it
+// makes — as 'update' reports its installs.
+function reportSuites(results: import('./suite-install.ts').SuiteResult[], io: Console): number {
+    let code = 0;
+    for (const { suite, members, problem } of results) {
+        if (problem !== undefined) {
+            io.out(`suite ${suite.name}: not asked — ${problem}`);
+            code = Math.max(code, 70);
+            continue;
+        }
+        const count = (state: string) => members.filter((member) => member.state === state).length;
+        const parts = [['installed', 'installed'], ['present', 'already here'], ['removed', 'removed'], ['kept', 'kept'], ['left-out', 'left out']]
+            .flatMap(([state, said]) => (count(state!) ? [`${count(state!)} ${said}`] : []));
+        io.out(`suite ${suite.name}: ${parts.join(', ') || 'nothing to do'}`);
+        for (const member of members) {
+            const what = member.install ?? member.listing;
+            if (member.state === 'installed' || member.state === 'removed') io.out(`  ${member.state} ${what}`);
+            else if (member.state !== 'present') io.out(`  ${what}: ${member.state}${member.reason ? ` — ${member.reason}` : ''}`);
+            code = Math.max(code, member.state === 'refused' ? STATES[member.review?.state ?? 'invalid'].code
+                : member.state === 'failed' ? 70
+                : member.state === 'declined' || member.state === 'unconfirmed' ? UNDECIDED
+                : 0);
+        }
+        if (members.some((member) => member.state === 'unconfirmed')) io.err('  run on a terminal to decide, or pass --yes to accept what was shown');
+    }
+    return code;
 }
 
 // The scope `--for` names: an installed app by the name it was installed as,
@@ -1216,8 +1478,23 @@ async function update(args: string[], io: Console): Promise<number> {
     });
 
     const INSTALL = await import('./install.ts');
+    const SUITES = await import('./suite-install.ts');
     const demands = await policy(values);
-    const results = await INSTALL.update(positionals[0], {
+
+    // Suites first: asked what they hold now, members added installed and
+    // those taken out removed. Then every install as usual — a suite's, when
+    // one is named — less what was just installed.
+    const target = positionals[0];
+    const suite = target !== undefined && !INSTALL.records()[target] ? SUITES.findSuite(target) : undefined;
+    const suited = target === undefined || suite !== undefined
+        ? await SUITES.updateSuites(suite, suiteOptions(values, demands, io))
+        : [];
+    const suiteCode = reportSuites(suited.filter((result) => result.problem !== undefined || result.members.some((member) => !['present', 'left-out'].includes(member.state))), io);
+    const fresh = new Set(suited.flatMap((result) => result.members.filter((member) => member.state === 'installed').map((member) => member.install!)));
+    const names = suite !== undefined ? SUITES.installsOf(SUITES.suites()[suite]!).filter((name) => INSTALL.records()[name] && !fresh.has(name))
+        : target === undefined ? Object.keys(INSTALL.records()).filter((name) => !fresh.has(name)).sort()
+        : target;
+    const results = await INSTALL.update(names, {
         roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
         attesters: demands.attesters.length ? demands.attesters : undefined,
         quorum: demands.quorum, block: demands.block,
@@ -1241,7 +1518,7 @@ async function update(args: string[], io: Console): Promise<number> {
     return stuck.reduce((code, result) => Math.max(code,
         result.state === 'refused' ? STATES[result.review?.state ?? 'invalid'].code
         : result.state === 'failed' ? 70
-        : UNDECIDED), 0);
+        : UNDECIDED), suiteCode);
 }
 
 // What is installed, and whether it is still what was installed. The record
@@ -1254,6 +1531,7 @@ async function installed(args: string[], io: Console): Promise<number> {
     });
 
     const INSTALL = await import('./install.ts');
+    const SUITES = await import('./suite-install.ts');
     // Withdrawn attestations and new warnings only show up if they are asked
     // about; asking is cheap, and a failure leaves the cache to answer.
     for (const problem of await INSTALL.refreshInstalled()) io.err(`! could not fetch an attestation, using the cache: ${problem}`);
@@ -1263,7 +1541,7 @@ async function installed(args: string[], io: Console): Promise<number> {
         io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
             name: record.name, scope: record.scope, package: record.package, label: INSTALL.labelOf(record), path, state, sha256, reason,
             source: INSTALL.sourceOf(record), url: record.url, identity: record.identity, issuer: record.issuer,
-            attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record),
+            attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record), suites: SUITES.suitesOf(record.name),
             warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
         })), null, 2));
     } else if (!checks.length) {
@@ -1272,6 +1550,8 @@ async function installed(args: string[], io: Console): Promise<number> {
         for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
             if (record.scope !== undefined) io.out(`  plugin: ${INSTALL.labelOf(record)} (${record.package}), for ${record.scope}`);
+            const suites = SUITES.suitesOf(record.name);
+            if (suites.length) io.out(`  suite:  ${suites.join(', ')}`);
             io.out(`  at:     ${path}`);
             const source = INSTALL.sourceOf(record);
             if (record.link !== undefined) io.out(`  linked: ${record.link}`);
@@ -1284,6 +1564,15 @@ async function installed(args: string[], io: Console): Promise<number> {
             io.out(`  since:  ${record.at}`);
             if (state !== 'ok') io.out(`  ${reason}`);
             for (const warning of review ? INSTALL.warningsOf(review) : []) io.out(`  ${warning}`);
+        }
+        // The suites, and any of their members that are not installed.
+        for (const suite of Object.values(SUITES.suites()).sort((a, b) => a.name.localeCompare(b.name))) {
+            io.out(`suite ${suite.name}  ${suite.members.length} member${suite.members.length === 1 ? '' : 's'}`);
+            io.out(`  from:   ${suite.label ?? suite.source}`);
+            for (const member of suite.members) {
+                if (member.removed) io.out(`  left out: ${member.listing}`);
+                else if (member.install === undefined || !INSTALL.records()[member.install]) io.out(`  not installed: ${member.listing} — 'bundle update ${suite.name}' tries again`);
+            }
         }
     }
 
@@ -1787,9 +2076,29 @@ async function validate(args: string[], io: Console): Promise<number> {
 async function uninstall(args: string[], io: Console): Promise<number> {
     const { positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.uninstall });
     const INSTALL = await import('./install.ts');
-    const record = INSTALL.uninstall(positionals[0]);
+    const SUITES = await import('./suite-install.ts');
+    const which = positionals[0];
+
+    // A suite: what it brought goes, and what was here anyway stays.
+    const suite = which !== undefined && !INSTALL.records()[which] ? SUITES.findSuite(which) : undefined;
+    if (suite !== undefined) {
+        const { suite: gone, members } = await SUITES.uninstallSuite(suite);
+        io.out(`removed suite ${gone.name}`);
+        io.err(`  it came from ${gone.source}`);
+        for (const member of members) {
+            if (member.state === 'removed') io.out(`removed ${member.install}`);
+            else if (member.install !== undefined) io.err(`  kept ${member.install}: ${member.reason}`);
+        }
+        return 0;
+    }
+
+    const record = INSTALL.uninstall(which);
     io.out(`removed ${record.name} from ${record.dir}`);
     io.err(`  it came from ${record.url}`);
+    // Uninstalled by itself, it is left out of its suites from now on.
+    for (const name of SUITES.forget([record.name], record.plugins.map((plugin) => plugin.name))) {
+        io.err(`  it was in suite ${name}, which leaves it out from now on — installing it again brings it back`);
+    }
     // Its plugins went with it — unless another install of the same app
     // still loads them.
     for (const plugin of record.plugins) io.out(`removed its plugin ${INSTALL.labelOf(plugin)} (${plugin.package}) from ${plugin.dir}`);
@@ -1803,6 +2112,372 @@ async function uninstall(args: string[], io: Console): Promise<number> {
         for (const file of COMPLETION.removeHooks()) io.err(`  took bundle's shell setup out of ${file}`);
     }
     return 0;
+}
+
+// Suites, as their publisher writes them: a spec file that 'add' and 'remove'
+// edit, 'show' reads, and 'publish' writes to an atproto account — or that is
+// served from a URL, which is all publishing by DNS takes.
+async function suite(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, allowNegative: true, options: OPTIONS.suite });
+    const SUITE = await import('./suite.ts');
+    const [sub, ...rest] = positionals;
+    const file = values.suite;
+
+    if (sub === 'add') {
+        if (!rest.length) throw new Error('suite add: name the listings to add, as @<handle or did>/<name> or at:// addresses');
+        const spec = SUITE.readSpec(file, { create: true });
+        const where = values.for !== undefined ? await suiteFor(values.for) : undefined;
+        for (const target of rest) {
+            const member = await suiteMember(target, where, values, io);
+            const at = spec.members.findIndex((each) => each.listing === member.listing);
+            if (at >= 0) spec.members[at] = member;
+            else spec.members.push(member);
+            const required = [
+                ...(member.require?.identity ? [`signed by ${member.require.identity} via ${member.require.issuer}`] : []),
+                ...(member.require?.attesters ?? []).map((attester) => `attested by ${attester}`),
+            ];
+            io.out(`${at >= 0 ? 'updated' : 'added'} ${target} in ${spec.name} (${file})${where ? `, for ${where.label}` : ''}`);
+            io.out(required.length ? `  requiring: ${required.join('; ')}` : '  requiring nothing: each install decides on its own');
+        }
+        SUITE.writeSpec(file, spec, version());
+        return 0;
+    }
+    if (sub === 'remove') {
+        if (!rest.length) throw new Error('suite remove: name the listings to remove');
+        const spec = SUITE.readSpec(file);
+        let missing = 0;
+        for (const target of rest) {
+            const uri = await memberUri(target, spec);
+            const at = spec.members.findIndex((each) => each.listing === uri);
+            if (at < 0) {
+                io.err(`error: ${spec.name} has no member ${target}`);
+                missing++;
+                continue;
+            }
+            spec.members.splice(at, 1);
+            io.out(`removed ${target} from ${spec.name} (${file})`);
+            const dependent = spec.members.filter((each) => each.for === uri);
+            if (dependent.length) io.err(`  ! still for it: ${dependent.map((each) => each.label ?? each.listing).join(', ')} — they install only where it is installed already`);
+        }
+        SUITE.writeSpec(file, spec, version());
+        return missing ? 1 : 0;
+    }
+    // A published suite, for 'validate', 'show' and 'attest' to read as they
+    // would read the spec — so whoever is asked to permit one can check it.
+    const named = async (target: string): Promise<import('./suite.ts').SuiteSpec> => {
+        const found = await (await import('./suite-install.ts')).fetchTarget(target);
+        io.err(`* ${target} is ${found.uri}`);
+        return { name: found.name, title: found.record.title, description: found.record.description, members: found.record.members };
+    };
+    if (sub === 'validate') {
+        // The file first — readSpec refuses one that does not hold together —
+        // then each member as it is published now, against what the suite
+        // requires of it, and nothing else: this machine's policy is not the
+        // suite's business.
+        const spec = rest[0] !== undefined ? await named(rest[0]) : SUITE.readSpec(file);
+        const LISTING = await import('./listing.ts');
+        const POLICY = await import('./policy.ts');
+        const problems: string[] = [];
+        const notes: string[] = [];
+        if (!spec.members.length) problems.push('it has no members');
+        const listed = new Set(spec.members.map((member) => member.listing));
+        const apps = new Map<string, Promise<string | undefined>>();
+        const appProblem = (uri: string) => apps.get(uri) ?? apps.set(uri, LISTING.followListing(uri).then(
+            (found) => (LISTING.appOf(found.record) ? `it is for ${uri}, which is itself a plugin` : undefined),
+            (err: unknown) => `it is for ${uri}: ${message(err)}`)).get(uri)!;
+        for (const member of spec.members) {
+            const label = member.label ?? member.listing;
+            const floor = SUITE.minimumOf(member.require, `suite ${spec.name}`);
+            let inspected: Awaited<ReturnType<typeof inspectMember>>;
+            try {
+                inspected = await inspectMember(member.listing, values, (floor?.attesters ?? []).map(({ did }) => did));
+            } catch (err) {
+                problems.push(`${label}: ${message(err)}`);
+                io.out(`FAIL  ${label} — ${message(err)}`);
+                continue;
+            }
+            const app = LISTING.appOf(inspected.found.record);
+            const mine: string[] = [];
+            if (member.for !== undefined && LISTING.parseListingUri(member.for)) {
+                const wrong = await appProblem(member.for);
+                if (wrong) mine.push(wrong);
+                if (app !== undefined && app !== member.for) mine.push(`its listing says it is a plugin for ${app}, not for ${member.for}`);
+            }
+            const host = member.for !== undefined && LISTING.parseListingUri(member.for) ? member.for : member.for === undefined ? app : undefined;
+            if (host !== undefined && !listed.has(host)) notes.push(`${label} is a plugin for ${host}, which is not in the suite: it installs only where that is installed already`);
+            const review = REVIEW.judge(inspected.gathered, { policy: { ...POLICY.emptyPolicy(), discovery: false }, minimum: floor ? [floor] : [] });
+            mine.push(...review.unmet);
+            problems.push(...mine.map((problem) => `${label}: ${problem}`));
+            io.out(`${mine.length ? 'FAIL' : 'OK  '}  ${label} — ${inspected.url}, ${inspected.gathered.hashAlg}:${inspected.gathered.hash}`);
+            for (const problem of mine) io.out(`      ${problem}`);
+            if (!mine.length) io.out(`      requires ${describeRequire(member.require)}`);
+        }
+        for (const note of notes) io.err(`  ! ${note}`);
+        io.out(problems.length
+            ? `${spec.name}: ${problems.length} problem${problems.length === 1 ? '' : 's'}`
+            : `${spec.name}: consistent, and every member carries what it requires`);
+        return problems.length ? 1 : 0;
+    }
+    if (sub === 'update') {
+        // Ask again, member by member, what the suite should require — shown
+        // what each carries now, and what is required of it now.
+        const spec = SUITE.readSpec(file);
+        const uris = rest.length ? await Promise.all(rest.map((target) => memberUri(target, spec))) : spec.members.map((member) => member.listing);
+        for (const [i, uri] of uris.entries()) {
+            const member = spec.members.find((each) => each.listing === uri);
+            if (!member) throw new Error(`suite update: ${spec.name} has no member ${rest[i]}`);
+            const label = member.label ?? member.listing;
+            const inspected = await inspectMember(member.listing, values, (member.require?.attesters ?? []).map((spec) => parseAttester(spec).subject));
+            io.err(`* ${label} is at ${inspected.url}`);
+            const require = await chooseRequire(label, inspected, values, io, member.require ?? {});
+            if (require && Object.keys(require).length) member.require = require;
+            else delete member.require;
+            SUITE.writeSpec(file, spec, version());
+            io.out(`${label}: requiring ${describeRequire(member.require)}`);
+        }
+        return 0;
+    }
+    if (sub === 'attest') {
+        // A suite is attested by the hash of what it says: its members, where
+        // each goes, and what each must carry — the spec, or a suite as it is
+        // published. A good attestation counts for each member installed from
+        // it; a bad one refuses the suite, and only the suite.
+        if (values.kind !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.kind)) throw new Error(`suite attest: '${values.kind}' is not a valid kind`);
+        if (values.verdict !== 'good' && values.verdict !== 'bad') throw new Error(`suite attest: --verdict is good or bad, not '${values.verdict}'`);
+        const verdict: 'good' | 'bad' = values.verdict;
+        const { name, members } = rest[0] !== undefined ? await named(rest[0]) : SUITE.readSpec(file);
+        if (!members.length) throw new Error(`suite attest: ${name} has no members`);
+        const { hashAlg, hex } = SUITE.suiteHash({ members });
+        io.err(`* suite ${name}: ${hashAlg}:${hex}, which says:`);
+        for (const member of members) {
+            io.err(`  ${member.listing}${member.for !== undefined ? ` for ${member.for}` : ''}`);
+            io.err(`    requires ${describeRequire(member.require)}`);
+        }
+        const { COLLECTION } = await import('./attestation.ts');
+        const session = await signIn('suite attest', values, io, `atproto repo:${COLLECTION}`);
+        try {
+            const ATPROTO = await import('./atproto.ts');
+            if (values.revoke) {
+                await ATPROTO.revokeAll(session, [hex]);
+                io.out(`withdrew ${session.did}'s attestation of suite ${name} (${hashAlg}:${hex})`);
+            } else {
+                const [written] = await ATPROTO.attestAll(session, [{ hashAlg, hex, kind: values.kind, verdict, note: values.note }]);
+                io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} suite ${name} (${hashAlg}:${hex}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
+                io.out(`  ${written!.uri}`);
+            }
+        } finally {
+            await session.end?.();
+        }
+        return 0;
+    }
+    if (sub === 'show') {
+        const spec = rest[0] !== undefined ? await named(rest[0]) : SUITE.readSpec(file);
+        if (values.json) {
+            io.out(JSON.stringify(spec, null, 2));
+            return 0;
+        }
+        const { hashAlg, hex } = SUITE.suiteHash(spec);
+        io.out(`${spec.name}${spec.title ? ` — ${spec.title}` : ''}  (${rest[0] ?? file})`);
+        io.out(`  ${hashAlg}:${hex} — what an attestation of it names`);
+        if (spec.description) io.out(`  ${spec.description}`);
+        for (const member of spec.members) {
+            io.out(`  ${member.label ?? member.listing}${member.for !== undefined ? `  for ${member.forLabel ?? member.for}` : ''}`);
+            if (member.label) io.out(`    ${member.listing}`);
+            if (member.require?.identity || member.require?.issuer) io.out(`    signed by ${member.require.identity ?? 'any identity'} via ${member.require.issuer ?? 'any issuer'}`);
+            if (member.require?.attesters?.length) {
+                io.out(`    attested by ${member.require.quorum !== undefined ? `${member.require.quorum} of ` : ''}${member.require.attesters.join(', ')}`);
+            }
+        }
+        if (!spec.members.length) io.err(`  no members yet — 'bundle suite add --suite ${file} <listing>'`);
+        return 0;
+    }
+    if (sub === 'publish') {
+        const spec = SUITE.readSpec(file);
+        if (!spec.members.length) throw new Error(`suite publish: ${file} has no members`);
+        // Before anyone signs in: every member, and every app one is for, must
+        // be a listing that is there.
+        const LISTING = await import('./listing.ts');
+        for (const uri of new Set(spec.members.flatMap((each) => [each.listing, ...(each.for !== undefined && LISTING.parseListingUri(each.for) ? [each.for] : [])]))) {
+            await LISTING.followListing(uri);
+        }
+        const session = await signIn('suite publish', values, io, `atproto repo:${SUITE.SUITE}`);
+        try {
+            // `@<account>/<name>` installs a listing of that name when there is one.
+            const ATPROTO = await import('./atproto.ts');
+            if (await ATPROTO.getRecord(session.did, LISTING.LISTING, spec.name)) {
+                throw new Error(`suite publish: ${session.did} lists a bundle called '${spec.name}', which @<account>/${spec.name} installs instead — give the suite another name`);
+            }
+            const { uri, replaced } = await SUITE.publishSuite(session, spec);
+            io.out(`${replaced ? 'updated' : 'published'} suite ${spec.name} as ${session.did}`);
+            io.out(`  ${uri}`);
+            io.err(`  install it with: bundle install @${session.handle ?? session.did}/${spec.name}`);
+        } finally {
+            await session.end?.();
+        }
+        return 0;
+    }
+    if (sub === 'unpublish') {
+        if (rest.length !== 1) throw new Error('suite unpublish: name the suite to take down');
+        const session = await signIn('suite unpublish', values, io, `atproto repo:${SUITE.SUITE}`);
+        try {
+            if (!await SUITE.unpublishSuite(session, rest[0]!)) {
+                io.err(`error: ${session.did} has no suite called '${rest[0]}'`);
+                return 1;
+            }
+            io.out(`unpublished suite ${rest[0]} from ${session.did}`);
+        } finally {
+            await session.end?.();
+        }
+        return 0;
+    }
+    throw new Error(`suite: say what to do — add, remove, update, validate, show, publish, unpublish or attest ('bundle suite --help')`);
+}
+
+// What 'suite add --for' names: an app's listing — '@<handle or did>/<name>',
+// with '#' for '@' as well, or an at:// address — or a scope, a package name,
+// such as a suite's shared one. '@acme/suite' is a scope; '@acme.dev/app',
+// whose account is a handle or a DID, is a listing; '#' always is.
+async function suiteFor(value: string): Promise<{ for: string; label: string }> {
+    const LISTING = await import('./listing.ts');
+    if (value.startsWith('#') || /^@(?:did:|[^/]*\.)/.test(value)) {
+        const typed = value.replace(/^#/, '@');
+        const found = await LISTING.resolveListing(typed);
+        if (LISTING.appOf(found.record)) throw new Error(`suite: ${value} is itself a plugin, for ${LISTING.appOf(found.record)}`);
+        return { for: found.uri, label: typed };
+    }
+    if (LISTING.parseListingUri(value)) {
+        const found = await LISTING.followListing(value);
+        if (LISTING.appOf(found.record)) throw new Error(`suite: ${value} is itself a plugin, for ${LISTING.appOf(found.record)}`);
+        return { for: value, label: value };
+    }
+    if ((await import('./scopes.ts')).isScope(value)) return { for: value, label: value };
+    throw new Error(`suite: --for takes an app's listing (@<handle or did>/<name>, or an at:// address) or a scope (a package name); '${value}' is neither`);
+}
+
+type SpecMember = import('./suite.ts').SpecMember;
+type SuiteValues = { root?: string[] | undefined; yes?: boolean | undefined; discover?: boolean | undefined };
+
+// One listing, as a suite would install it now: the listing fetched from its
+// PDS and verified, the archive it names fetched, and everything that vouches
+// for it gathered — anyone `ask` names included, so whether they have
+// attested is known even where discovery would not say.
+async function inspectMember(target: string, values: SuiteValues, ask: string[] = []) {
+    const LISTING = await import('./listing.ts');
+    const INSTALL = await import('./install.ts');
+    const POLICY = await import('./policy.ts');
+    const typed = target.replace(/^#/, '@');
+    const found = LISTING.parseListingUri(typed) ? await LISTING.followListing(typed) : await LISTING.resolveListing(typed);
+    const url = found.record.domain ? (await INSTALL.resolveAlias(found.record.domain)).url : found.record.url!;
+    const { patientFetch } = await import('./ratelimit.ts');
+    const response = await patientFetch()(url, { redirect: 'follow' });
+    if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const policy = POLICY.loadPolicy();
+    const gathered = await REVIEW.gather(bytes, {
+        roots: values.root ?? [], candidates: ask, discovery: values.discover === false ? false : policy.discovery, ignore: policy.ignore,
+    });
+    return { typed, found, url, gathered, policy };
+}
+
+// Which of what vouches for a member the suite should require of it: shown,
+// numbered as the review numbers it, and asked. Everything, with --yes. On
+// 'suite update', what is required now is marked, and Enter keeps it.
+async function chooseRequire(target: string, inspected: Awaited<ReturnType<typeof inspectMember>>, values: SuiteValues, io: Console,
+    current?: import('./suite.ts').SuiteRequire | undefined): Promise<import('./suite.ts').SuiteRequire | undefined> {
+    const review = REVIEW.judge(inspected.gathered, { policy: inspected.policy });
+    showReview(review, { name: target, url: inspected.url }, io);
+    const numbered = REVIEW.selectable(review);
+    // What a suite can require: a sigstore signer, and good attestations.
+    const offered = numbered.filter(({ evidence }) => evidence.type === 'signature' || (evidence.type === 'attestation' && evidence.verdict === 'good'));
+    const now = (item: REVIEW.ReviewItem) => {
+        const e = item.evidence;
+        if (e.type === 'signature') return current?.identity === e.identity && current?.issuer === e.issuer;
+        if (e.type !== 'attestation') return false;
+        return (current?.attesters ?? []).some((spec) => { const { subject, kind } = parseAttester(spec); return subject === e.did && (!kind || kind === e.kind); });
+    };
+    if (current) {
+        const kept = offered.filter(now).map((item) => numbered.indexOf(item) + 1);
+        io.err(`* required now: ${describeRequire(current)}${kept.length ? ` — ${kept.join(', ')} above` : ''}`);
+        const gone = describeMissing(current, offered.filter(now));
+        if (gone.length) io.err(`  ! not carried by what it serves now: ${gone.join(', ')}`);
+    }
+    let chosen = offered;
+    if (!offered.length) {
+        io.err(`  nothing it carries can be required${current ? ': what is required stays' : ': it is added requiring nothing'}`);
+        return current;
+    }
+    if (!values.yes) {
+        if (!io.ask) throw new Error(`suite: choosing what to require of ${target} needs a terminal — or --yes, for all of it`);
+        const among = offered.map((item) => numbered.indexOf(item) + 1).join(', ');
+        for (;;) {
+            const answer = (await io.ask(`  require which of ${among}? numbers, 'all', 'none', or Enter to ${current ? 'keep what is required now' : 'require nothing'}: `)).trim().toLowerCase();
+            if (!answer) return current;
+            if (answer === 'none' || answer === 'n' || answer === 'no') { chosen = []; break; }
+            if (answer === 'all' || answer === 'a') { chosen = offered; break; }
+            const picked = answer.split(/[\s,]+/).map(Number).map((n) => numbered[n - 1]);
+            if (picked.every((item) => item && offered.includes(item))) { chosen = [...new Set(picked as REVIEW.ReviewItem[])]; break; }
+            io.err(`  '${answer}' is not among ${among}`);
+        }
+    }
+    const signature = chosen.find(({ evidence }) => evidence.type === 'signature')?.evidence as Extract<REVIEW.Evidence, { type: 'signature' }> | undefined;
+    const attesters = [...new Set(chosen.flatMap(({ evidence }) => (evidence.type === 'attestation' ? [formatAttester({ did: evidence.did, kind: evidence.kind })] : [])))];
+    const require = {
+        ...(signature ? { identity: signature.identity, issuer: signature.issuer } : {}),
+        ...(attesters.length ? { attesters } : {}),
+    };
+    return Object.keys(require).length ? require : undefined;
+}
+
+function describeRequire(require: import('./suite.ts').SuiteRequire | undefined): string {
+    const parts = [
+        ...(require?.identity || require?.issuer ? [`signed by ${require.identity ?? 'any identity'} via ${require.issuer ?? 'any issuer'}`] : []),
+        ...(require?.attesters?.length ? [`attested by ${require.quorum !== undefined ? `${require.quorum} of ` : ''}${require.attesters.join(', ')}`] : []),
+    ];
+    return parts.join('; ') || 'nothing';
+}
+
+// What is required that none of `carried` is.
+function describeMissing(require: import('./suite.ts').SuiteRequire, carried: REVIEW.ReviewItem[]): string[] {
+    const missing: string[] = [];
+    if (require.identity && !carried.some(({ evidence }) => evidence.type === 'signature')) missing.push(`the signature by ${require.identity}`);
+    for (const spec of require.attesters ?? []) {
+        const { subject, kind } = parseAttester(spec);
+        if (!carried.some(({ evidence }) => evidence.type === 'attestation' && evidence.did === subject && (!kind || kind === evidence.kind))) missing.push(spec);
+    }
+    return missing;
+}
+
+// One listing, made a member of a spec: inspected, and what to require of it asked.
+async function suiteMember(target: string, where: { for: string; label: string } | undefined, values: SuiteValues, io: Console): Promise<SpecMember> {
+    const LISTING = await import('./listing.ts');
+    const inspected = await inspectMember(target, values);
+    const { typed, found, url } = inspected;
+    const app = LISTING.appOf(found.record);
+    if (where && app && where.for !== app && LISTING.parseListingUri(where.for)) {
+        throw new Error(`suite add: ${target} is a plugin for ${app}, not for ${where.label}`);
+    }
+    io.err(`* ${target} is ${found.uri}, at ${url}`);
+    const require = await chooseRequire(target, inspected, values, io);
+    return {
+        listing: found.uri,
+        label: typed.startsWith('@') ? typed : undefined,
+        ...(where ? { for: where.for, forLabel: where.label !== where.for ? where.label : undefined } : {}),
+        ...(require ? { require } : {}),
+    };
+}
+
+// Which member of a spec 'suite remove' means: as it was added, by its
+// address, or by '@<handle or did>/<name>', resolved.
+async function memberUri(target: string, spec: import('./suite.ts').SuiteSpec): Promise<string> {
+    const typed = target.replace(/^#/, '@');
+    const known = spec.members.find((each) => each.listing === typed || each.label === typed);
+    if (known) return known.listing;
+    const LISTING = await import('./listing.ts');
+    const parsed = LISTING.parseListingTarget(typed);
+    if (!parsed) return typed;
+    if (parsed.who.startsWith('did:')) return LISTING.listingUri(parsed.who, parsed.name);
+    const ATPROTO = await import('./atproto.ts');
+    return LISTING.listingUri((await ATPROTO.resolveHandle(parsed.who)).did, parsed.name);
 }
 
 // The audit gate. The review itself needs judgement, so this command does the
@@ -2137,6 +2812,20 @@ export const OPTIONS = {
     unpublish: {
         as:              { type: 'string' },
         'password-file': { type: 'string' },
+    },
+    suite: {
+        suite:           { type: 'string', short: 's', default: 'suite.json' },
+        for:             { type: 'string' },
+        yes:             { type: 'boolean', short: 'y' },
+        discover:        { type: 'boolean', default: true },
+        root:            { type: 'string', short: 'r', multiple: true },
+        json:            { type: 'boolean' },
+        as:              { type: 'string' },
+        'password-file': { type: 'string' },
+        kind:            { type: 'string' },
+        verdict:         { type: 'string', default: 'good' },
+        note:            { type: 'string' },
+        revoke:          { type: 'boolean' },
     },
     run: RUN_OPTIONS,
     search: {

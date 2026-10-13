@@ -195,7 +195,8 @@ export async function resolveListing(target: string, options: NetworkOptions = {
         did = (await resolveHandle(who, options)).did;
     }
     const record = await fetchListing(did, name, options);
-    if (!record) throw new Error(`${target}: ${did} has no listing called '${name}'`);
+    // Said with the DID, so a caller can look for a suite of that name instead.
+    if (!record) throw Object.assign(new Error(`${target}: ${did} has no listing called '${name}'`), { code: 'ERR_BUNDLE_NOT_LISTED', did, name });
     return { did, name, uri: listingUri(did, name), record };
 }
 

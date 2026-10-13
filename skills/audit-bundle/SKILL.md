@@ -1,6 +1,6 @@
 ---
 name: audit-bundle
-description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle). Use in two situations: before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — and before RUNNING or shipping one you received. Triggers on "audit/review/vet/inspect/check this bundle", "is this safe to sign", "is this safe to run", "what is in this bundle", or diffing one against a previously approved version.
+description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle) — or a suite of them. Use before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — before RUNNING or shipping one you received, and before PUBLISHING or PERMITTING a suite (`bundle suite publish`, `bundle suite attest --kind permitted`). Triggers on "audit/review/vet/inspect/check this bundle/suite", "is this safe to sign", "is this safe to run", "should we permit this suite", "what is in this bundle", or diffing one against a previously approved version.
 ---
 
 # Auditing a bundle
@@ -277,3 +277,56 @@ Two things a diff cannot tell you, so say so rather than implying otherwise:
 Record `baseline` and `baselineSha256` in the verdict so the review is pinned to the
 comparison it actually made, and set `reviewed` to the number of members you read rather
 than the number in the archive.
+
+## Auditing a suite
+
+A suite (`bundle suite`) is not code. It is a list of listings to install together, and for
+each member a **requirement**: a signer, attesters. Auditing one means two things: auditing the
+bundles it names now, and judging whether its requirements are strong enough for what will be
+done with it. Both matter, and the second is the one that is easy to miss.
+
+**Why the requirements are the real subject.** A suite is attested by its hash: the members and
+their requirements, *not* the bytes the members serve. So an attestation that permits a suite
+permits every future release of each member that still meets its requirement. If a member
+requires `published@<publisher>`, permitting the suite permits whatever that publisher
+publishes next. That is reasonable for a publisher you trust, and it is no review at all of the
+next release. A member that requires nothing is permitted whatever its listing serves next.
+Requirements are only checked when someone installs or updates, so this is the whole of what a
+permit for the suite constrains.
+
+Work through it in this order:
+
+1. **Validate it as published.** `bundle suite validate <suite>` (the published suite, as
+   `bundle install` takes it), or `--suite <file>` for a spec about to be published. Exit 0 means
+   the file holds together and every member serves something that carries what it requires
+   *now*. Each line names the member's URL and the hash of what it serves now. `bundle suite
+   show <suite>` prints the suite's own hash, which is what an attestation of it would name.
+   Write that hash into the report.
+2. **Audit each member** with phases 1–3 above, `mode: "run"`. Fetch what the line names, and
+   check its hash matches. A member already audited at that exact hash can be carried over;
+   name the earlier verdict. A plugin (`for`) is reviewed as code that runs inside its app, with
+   the app's authority.
+3. **Judge each requirement**, and list them in the report:
+   - **Nothing required**: a finding (`medium` when permitting). Recommend requiring at least
+     the publisher's signer or a `published` attestation, or permitting that bundle on its own,
+     pinned to its hash.
+   - **A signer only** (`identity` + `issuer`): every future release from that CI workflow is
+     permitted. Name the workflow, and say whether that is acceptable.
+   - **Attesters**: who they are, what `kind` they vouch with, and whether any of them is the
+     publisher themselves. `published@<publisher>` constrains provenance, not content, and an
+     `audited@<independent>` requirement is the strongest thing a suite can say.
+   - **`for`**: each plugin goes to the app it claims (`validate` checks the listing agrees),
+     and a shared scope is intended.
+4. **Verdict.** Answer the caller's question. *Publish it?* That turns on the members' audits
+   and whether the requirements say what the publisher means. *Permit it?* Say plainly what a
+   permit covers: these members, now and in every release that meets these requirements. Where
+   that is more than you can stand behind, recommend tighter requirements (`bundle suite
+   update`), or permitting single bundles (`bundle attest --kind permitted <archive>`), which
+   pins exact bytes. What is said of a bundle itself always wins over what is said of its
+   suite, so one bundle can be prohibited inside a permitted suite.
+
+The machine-readable verdict for a suite uses the same file. `mode` is `"suite"`, `bundle` is the
+suite as named, `sha256` is the suite's hash from `bundle suite show`, and `members` is one entry
+per member: `{ "listing", "url", "sha256", "verdict", "requires" }`. The top-level `verdict` is
+`"fail"` if any member fails, or if any requirement is weaker than what the verdict is being used
+for.

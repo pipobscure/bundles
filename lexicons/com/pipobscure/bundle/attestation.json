@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A statement by the repository's owner about a bundle \u2014 that they vouch for it, or that it is bad \u2014 identified by its whole-file hash \u2014 the hash a bundle signature covers. The record key is that hash in lowercase hex, so there is at most one attestation per account per bundle, and a verifier knows which record to ask for.",
+      "description": "A statement by the repository's owner about a bundle \u2014 that they vouch for it, or that it is bad \u2014 identified by its whole-file hash \u2014 the hash a bundle signature covers \u2014 or about a suite, identified by the hash of what it says (see com.pipobscure.bundle.suite). The record key is that hash in lowercase hex, so there is at most one attestation per account per bundle or suite, and a verifier knows which record to ask for. A good attestation of a suite counts for each bundle installed from it; a bad one refuses the suite, and does not carry over to its bundles.",
       "key": "any",
       "record": {
         "type": "object",
@@ -15,7 +15,7 @@
         "properties": {
           "hash": {
             "type": "string",
-            "description": "The whole-file hash as '<algorithm>:<lowercase hex>', e.g. 'sha256:3f1a\u2026'. Must equal the algorithm the bundle's manifest declares and the record key.",
+            "description": "The whole-file hash as '<algorithm>:<lowercase hex>', e.g. 'sha256:3f1a\u2026'. Must equal the algorithm the bundle's manifest declares and the record key. For a suite: 'sha256:' and the sha256 of the DAG-CBOR encoding of { members }, each member as the suite record carries it.",
             "maxLength": 256
           },
           "kind": {
@@ -27,7 +27,9 @@
               "reproduced",
               "malware",
               "vulnerable",
-              "abandoned"
+              "abandoned",
+              "permitted",
+              "prohibited"
             ],
             "maxLength": 64
           },
