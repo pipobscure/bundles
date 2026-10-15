@@ -40,6 +40,8 @@ process.env['BUNDLE_ATTESTATIONS'] = CACHE;
 process.env['BUNDLE_PLC_DIRECTORY'] = 'https://plc.test';
 process.env['BUNDLE_INSTALL_DIR'] = PATH.join(tmp, 'bin');
 process.env['XDG_STATE_HOME'] = PATH.join(tmp, 'state');
+// On macOS the state directory is under the home directory, whatever XDG says.
+process.env['HOME'] = PATH.join(tmp, 'home');
 // Where the same state, and the user's policy, live on Windows: this suite
 // installs for real, and must never read or write the machine's own.
 process.env['LOCALAPPDATA'] = PATH.join(tmp, 'AppData', 'Local');

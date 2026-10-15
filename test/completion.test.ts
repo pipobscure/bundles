@@ -13,6 +13,8 @@ import { MAIN, ROOT, collector, scratch } from './helpers.ts';
 
 const tmp = scratch('completion');
 process.env['XDG_STATE_HOME'] = PATH.join(tmp, 'state');
+// On macOS the state directory is under the home directory, whatever XDG says.
+process.env['HOME'] = PATH.join(tmp, 'home');
 process.env['LOCALAPPDATA'] = PATH.join(tmp, 'AppData');
 test.after(() => FS.rmSync(tmp, { recursive: true, force: true }));
 

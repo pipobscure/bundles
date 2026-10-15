@@ -152,7 +152,11 @@ export function register(options: RecorderOptions = {}): Manifest | null {
         // for a `.nzip`, one that verifies what it serves), and quietly
         // replacing it here would be the wrong trade for a file list.
         canHandle: (_resolvedPath, stats) => stats.isDirectory(),
-        create: (resolvedPath) => new Recording(resolvedPath),
+        // By its real path: node resolves every file it reads to one, and
+        // refuses any that is not under the root — so a directory reached
+        // through a symlink (any temporary one on macOS, where /var is
+        // /private/var) would refuse every file in it.
+        create: (resolvedPath) => new Recording(FS.realpathSync(resolvedPath)),
     });
     return manifest;
 }

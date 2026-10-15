@@ -197,3 +197,22 @@ test('the preload records a real --vfs-load run: what it read, and nothing it di
         assert.ok(!recorded.has(name), `${name} was never read and should not be listed`);
     }
 });
+
+test('a directory reached through a symlink is recorded as well — every temporary one on macOS is', { skip: process.platform === 'win32' ? 'symlinks to directories need privileges on Windows' : false }, () => {
+    // node resolves each file read to its real path and refuses any outside
+    // the mount's root, so a root given as the symlinked path refused them all.
+    const real = PATH.join(tmp, `linked-real-${counter++}`);
+    FS.mkdirSync(real, { recursive: true });
+    FS.writeFileSync(PATH.join(real, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js' }));
+    FS.writeFileSync(PATH.join(real, 'index.js'), "console.log('ran');\n");
+    const link = `${real}-link`;
+    FS.symlinkSync(real, link);
+
+    const out = `${link}.manifest`;
+    const ran = spawnSync(process.execPath, [
+        '--no-warnings', '--experimental-vfs', '-r', PATH.join(ROOT, 'src', 'record.ts'), `--vfs-load=${link}`,
+    ], { encoding: 'utf-8', env: { ...process.env, BUNDLE_MANIFEST: out } });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /^ran$/m);
+    assert.deepEqual(FS.readFileSync(out, 'utf-8').split('\n').filter(Boolean).sort(), ['index.js', 'package.json']);
+});

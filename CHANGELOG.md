@@ -13,6 +13,11 @@ how to use it is in the [README](README.md) and [docs/](docs/).
 - **On Windows, `.nzip` opens with a node that can run it**: the one on `PATH`, else the one
   running the install, else the newest from nvm-windows, fnm, volta or mise. Installing from npm
   under an older node no longer leaves an association that cannot work.
+- **Recording works through a symlinked directory.** `-r @pipobscure/bundle/record
+  --vfs-load=<dir>` refused every file when `<dir>` was reached through a symlink, as every
+  temporary directory on macOS is; the recording provider now mounts the real path.
+- **The launcher is LF on every checkout**, so one built from a Windows clone runs on unix. CI now
+  runs on macOS too.
 
 ## 0.1.2
 

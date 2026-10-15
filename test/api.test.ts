@@ -171,8 +171,10 @@ test('a CLI running out of a mount still runs an archive, in its own process', a
     await createBundle({ base: source, files: Object.keys(APP), output: unsigned });
     await signBundle({ source: unsigned, output: signed, signer: testSigner() });
 
-    const cli = PATH.join(tmp, 'mounted-cli');
-    FS.mkdirSync(cli, { recursive: true });
+    // By its real path: node's own directory mount refuses every file under a
+    // root reached through a symlink, as every temporary directory on macOS is.
+    FS.mkdirSync(PATH.join(tmp, 'mounted-cli'), { recursive: true });
+    const cli = FS.realpathSync(PATH.join(tmp, 'mounted-cli'));
     FS.cpSync(PATH.join(ROOT, 'dist'), PATH.join(cli, 'dist'), { recursive: true });
     FS.writeFileSync(PATH.join(cli, 'package.json'),
         '{ "name": "mounted-cli", "type": "module", "main": "dist/main.js" }');
