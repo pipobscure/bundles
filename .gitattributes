@@ -1,1 +1,4 @@
 examples/echo-argv/windows/probe.cmd text eol=crlf
+# The launcher is a #!/bin/sh script put in front of archives: with CRLF it
+# would not run anywhere it is meant to.
+shell-base text eol=lf

@@ -117,7 +117,8 @@ export function appMinimum(base: string): { minimum: string; upper: boolean; ran
 /** The launcher, as it is shipped, with `minimum` as what it checks for. */
 export function launcherText(minimum: string = FLOOR): string {
     if (!parts(minimum)) throw new Error(`'${minimum}' is not a node version`);
-    const text = FS.readFileSync(launcherPath(), 'utf-8');
+    // LF, whatever the checkout did: `#!/bin/sh\r` runs nowhere.
+    const text = FS.readFileSync(launcherPath(), 'utf-8').replace(/\r\n/g, '\n');
     if (!/^need=\S+$/m.test(text)) throw new Error(`${launcherPath()} has no 'need=' line to set`);
     return text.replace(/^need=\S+$/m, `need=${minimum}`);
 }

@@ -5,10 +5,13 @@
 # API creeping in unnoticed. A pinned version, so a red run means this
 # repository changed, never that a release moved underneath it.
 #
-# Linux and Windows in parallel, because the two differ in ways this package
-# cares about: a `#!` launcher is a unix mechanism, and what replaces it there
-# is a file association and PATHEXT. The publish workflow hangs off this one
-# completing successfully, so nothing is released until both have passed.
+# Linux, macOS and Windows in parallel, because they differ in ways this
+# package cares about: a `#!` launcher is a unix mechanism, run by whatever
+# /bin/sh the system has (dash, bash, or macOS's own), with version managers
+# keeping node in different places on each; and what replaces the launcher on
+# Windows is a file association and PATHEXT. The publish workflow hangs off
+# this one completing successfully, so nothing is released until all three
+# have passed.
 #
 # The executable tests need a node whose --build-sea understands "vfsArchive"
 # (nodejs/node#65810), which 26.11.0 is the first release to ship — so here
@@ -41,6 +44,7 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, name: 'linux · node 26.11.1' }
+          - { os: macos-latest, name: 'macos · node 26.11.1' }
           - { os: windows-latest, name: 'windows · node 26.11.1' }
     steps:
       - name: Check out

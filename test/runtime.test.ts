@@ -55,6 +55,8 @@ test('the launcher is written with the minimum it checks for, and is otherwise t
     assert.match(written, /^need=27\.1\.0$/m);
     assert.equal(written.replace(/^need=.*$/m, ''), shipped.replace(/^need=.*$/m, ''));
     assert.throws(() => launcherText('27; rm -rf /'), /not a node version/);
+    // A CRLF checkout (Windows, without .gitattributes) must not make a CRLF launcher: `#!/bin/sh\r` runs nowhere.
+    assert.ok(!launcherText('27.1.0').includes('\r'));
 });
 
 // ------------------------------------------------------- the launcher, run ---
