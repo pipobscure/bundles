@@ -18,6 +18,7 @@ import {
 } from './review.ts';
 import { inheritFor, minimumsFor } from './suite-install.ts';
 import type { NetworkOptions } from './atproto.ts';
+import { FLOOR, windowsNode, type FoundNode } from './runtime.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -1281,6 +1282,13 @@ const PROG_ID = 'NodeBundle';
  * file type that runs node with the archive mounted, and put the extension on
  * PATHEXT so the name alone is enough.
  *
+ * Which node is the one `windowsNode()` finds, as a `#!` launcher would on
+ * unix: the one on PATH when it is new enough, else the one running this,
+ * else the newest a version manager has. So installing this package from npm
+ * under an older node (`npx @pipobscure/bundle install`) still leaves `.nzip`
+ * opening with one that runs it. With none to be found, the association is
+ * left as it is, and the notes say why.
+ *
  * Everything here is per-user — HKCU and `HKCU\Environment`, never `/M` — so it
  * needs no administrator. A machine-wide association is an installer's job, and
  * the node installer is the right place for it. Both halves are idempotent:
@@ -1288,7 +1296,15 @@ const PROG_ID = 'NodeBundle';
  */
 export function ensureWindowsAssociation(name = 'a bundle'): string[] {
     if (process.platform !== 'win32') return [];
-    const notes = [...associate(), ...extendPathExt()];
+    const node = windowsNode();
+    if (!node) {
+        return [
+            `! no node ${FLOOR} or newer: not on PATH, not this one (${process.version}), and no version manager (nvm-windows, fnm, volta, mise) has one`,
+            `  .nzip files will not open until one is installed — then run 'bundle install' again`,
+            ...shadowed(),
+        ];
+    }
+    const notes = [...associate(node), ...extendPathExt()];
     if (notes.length) notes.push(`${name} runs by name once a new terminal picks that up`);
     notes.push(...shadowed());
     return notes;
@@ -1309,8 +1325,8 @@ export function ensureWindowsAssociation(name = 'a bundle'): string[] {
  * someone may have configured, and `/s` makes the quoting predictable — the
  * outer quotes are stripped and the rest is taken literally.
  */
-function openCommand(): string {
-    const node = `"${process.execPath}" --experimental-vfs`;
+function openCommand(path: string): string {
+    const node = `"${path}" --experimental-vfs`;
     return `cmd /d /s /c "if exist "%1" (${node} --vfs-load="%1" -- %~2) else (${node} --vfs-load="%1.nzip" -- %~2)"`;
 }
 
@@ -1318,8 +1334,8 @@ function openCommand(): string {
 // name the ProgID, and the ProgID has to carry the command. Checking only the
 // second would skip the write for a `.nzip` that some other tool has since
 // claimed — a silent no-op where the user asked for an association.
-function associate(): string[] {
-    const command = openCommand();
+function associate(node: FoundNode): string[] {
+    const command = openCommand(node.path);
     const notes: string[] = [];
 
     if (query('HKCU\\Software\\Classes\\.nzip', '') !== PROG_ID) {
@@ -1328,7 +1344,7 @@ function associate(): string[] {
     }
     if (query(`HKCU\\Software\\Classes\\${PROG_ID}\\shell\\open\\command`, '') !== command) {
         reg(['add', `HKCU\\Software\\Classes\\${PROG_ID}\\shell\\open\\command`, '/ve', '/d', command, '/f']);
-        notes.push(`${PROG_ID} now opens with this node (${process.execPath})`);
+        notes.push(`${PROG_ID} now opens with node ${node.version} (${node.path}, ${node.from === 'PATH' ? 'on PATH' : node.from === 'this process' ? 'the one running this' : `from ${node.from}`})`);
     }
     return notes;
 }

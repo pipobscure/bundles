@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import * as CRYPTO from 'node:crypto';
 import { createBundle, signBundle, verifyBundleSync, inspectBundle } from '../src/api.ts';
+import { prefixLength } from '../src/archive.ts';
 import { moduleFiles, packageRoot } from '../src/files.ts';
 import { CHAIN_PEM, LEAF_KEY, ROOT_PEM, SHELL_BASE, WINDOWS, scratch, testSigner } from './helpers.ts';
 
@@ -190,11 +191,13 @@ test('the bin is the signed archive, and it runs itself', { skip: SHEBANG }, asy
 
 test('the bin is inspectable without running it', async () => {
     await bin();
-    // The whole argument for having no wrapper: what it does is legible from
-    // the first hundred bytes, and the rest is a zip anybody can open.
-    const head = FS.readFileSync(BIN).subarray(0, 100).toString('ascii');
-    assert.match(head, /^#!/);
-    assert.match(head, /--vfs-load="\$0"/);
+    // The whole argument for having no wrapper: what runs first is a short
+    // shell script anyone can read — it finds a node and hands the archive
+    // to it — and the rest is a zip anybody can open.
+    const head = FS.readFileSync(BIN).subarray(0, prefixLength(BIN)).toString('utf-8');
+    assert.match(head, /^#!\/bin\/sh\n/);
+    assert.ok(head.length < 4096, `the launcher is ${head.length} bytes`);
+    assert.match(head, /^exec "\$node" --no-warnings --experimental-vfs --vfs-load="\$0" -- "\$@"$/m);
 
     assert.equal(verifyBundleSync(BIN, { roots: [ROOT_PEM] }).state, 'valid');
     assert.ok(inspectBundle(BIN).members.includes('package.json'));

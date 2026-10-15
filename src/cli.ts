@@ -3,7 +3,7 @@ import * as PATH from 'node:path';
 import { parseArgs } from 'node:util';
 import { createBundle, signBundle, signedName, verifyBundle, runBundle, fileSigner } from './api.ts';
 import { members, parseDate } from './archive.ts';
-import { launcherPath, packageVersion } from './files.ts';
+import { packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
 import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
@@ -74,7 +74,14 @@ export const HELP: Record<string, string> = {
                         should: 2024-05-01T12:00:00Z, or a date (UTC midnight)
 
   the prefix decides the archive's shape, and is part of what an audit
-  reviews; signing keeps it. Every member records its own digest, and the
+  reviews; signing keeps it.
+
+  the launcher runs the node on PATH when that meets the app's engines.node
+  (from package.json in --base, never below 26.11.1), else the newest one
+  nvm, fnm, volta, asdf, mise or n has installed, and otherwise exits 69
+  saying which node to install. Only the lower bound is checked.
+
+  every member records its own digest, and the
   archive records its whole-file hash, so even unsigned it says what its
   bytes should be.
 
@@ -832,8 +839,9 @@ async function create(args: string[], io: Console): Promise<number> {
     // The prefix is the archive's shape, decided here and nowhere else: it is
     // part of what an audit reviews, and signing keeps it. `--launcher` is
     // `--prefix <this package's shell-base>`, spelled so that nobody has to
-    // know the prefix ships inside node_modules.
-    let prefix = values.launcher ? launcherPath() : values.prefix;
+    // know the prefix ships inside node_modules — with the node it asks for
+    // set to what the app's engines.node says (see runtime.ts).
+    let prefix = values.prefix;
     // A verifying node built as `--output node-verifying` is `node-verifying.exe`
     // on Windows; `--prefix node-verifying` means that one.
     if (prefix && process.platform === 'win32' && !FS.existsSync(prefix) && FS.existsSync(`${prefix}.exe`)) prefix = `${prefix}.exe`;
@@ -852,6 +860,15 @@ async function create(args: string[], io: Console): Promise<number> {
     const files = [...new Set(listing.split(/\r?\n/).filter(Boolean))].sort();
     if (!files.length) throw new Error('create: the file list is empty');
 
+    // Written last, so nothing between here and the archive can leave it behind.
+    let launcher: ReturnType<typeof import('./runtime.ts').writeLauncher> | undefined;
+    if (values.launcher) {
+        launcher = (await import('./runtime.ts')).writeLauncher(values.base);
+        prefix = launcher.path;
+        io.err(`* launcher: runs with node ${launcher.minimum} or newer${launcher.range !== undefined ? ` (engines.node '${launcher.range}')` : ''}`);
+        if (launcher.upper) io.err(`! engines.node '${launcher.range}' also has an upper bound, which the launcher does not check: it runs with any node from ${launcher.minimum} on`);
+    }
+
     for (const file of files) io.err(`+ ${file}`);
     io.err(values.key
         ? `* signed archive (${files.length} members, ${values.hash} digests, ${values.sign} signature)`
@@ -864,7 +881,7 @@ async function create(args: string[], io: Console): Promise<number> {
         hashAlg: values.hash, signAlg: values.sign,
         key: values.key ? FS.readFileSync(values.key) : undefined,
         chain: values.chain ? FS.readFileSync(values.chain, 'utf-8') : undefined,
-    });
+    }).finally(() => { if (launcher) FS.rmSync(launcher.dir, { recursive: true, force: true }); });
     io.err(`* ${values.key ? 'signed' : 'hash'}: ${res.hash}`);
     return 0;
 }

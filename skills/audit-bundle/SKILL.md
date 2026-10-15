@@ -102,9 +102,20 @@ a finding.
 
 **The prefix is part of the review.** Whatever precedes the archive runs before
 anything in it does, and signing keeps it as it is. `bundle audit <archive>` prints a
-`#!` launcher in full; read it like any other script — it should do nothing but start
-node on the archive itself (`exec node … --vfs-load="$0" -- "$@"`), and anything else in
-it is a finding. A binary prefix (an executable built by `bundle sea`) is reported by
+`#!` launcher in full; read it like any other script. The one `bundle create --launcher`
+writes does exactly this, and nothing else:
+
+- reads its minimum from a `need=` line (the app's `engines.node`, never below 26.11.1);
+- runs `node --version` on the `node` on `PATH`;
+- if that is too old, lists the version directories of nvm, fnm, volta, asdf, mise and n —
+  only directory names, nothing sourced, nothing installed — and runs `--version` on the
+  newest that qualifies;
+- prints an error and exits 69 when nothing qualifies, or else ends in
+  `exec "$node" --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"`.
+
+Compare it against the `shell-base` of the `@pipobscure/bundle` version that built it, with
+only the `need=` line allowed to differ. Anything else in it — a download, a sourced file,
+an environment variable set, a different `exec` — is a finding. A binary prefix (an executable built by `bundle sea`) is reported by
 size and hash: say what it is, and, against a baseline, whether it changed.
 
 Then reconcile:

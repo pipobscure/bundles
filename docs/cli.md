@@ -119,11 +119,33 @@ member declares the algorithms, and the archive records its whole-file hash
 (`UNSIGNED:<hash>` in its end comment). So even unsigned, it says what its bytes should be,
 and anything that hashes it notices if they are not.
 
-**This is where an archive's shape is decided.** `--launcher` puts this package's two-line
+**This is where an archive's shape is decided.** `--launcher` puts this package's
 `#!/bin/sh` launcher in front, so the result runs by name. `--prefix` puts something else
 there: a launcher of your own, or a verifying node built by [`sea`](#sea). Without either it
 is a plain archive, to be run from a mount. The prefix runs before anything in the archive
 does, so it is part of what [`audit`](#audit) reviews, and [`sign`](#sign) keeps it as it is.
+
+**The launcher finds a node new enough for the app.** It runs the `node` on `PATH` whenever
+that is new enough, so the node you chose always wins. Otherwise it runs the newest one a
+version manager has installed: nvm, fnm, volta, asdf, mise or n, each looked for where it keeps
+its versions (`NVM_DIR`, `FNM_DIR`, `VOLTA_HOME`, `ASDF_DATA_DIR`, `MISE_DATA_DIR`, `N_PREFIX`,
+or their defaults). It only reads their directories; nothing is installed or switched. With
+none to be found, it exits `69` and says what it found and what to install:
+
+```
+mdview: needs node 27.1.0 or newer, and none was found
+  on PATH: node v26.11.1 at /usr/bin/node
+  version managers (nvm, fnm, volta, asdf, mise, n): none has one installed
+  install node 27 or newer — e.g. 'nvm install 27' or 'fnm install 27', or from https://nodejs.org — and run this again
+```
+
+"New enough" is the app's `engines.node` in the `package.json` at `--base`, written into the
+launcher's `need=` line when the archive is created, and never below 26.11.1, the first node
+that can run a bundle at all. Only the lower bound is checked: a range with an upper one
+(`^27`, `<29`) gets a warning, and runs on any node from its minimum on. A range the tool
+cannot read stops `create`. A pre-release counts as coming before its release, so `27.0.0-rc.1`
+does not satisfy `>=27.0.0`. The check costs one `node --version` when the node on `PATH`
+will do. Windows runs no launcher; see [`install`](#install) for how it picks a node.
 
 **The same files make the same archive.** Members are in the order of the sorted file list,
 each dated with its file's own modification time, never the time of the build, and
@@ -147,7 +169,7 @@ and a signed copy are around, call the unsigned one `app.unsigned.nzip`: signing
 | `-b, --base <dir>` | the directory the file list is relative to (default: `.`) |
 | `-f, --files <file>` | read the file list from here (default: stdin) |
 | `-o, --output <file>` | write the archive here (default: stdout) |
-| `-l, --launcher` | put this package's `#!/bin/sh` launcher in front, so the result runs by name. The usual way to make a program. |
+| `-l, --launcher` | put this package's `#!/bin/sh` launcher in front, so the result runs by name, with a node new enough for the app's `engines.node`. The usual way to make a program. |
 | `-p, --prefix <file>` | put this in front instead: a launcher of your own, or a verifying node |
 | `--date <iso8601>` | date every member with this one time: `2024-05-01T12:00:00Z`, `2024-05-01T14:00:00+02:00`, or a date alone (`2024-05-01`, midnight UTC). ISO 8601 only, with an offset whenever there is a time. Overrides the files' times and `SOURCE_DATE_EPOCH` |
 | `-k, --key <file>` | sign as it is built, with this private key (PEM) — only with `--chain` |
@@ -844,7 +866,12 @@ Windows, where it is what makes the file runnable. The file goes to `~/.local/bi
 executable, and you are told if that directory is not on your `PATH`.
 
 On Windows it also registers `.nzip` for the current user, adds it to `PATHEXT`, and
-broadcasts the change so a new terminal sees it. It writes `HKCU\Environment` directly rather
+broadcasts the change so a new terminal sees it. The association names one node for every
+`.nzip`, chosen as a launcher would choose it: the `node.exe` on `PATH` when it is 26.11.1 or
+newer, else the node running the install, else the newest a version manager has installed
+(nvm-windows, fnm, volta, mise). So installing this package from npm under an older node still
+leaves `.nzip` opening with one that runs it. With none to be found, the association is left
+as it is, and the install says what to do. It writes `HKCU\Environment` directly rather
 than through `setx`, which would freeze a copy of the machine's value. Both halves are checked
 before they are written, so installing twice changes nothing. An `.nzip` default set in
 Windows' app settings is reported rather than overridden. cmd runs an archive by name, or by an

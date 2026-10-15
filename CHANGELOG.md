@@ -3,6 +3,17 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **The launcher finds a node new enough for the app.** A bundle made with `create --launcher`
+  runs the `node` on `PATH` when that meets the app's `engines.node` (never below 26.11.1),
+  else the newest one nvm, fnm, volta, asdf, mise or n has installed, and otherwise exits 69
+  saying what it found and what to install. `create` writes the minimum into the launcher, and
+  warns when `engines.node` also has an upper bound, which is not checked.
+- **On Windows, `.nzip` opens with a node that can run it**: the one on `PATH`, else the one
+  running the install, else the newest from nvm-windows, fnm, volta or mise. Installing from npm
+  under an older node no longer leaves an association that cannot work.
+
 ## 0.1.2
 
 - **For now, `bundle suite` writes a plugin into a suite only with its app.** `suite add`,

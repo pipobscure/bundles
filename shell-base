@@ -1,2 +1,64 @@
 #!/bin/sh
-exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"
+# Runs the archive after this script with a node that is new enough for it:
+# the node on PATH, when it is; otherwise the newest one a version manager has
+# installed (nvm, fnm, volta, asdf, mise, n); otherwise an error saying so.
+# Nothing is installed or changed. `bundle create --launcher` sets `need` to
+# the app's engines.node minimum, never below what --vfs-load needs.
+need=26.11.1
+
+# A version as four numbers, "27 1 0 1": a leading v and any +build left out,
+# a missing part 0, and last 0 for a pre-release (27.1.0-rc.1), which comes
+# before its release, else 1. Fails for anything that is not a version.
+triple() {
+    v=${1#v}; v=${v%%+*}; r=1
+    case $v in *-*) r=0; v=${v%%-*} ;; esac
+    case $v in ''|.*|*.|*..*|*[!0-9.]*) return 1 ;; esac
+    o=$IFS; IFS=.; set -- $v; IFS=$o
+    echo "${1:-0} ${2:-0} ${3:-0} $r"
+}
+
+# Whether version $1 is at least version $2.
+atleast() {
+    x=$(triple "$1") && y=$(triple "$2") || return 1
+    set -- $x $y
+    [ "$1" -ne "$5" ] && { [ "$1" -gt "$5" ]; return; }
+    [ "$2" -ne "$6" ] && { [ "$2" -gt "$6" ]; return; }
+    [ "$3" -ne "$7" ] && { [ "$3" -gt "$7" ]; return; }
+    [ "$4" -ge "$8" ]
+}
+
+# Every node a version manager keeps under $1, in $1/<version>$2: the newest
+# that is new enough is kept in `best`. Only directory names are read here.
+look() {
+    for d in "$1"/*/; do
+        v=${d%/}; v=${v##*/}
+        [ -x "$d$2" ] && atleast "$v" "$need" || continue
+        [ -n "$best" ] && atleast "$bestv" "$v" && continue
+        best=$d$2 bestv=$v
+    done
+}
+
+node=$(command -v node) && have=$("$node" --version 2>/dev/null) && atleast "$have" "$need" || {
+    best= bestv=
+    data=${XDG_DATA_HOME:-$HOME/.local/share}
+    look "${NVM_DIR:-$HOME/.nvm}/versions/node" bin/node
+    for d in "${FNM_DIR:-$data/fnm}" "$HOME/Library/Application Support/fnm" "$HOME/.fnm"; do
+        look "$d/node-versions" installation/bin/node
+    done
+    look "${VOLTA_HOME:-$HOME/.volta}/tools/image/node" bin/node
+    look "${ASDF_DATA_DIR:-$HOME/.asdf}/installs/nodejs" bin/node
+    look "${MISE_DATA_DIR:-$data/mise}/installs/node" bin/node
+    look "${N_PREFIX:-/usr/local}/n/versions/node" bin/node
+    # The directory's name is the manager's word for it; the node itself confirms.
+    if [ -n "$best" ] && atleast "$("$best" --version 2>/dev/null)" "$need"; then
+        node=$best
+    else
+        echo "${0##*/}: needs node $need or newer, and none was found" >&2
+        if [ -n "$node" ]; then echo "  on PATH: node ${have:-of unknown version} at $node" >&2
+        else echo "  on PATH: no node" >&2; fi
+        echo "  version managers (nvm, fnm, volta, asdf, mise, n): none has one installed" >&2
+        echo "  install node ${need%%.*} or newer — e.g. 'nvm install ${need%%.*}' or 'fnm install ${need%%.*}', or from https://nodejs.org — and run this again" >&2
+        exit 69
+    fi
+}
+exec "$node" --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"

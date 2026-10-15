@@ -259,6 +259,12 @@ bundle verify "$(npm root)/@pipobscure/bundle/bundle.nzip" # who signed it
 answer every question about it without running anything. See
 [the tool as a bundle of itself](../HISTORY.md#3-shipping-the-tool-as-a-bundle-of-itself).
 
+The launcher picks the node itself: the one on `PATH` when it meets the app's `engines.node`
+(written into it when the archive is created, never below 26.11.1), otherwise the newest a
+version manager has installed, read from their directories without running them. A node the
+person chose always wins over one a manager has lying around, and a missing one is a clear
+error rather than node rejecting `--experimental-vfs`.
+
 Running it by name does not verify it — the kernel gives a `#!` launcher no preload to carry
 a provider, and this package says so rather than pretending otherwise. Verification is a
 separate act, done with a copy of `bundle` you already trust: `bundle verify bundle.nzip` to

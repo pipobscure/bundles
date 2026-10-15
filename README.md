@@ -132,7 +132,9 @@ bundle audit --check app.unsigned.nzip && bundle sign app.unsigned.nzip     # ->
   both: `bundle sign` writes `app.nzip` next to it. Any other name is signed in place.
 - **The shape is decided when you create it, so it gets reviewed.** `--launcher` makes a file
   you run by name. The launcher is a little shell script that runs first, so the audit shows
-  it, and signing keeps it exactly as reviewed.
+  it, and signing keeps it exactly as reviewed. It runs your app with the `node` on `PATH` when
+  that meets your `engines.node`, else with one from nvm, fnm, volta, asdf, mise or n, and
+  otherwise says which node to install.
 - **Observing beats guessing.** Dynamic `require`, data files and conditional imports are
   exactly what static analysis misses, and exactly what a run reads.
 - **The audit is a gate you choose.** `bundle skill` installs a
