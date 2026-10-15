@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.1.3
 
 - **The launcher finds a node new enough for the app.** A bundle made with `create --launcher`
   runs the `node` on `PATH` when that meets the app's `engines.node` (never below 26.11.1),
