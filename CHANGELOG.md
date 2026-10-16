@@ -3,6 +3,19 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## 0.1.5
+
+- **Commands in a row sign in once.** An app-password session is kept for five minutes, so a
+  script publishing and attesting one command after another makes one `createSession` rather
+  than one per command; that call is among the most tightly rate-limited a PDS has. It is kept
+  in `sessions/` in the state directory, encrypted with a key derived from the app password, so
+  the file is worth nothing without the password. A session the PDS turns down is signed in for
+  again, once. `BUNDLE_ATPROTO_SESSION_TTL` sets how long; `0` keeps none. OAuth sessions are
+  still never kept. Every command that writes to an account shares it.
+- **`attest --from` reads the file `publish --from` does**, fetching each entry's archive from
+  its `url` or `domain`, so one file both lists a release and vouches for it. `--from` now
+  completes file names in the shell.
+
 ## 0.1.4
 
 - **🌳 is the project's icon**, and `.nzip` files wear it. `bundle install` registers the file
