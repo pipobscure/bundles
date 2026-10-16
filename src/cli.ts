@@ -14,6 +14,7 @@ import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, ca
 export { STATES };
 import * as SKILLS from './skill.ts';
 import * as REVIEW from './review.ts';
+import { PLAIN, styleFor, bytes, plural, type Style, type Mark } from './style.ts';
 import type { Validation, Seen } from './install.ts';
 
 // Argument parsing and reporting, and nothing else. Every command below is a
@@ -725,6 +726,59 @@ export interface Console {
     ask?: ((question: string) => Promise<string>) | undefined;
     /** Open a URL for a person to sign in at (default: the system browser). */
     open?: ((url: string) => void) | undefined;
+    /**
+     * How each stream is formatted (see style.ts). Without it, both are plain:
+     * the line-oriented text a script reads, which is what tests see too.
+     */
+    style?: { out: Style; err: Style } | undefined;
+}
+
+/** The styles `io` writes with: plain unless it says otherwise. */
+export function styles(io: Console): { o: Style; e: Style } {
+    return { o: io.style?.out ?? PLAIN, e: io.style?.err ?? PLAIN };
+}
+
+// Who signed or vouched for something, as a person reads it: a headline short
+// enough for one line, and the detail under it. A sigstore identity is a URL
+// or an address and its issuer another URL, which side by side run off any
+// terminal; the commonest — a GitHub Actions workflow — reads best taken apart
+// into the repository, the workflow, and the ref.
+function signerLines(o: Style, identity: string, issuer?: string | undefined): string[] {
+    const github = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/\.github\/workflows\/([^@]+)@(.+)$/.exec(identity);
+    if (github && (!issuer || issuer === 'https://token.actions.githubusercontent.com')) {
+        const [, repository, workflow, ref] = github as unknown as [string, string, string, string];
+        return [`${o.bold(repository)} ${o.dim('via GitHub Actions')}`, o.dim(`${workflow} @ ${ref.replace(/^refs\/(?:heads|tags)\//, '')}`)];
+    }
+    return [o.bold(identity), ...(issuer ? [o.dim(`via ${issuer}`)] : [])];
+}
+
+function attesterLines(o: Style, who: { did: string; handle?: string | undefined; kind?: string | undefined; via?: string | undefined }): string[] {
+    return [
+        `${o.bold(who.handle ?? who.did)}${who.kind ? ` as ${who.kind}` : ''}`,
+        ...(who.handle ? [o.dim(who.did)] : []),
+        ...(who.via ? [o.dim(`via ${who.via}`)] : []),
+    ];
+}
+
+// An attester as a policy or a record writes one: `kind@did`, or a bare DID.
+function attesterSpecLines(o: Style, spec: string): string[] {
+    const { subject, kind } = parseAttester(spec);
+    return attesterLines(o, { did: subject, kind });
+}
+
+// A mark and a verb with the first line beside them, and the rest lined up
+// under the words after the mark.
+function marked(o: Style, indent: string, mark: Mark, verb: string, lines: string[], after = ''): string[] {
+    const [first = '', ...rest] = lines;
+    return [`${indent}${o.mark(mark, `${verb}${first ? ` ${first}` : ''}`)}${after}`, ...rest.map((line) => `${indent}   ${line}`)];
+}
+
+// What other modules log — install progress, sign-in prompts, waits on a rate
+// limit — goes to stderr with its markers in the style of that stream.
+function logger(io: Console): (line: string) => void {
+    const { e } = styles(io);
+    if (!e.people) return (line) => io.err(line);
+    return (line) => { for (const each of line.split('\n')) io.err(e.line(each)); };
 }
 
 const CONSOLE: Console = {
@@ -741,6 +795,7 @@ const CONSOLE: Console = {
             }
         }
         : undefined,
+    style: { out: styleFor(process.stdout), err: styleFor(process.stderr) },
 };
 
 /** The exit code for an install or update that needs a decision nobody made, or that was declined. */
@@ -804,7 +859,7 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
         }
         return await command(rest, io);
     } catch (err) {
-        io.err(`error: ${message(err)}`);
+        io.err(styles(io).e.error(message(err)));
         return 70;
     }
 }
@@ -852,9 +907,10 @@ async function create(args: string[], io: Console): Promise<number> {
     // same bytes only in the same timezone. Any timezone is fine for anyone
     // who means it; UTC is the one every rebuild can agree on.
     const here = Temporal.Now.zonedDateTimeISO();
+    const { e } = styles(io);
     if (date && !here.equals(here.withTimeZone('UTC'))) {
-        io.err(`! the timezone here is ${here.timeZoneId}, not UTC: ZIP times are written in local time, so only a build in ${here.timeZoneId} ` +
-            'with the same --date makes this same archive — build with TZ=UTC for one that is the same anywhere');
+        io.err(e.warn(`the timezone here is ${here.timeZoneId}, not UTC: ZIP times are written in local time, so only a build in ${here.timeZoneId} ` +
+            'with the same --date makes this same archive — build with TZ=UTC for one that is the same anywhere'));
     }
     const listing = values.files ? FS.readFileSync(values.files, 'utf-8') : await readStdin();
     const files = [...new Set(listing.split(/\r?\n/).filter(Boolean))].sort();
@@ -865,16 +921,24 @@ async function create(args: string[], io: Console): Promise<number> {
     if (values.launcher) {
         launcher = (await import('./runtime.ts')).writeLauncher(values.base);
         prefix = launcher.path;
-        io.err(`* launcher: runs with node ${launcher.minimum} or newer${launcher.range !== undefined ? ` (engines.node '${launcher.range}')` : ''}`);
-        if (launcher.upper) io.err(`! engines.node '${launcher.range}' also has an upper bound, which the launcher does not check: it runs with any node from ${launcher.minimum} on`);
+        io.err(e.note(`launcher: runs with node ${launcher.minimum} or newer${launcher.range !== undefined ? ` (engines.node '${launcher.range}')` : ''}`));
+        if (launcher.upper) io.err(e.warn(`engines.node '${launcher.range}' also has an upper bound, which the launcher does not check: it runs with any node from ${launcher.minimum} on`));
     }
 
-    for (const file of files) io.err(`+ ${file}`);
-    io.err(values.key
-        ? `* signed archive (${files.length} members, ${values.hash} digests, ${values.sign} signature)`
-        : `* unsigned archive (${files.length} members, ${values.hash} digests)`);
-    if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
-    if (date) io.err(`* every member dated ${date.round({ smallestUnit: 'second', roundingMode: 'floor' }).toString()}`);
+    // A person is told how many; a log gets the list.
+    if (e.people) {
+        const what = values.output ? e.bold(values.output) : 'an archive';
+        io.err(e.bundle(`building ${what}  ${e.dim(`${plural(files.length, 'member')}, ${values.hash} digests${values.key ? `, ${values.sign} signature` : ', unsigned'}`)}`));
+        if (prefix) io.err(`   ${e.dim('prefix')}  ${launcher ? 'the #! launcher' : prefix}  ${e.dim(bytes(FS.statSync(prefix).size))}`);
+        if (date) io.err(`   ${e.dim('dated')}   ${date.round({ smallestUnit: 'second', roundingMode: 'floor' }).toString()}`);
+    } else {
+        for (const file of files) io.err(`+ ${file}`);
+        io.err(values.key
+            ? `* signed archive (${files.length} members, ${values.hash} digests, ${values.sign} signature)`
+            : `* unsigned archive (${files.length} members, ${values.hash} digests)`);
+        if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
+        if (date) io.err(`* every member dated ${date.round({ smallestUnit: 'second', roundingMode: 'floor' }).toString()}`);
+    }
 
     const res = await createBundle({
         base: values.base, files, prefix, output: values.output, date,
@@ -882,7 +946,9 @@ async function create(args: string[], io: Console): Promise<number> {
         key: values.key ? FS.readFileSync(values.key) : undefined,
         chain: values.chain ? FS.readFileSync(values.chain, 'utf-8') : undefined,
     }).finally(() => { if (launcher) FS.rmSync(launcher.dir, { recursive: true, force: true }); });
-    io.err(`* ${values.key ? 'signed' : 'hash'}: ${res.hash}`);
+    io.err(!e.people ? `* ${values.key ? 'signed' : 'hash'}: ${res.hash}`
+        : values.key ? e.signature(`signed  ${e.dim(String(res.hash))}`)
+        : `   ${e.dim('hash')}    ${e.dim(String(res.hash))}`);
     return 0;
 }
 
@@ -902,10 +968,15 @@ async function sign(args: string[], io: Console): Promise<number> {
     if (!source) throw new Error('sign: an archive path is required');
     if (Boolean(values.key) !== Boolean(values.chain)) throw new Error('sign: --key and --chain must be given together');
 
-    for (const name of members(source)) io.err(`+ ${name}`);
+    const { e } = styles(io);
     const { prefixLength } = await import('./archive.ts');
     const prefix = prefixLength(source);
-    if (prefix) io.err(`* keeping its ${prefix}-byte prefix`);
+    if (e.people) {
+        io.err(e.bundle(`${e.bold(source)}  ${e.dim(`${plural(members(source).length, 'member')}${prefix ? `, keeping its ${bytes(prefix)} prefix` : ''}`)}`));
+    } else {
+        for (const name of members(source)) io.err(`+ ${name}`);
+        if (prefix) io.err(`* keeping its ${prefix}-byte prefix`);
+    }
 
     const signer = await chooseSigner(values, io);
 
@@ -918,8 +989,13 @@ async function sign(args: string[], io: Console): Promise<number> {
         source, output, executable: values.executable,
         hashAlg: values.hash, signAlg: values.sign, signer,
     });
-    io.err(`* signed: ${res.hash}`);
-    if (res.output) io.err(`* wrote ${res.output} (${res.size} bytes)`);
+    if (e.people) {
+        io.err(e.signature(`signed  ${e.dim(String(res.hash))}`));
+        if (res.output) io.err(e.bundle(`wrote ${e.bold(res.output)}  ${e.dim(bytes(res.size ?? 0))}`));
+    } else {
+        io.err(`* signed: ${res.hash}`);
+        if (res.output) io.err(`* wrote ${res.output} (${res.size} bytes)`);
+    }
     return 0;
 }
 
@@ -941,7 +1017,7 @@ async function check(args: string[], io: Console): Promise<number> {
         trustedRoot: values['sigstore-root'],
         attesters, quorum, maxAge, block,
     });
-    report(res, Boolean(values.json), io);
+    report(res, Boolean(values.json), io, archive);
     return STATES[res.state].code;
 }
 
@@ -965,6 +1041,7 @@ async function attest(args: string[], io: Console): Promise<number> {
     // hold together stops the lot: a release is attested whole or not at all.
     // Vouching for bytes that do not hold together is never what anyone means
     // — and a warning about them is a warning about a file nobody is offered.
+    const { o, e } = styles(io);
     const checked: { archive: string; hashAlg: string; hash: string }[] = [];
     for (const archive of archives) {
         const hashed = wholeFileHash(archive);
@@ -972,11 +1049,13 @@ async function attest(args: string[], io: Console): Promise<number> {
         if (!values.revoke) {
             const res = await verifyBundle(archive, { roots: values.root ?? [], deep: true, integrity: true });
             if (res.state === 'invalid') {
-                io.err(`error: refusing to attest ${archive}: ${res.reason}`);
+                io.err(e.error(`refusing to attest ${archive}: ${res.reason}`));
                 return STATES.invalid.code;
             }
             if (res.hash !== hashed.hash) throw new Error(`attest: ${archive} changed while it was being checked`);
-            io.err(`* ${archive}: ${res.signed ? 'signed' : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
+            io.err(e.people
+                ? e.bundle(`${e.bold(archive)}  ${e.dim(`${res.signed ? 'signed' : 'unsigned'}, ${plural(res.digests?.size ?? 0, 'member')}, all digests match`)}`)
+                : `* ${archive}: ${res.signed ? 'signed' : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
         }
         checked.push({ archive, ...hashed });
     }
@@ -991,20 +1070,31 @@ async function attest(args: string[], io: Console): Promise<number> {
     // One sign-in for everything named, and nothing kept afterwards.
     const session = password
         ? await ATPROTO.login(identifier, password)
-        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open });
-    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+        : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open });
+    io.err(signedIn(session, e));
     try {
         // All of them in one batch, not a request each: every request counts
         // against the account's rate limits.
         if (values.revoke) {
             await ATPROTO.revokeAll(session, [...new Set(checked.map(({ hash }) => hash))]);
-            for (const { archive, hashAlg, hash } of checked) io.out(`withdrew ${session.did}'s attestation of ${archive} (${hashAlg}:${hash})`);
+            for (const { archive, hashAlg, hash } of checked) {
+                io.out(o.people
+                    ? o.attestation(`withdrew ${o.bold(archive)}  ${o.dim(`${hashAlg}:${hash}`)}`)
+                    : `withdrew ${session.did}'s attestation of ${archive} (${hashAlg}:${hash})`);
+            }
         } else {
             const unique = [...new Map(checked.map((each) => [each.hash, each])).values()];
             const written = await ATPROTO.attestAll(session, unique.map(({ hashAlg, hash }) => ({ hashAlg, hex: hash, kind: values.kind, verdict, note: values.note })));
             for (const { archive, hashAlg, hash } of checked) {
-                io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
-                io.out(`  ${written[unique.findIndex((each) => each.hash === hash)]!.uri}`);
+                const uri = written[unique.findIndex((each) => each.hash === hash)]!.uri;
+                if (o.people) {
+                    io.out(o.attestation(`${verdict === 'bad' ? o.red(o.bold('marked bad')) : o.green('attested')} ${o.bold(archive)}${values.kind ? ` as ${values.kind}` : ''}`));
+                    io.out(`   ${o.dim(`${hashAlg}:${hash}`)}`);
+                    io.out(`   ${o.cyan(uri)}`);
+                } else {
+                    io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
+                    io.out(`  ${uri}`);
+                }
             }
         }
     } finally {
@@ -1063,12 +1153,12 @@ async function fetchAttestations(archive: string, attesters: Attester[], io: Con
     if (!hashed) return;
     const { refreshFor } = await import('./atproto.ts');
     for (const problem of await refreshFor(attesters, hashed.hashAlg, hashed.hash)) {
-        io.err(`! could not fetch an attestation, using the cache: ${problem}`);
+        io.err(styles(io).e.warn(`could not fetch an attestation, using the cache: ${problem}`));
     }
 }
 
 /** Print a verification result, as text or as the JSON `--json` produces. */
-export function report(res: VerificationResult, json: boolean, io: Console): void {
+export function report(res: VerificationResult, json: boolean, io: Console, archive?: string | undefined): void {
     const state = STATES[res.state];
     if (json) {
         io.out(JSON.stringify({
@@ -1085,6 +1175,27 @@ export function report(res: VerificationResult, json: boolean, io: Console): voi
             members: res.digests ? [...res.digests.keys()] : undefined,
             code: state.code,
         }, null, 2));
+        return;
+    }
+    const { o } = styles(io);
+    if (o.people) {
+        io.out(`${archive ? `${o.bundle(o.bold(archive))}  ` : ''}${o.bold(o.state(res.state, state.label))}`);
+        // A good sigstore signature's reason is its identity, said again below.
+        if (res.state !== 'valid' || !res.identity) io.out(`   ${res.reason ?? state.note}`);
+        const field = (label: string, value: string) => io.out(`   ${o.dim(label.padEnd(9))} ${value}`);
+        if (res.identity) {
+            const lines = signerLines(o, res.identity, res.issuer);
+            for (const line of marked(o, '   ', 'signature', 'signed by', [...lines, ...(res.signedAt ? [o.dim(`at ${res.signedAt.toISOString()}`)] : [])])) io.out(line);
+        } else if (res.subject) {
+            for (const line of marked(o, '   ', 'signature', 'certificate', res.subject.split('\n'))) io.out(line);
+        }
+        if (res.hash) field('hash', o.dim(`${res.hashAlg}:${res.hash}`));
+        for (const each of res.attestations ?? []) {
+            const lines = attesterLines(o, { did: each.did, handle: each.handle, kind: each.ok ? each.attested ?? each.kind : each.kind });
+            if (each.ok) lines.push(...(each.createdAt ? [o.dim(`at ${each.createdAt}`)] : []));
+            else lines.push(o.red(each.reason ?? 'missing'));
+            for (const line of marked(o, '   ', 'attestation', each.ok ? 'attested by' : o.red('missing'), lines)) io.out(line);
+        }
         return;
     }
     io.out(`${state.label} — ${res.reason ?? state.note}`);
@@ -1177,7 +1288,7 @@ async function run(args: string[], io: Console): Promise<number> {
     } catch (err) {
         if ((err as { code?: string }).code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
         const state = (err as { state?: VerificationState }).state;
-        io.err(`error: ${message(err)}`);
+        io.err(styles(io).e.error(message(err)));
         return state ? STATES[state].code : 2;
     }
 }
@@ -1208,12 +1319,15 @@ async function install(args: string[], io: Console): Promise<number> {
         // — but the shell this is being run from may be new to it, so that
         // part is still offered. Switching shells is one 'bundle install'.
         const existing = Object.values(INSTALL.records()).find((record) => record.url === target);
+        const { o } = styles(io);
         if (existing && FS.existsSync(PATH.join(existing.dir, existing.name))) {
-            io.out(`${existing.name} is already installed in ${existing.dir} ('bundle update' fetches a newer one)`);
+            io.out(o.people
+                ? `${o.bundle(`${o.bold(existing.name)} is already installed`)}  ${o.dim(`in ${existing.dir} — 'bundle update' fetches a newer one`)}`
+                : `${existing.name} is already installed in ${existing.dir} ('bundle update' fetches a newer one)`);
             if (values.shell) await offerShellHook(io);
             return 0;
         }
-        io.err(`* installing this package itself from ${target}`);
+        io.err(styles(io).e.note(`installing this package itself from ${target}`, 'bundle'));
     }
 
     try {
@@ -1224,11 +1338,19 @@ async function install(args: string[], io: Console): Promise<number> {
             discover: values.discover,
             onReview: (review, about) => showReview(review, about, io),
             decide: decider(Boolean(values.yes), io),
-            log: (line) => io.err(line),
+            log: logger(io),
         });
         // Installed by hand, it is the person's own, whatever suite has it too.
         if (record.link === undefined) (await import('./suite-install.ts')).adopt(record, INSTALL.sourceOf(record));
-        io.out(record.link !== undefined
+        const { o } = styles(io);
+        io.out(o.people
+            ? record.link !== undefined
+                ? `${o.bundle(`${o.bold(record.label ?? record.name)} linked for ${o.bold(record.scope!)}`)}  ${o.dim(`(${record.package})`)}\n` +
+                  `   ${o.yellow('⚠')} loaded from ${record.link} as it is, and refused by anything that verifies plugins`
+                : record.scope !== undefined
+                ? `${o.bundle(`${o.bold(record.label ?? record.name)} ${o.green('installed')} for ${o.bold(record.scope)}`)}  ${o.dim(`(${record.package}) in ${record.dir}`)}`
+                : `${o.bundle(`${o.bold(record.name)} ${o.green('installed')}`)}  ${o.dim(`in ${record.dir}`)}`
+            : record.link !== undefined
             ? `${record.label} (${record.package}) linked for ${record.scope}: loaded from ${record.link} as it is, and refused by anything that verifies plugins`
             : record.scope !== undefined
             ? `${record.label} (${record.package}) installed for ${record.scope}, in ${record.dir}`
@@ -1265,7 +1387,7 @@ function suiteOptions(values: { root?: string[] | undefined; identity?: string |
         onReview: (review, about) => showReview(review, about, io),
         decide: decider(Boolean(values.yes), io),
         confirm: confirmer(Boolean(values.yes), io),
-        log: (line) => io.err(line),
+        log: logger(io),
     };
 }
 
@@ -1279,18 +1401,33 @@ function confirmer(yes: boolean, io: Console) {
             ...offer.attesters.map((each) => ({ kind: 'attester' as const, each, text: `attested by ${each.kind ? `${each.kind}@` : ''}${each.did}` })),
         ];
         const short = (uri: string) => uri.slice(uri.lastIndexOf('/') + 1);
-        io.err(`* suite ${about.name} expects its members to carry:`);
-        for (const [i, { each, text }] of lines.entries()) io.err(`  ${String(i + 1).padStart(2)} ${text} — for ${each.members.map(short).join(', ')}`);
+        const { e } = styles(io);
+        if (e.people) {
+            io.err('');
+            io.err(e.bundle(`suite ${e.bold(about.name)} expects its members to carry:`));
+            for (const [i, { kind, each }] of lines.entries()) {
+                const block = kind === 'signer'
+                    ? marked(e, '      ', 'signature', 'signed by', signerLines(e, (each as { identity: string }).identity, (each as { issuer: string }).issuer))
+                    : marked(e, '      ', 'attestation', 'attested by', attesterLines(e, each as { did: string; kind?: string }));
+                block[0] = `  ${e.cyan(String(i + 1).padStart(2))}  ${block[0]!.trimStart()}`;
+                block.push(`         ${e.dim(`for ${each.members.map(short).join(', ')}`)}`);
+                io.err('');
+                for (const line of block) io.err(line);
+            }
+        } else {
+            io.err(`* suite ${about.name} expects its members to carry:`);
+            for (const [i, { each, text }] of lines.entries()) io.err(`  ${String(i + 1).padStart(2)} ${text} — for ${each.members.map(short).join(', ')}`);
+        }
         let picked: typeof lines = [];
         if (yes) picked = lines;
         else if (io.ask) {
             for (;;) {
-                const answer = (await io.ask(`  accept which, for those members? numbers (${lines.length > 1 ? '1,2' : '1'}), 'all', or Enter to decide each on its own: `)).trim().toLowerCase();
+                const answer = (await io.ask(prompt(e, 'accept which, for those members?', `numbers (${lines.length > 1 ? '1,2' : '1'}), 'all', or Enter to decide each on its own`))).trim().toLowerCase();
                 if (!answer || answer === 'n' || answer === 'no' || answer === 'none') break;
                 if (answer === 'all' || answer === 'a' || answer === 'y' || answer === 'yes') { picked = lines; break; }
                 const numbers = answer.split(/[\s,]+/).map(Number);
                 if (numbers.every((n) => Number.isInteger(n) && n >= 1 && n <= lines.length)) { picked = [...new Set(numbers)].map((n) => lines[n - 1]!); break; }
-                io.err(`  '${answer}' is not one of 1–${lines.length}`);
+                io.err(`  ${e.people ? e.yellow(`'${answer}' is not one of 1–${lines.length}`) : `'${answer}' is not one of 1–${lines.length}`}`);
             }
         }
         return {
@@ -1305,26 +1442,34 @@ function confirmer(yes: boolean, io: Console) {
 // makes — as 'update' reports its installs.
 function reportSuites(results: import('./suite-install.ts').SuiteResult[], io: Console): number {
     let code = 0;
+    const { o, e } = styles(io);
     for (const { suite, members, problem } of results) {
         if (problem !== undefined) {
-            io.out(`suite ${suite.name}: not asked — ${problem}`);
+            io.out(o.people ? `${o.bundle(`suite ${o.bold(suite.name)}`)}  ${o.red('✖ not asked')} ${o.dim(`— ${problem}`)}` : `suite ${suite.name}: not asked — ${problem}`);
             code = Math.max(code, 70);
             continue;
         }
         const count = (state: string) => members.filter((member) => member.state === state).length;
         const parts = [['installed', 'installed'], ['present', 'already here'], ['removed', 'removed'], ['kept', 'kept'], ['left-out', 'left out']]
             .flatMap(([state, said]) => (count(state!) ? [`${count(state!)} ${said}`] : []));
-        io.out(`suite ${suite.name}: ${parts.join(', ') || 'nothing to do'}`);
+        io.out(o.people ? `${o.bundle(`suite ${o.bold(suite.name)}`)}  ${o.dim(parts.join(', ') || 'nothing to do')}` : `suite ${suite.name}: ${parts.join(', ') || 'nothing to do'}`);
         for (const member of members) {
             const what = member.install ?? member.listing;
-            if (member.state === 'installed' || member.state === 'removed') io.out(`  ${member.state} ${what}`);
+            if (o.people) {
+                if (member.state === 'installed') io.out(`   ${o.green('+')} ${o.bundle(o.bold(what))}  ${o.dim('installed')}`);
+                else if (member.state === 'removed') io.out(`   ${o.red('-')} ${o.bundle(o.bold(what))}  ${o.dim('removed')}`);
+                else if (member.state !== 'present') {
+                    const bad = member.state === 'refused' || member.state === 'failed';
+                    io.out(`   ${bad ? o.red('✖') : o.yellow('⚠')} ${o.bundle(o.bold(what))}  ${bad ? o.red(member.state) : o.yellow(member.state)}${member.reason ? o.dim(` — ${member.reason}`) : ''}`);
+                }
+            } else if (member.state === 'installed' || member.state === 'removed') io.out(`  ${member.state} ${what}`);
             else if (member.state !== 'present') io.out(`  ${what}: ${member.state}${member.reason ? ` — ${member.reason}` : ''}`);
             code = Math.max(code, member.state === 'refused' ? STATES[member.review?.state ?? 'invalid'].code
                 : member.state === 'failed' ? 70
                 : member.state === 'declined' || member.state === 'unconfirmed' ? UNDECIDED
                 : 0);
         }
-        if (members.some((member) => member.state === 'unconfirmed')) io.err('  run on a terminal to decide, or pass --yes to accept what was shown');
+        if (members.some((member) => member.state === 'unconfirmed')) io.err(`  ${e.dim('run on a terminal to decide, or pass --yes to accept what was shown')}`);
     }
     return code;
 }
@@ -1393,28 +1538,31 @@ async function offerShellHook(io: Console): Promise<void> {
     const COMPLETION = await import('./completion.ts');
     const program = await selfProgram();
     const shell = COMPLETION.detectShell();
+    const { e } = styles(io);
     if (!shell) {
         // Neither SHELL nor PowerShell is cmd.exe, which has no programmable
         // completion; a SHELL that names something else gets a pointer.
-        if (process.env['SHELL']) io.err("* for Tab completion and a daily re-check of installs at shell start, see 'bundle shell --help'");
+        if (process.env['SHELL']) io.err(e.note("for Tab completion and a daily re-check of installs at shell start, see 'bundle shell --help'"));
         return;
     }
     const file = COMPLETION.startupFile(shell);
     if (COMPLETION.hasHook(file)) {
-        io.err(`* ${file} already loads bundle's shell setup`);
+        io.err(e.note(`${file} already loads bundle's shell setup`));
         return;
     }
     const line = COMPLETION.hookLine(shell, program);
     const answer = io.ask
-        ? (await io.ask(`* add Tab completion, and a quiet daily re-check of what you install, to ${file}? [Y/n] `)).trim().toLowerCase()
+        ? (await io.ask(e.people
+            ? `\n${e.cyan('?')} add Tab completion, and a quiet daily re-check of what you install, to ${e.bold(file)}? ${e.dim('[Y/n]')} `
+            : `* add Tab completion, and a quiet daily re-check of what you install, to ${file}? [Y/n] `)).trim().toLowerCase()
         : undefined;
     if (answer === undefined || answer === 'n' || answer === 'no') {
-        io.err(`* for Tab completion and a daily re-check of installs at shell start, add to ${file}:`);
-        io.err(`    ${line}`);
+        io.err(e.note(`for Tab completion and a daily re-check of installs at shell start, add to ${file}:`));
+        io.err(`    ${e.people ? e.bold(line) : line}`);
         return;
     }
     COMPLETION.addHook(shell, process.env, program);
-    io.err(`* added to ${file} — new ${shell} shells have it ('bundle uninstall' takes it out again)`);
+    io.err(e.note(`added to ${file} — new ${shell} shells have it ('bundle uninstall' takes it out again)`));
 }
 
 /** What `install` and `update` both take. */
@@ -1432,23 +1580,29 @@ const INSTALL_OPTIONS = {
 // The exit code for an install that did not happen, and the line that says why.
 function refused(err: unknown, io: Console): number {
     const code = (err as { code?: string }).code;
+    const { e } = styles(io);
     if (code === 'ERR_BUNDLE_UNCONFIRMED') {
-        io.err(`error: ${message(err)}`);
-        io.err('  nobody accepted for it before vouches for it, so it is up to you: run this on a terminal to choose, or pass --yes to accept what is shown above');
+        io.err(e.error(message(err)));
+        io.err(`  ${e.dim('nobody accepted for it before vouches for it, so it is up to you: run this on a terminal to choose, or pass --yes to accept what is shown above')}`);
         return UNDECIDED;
     }
     if (code === 'ERR_BUNDLE_DECLINED') {
-        io.err(message(err));
+        io.err(e.people ? e.yellow(message(err)) : message(err));
         return UNDECIDED;
     }
     if (code !== 'ERR_BUNDLE_UNTRUSTED') throw err;
     const state = (err as { state?: VerificationState }).state;
-    io.err(`error: ${message(err)}`);
+    io.err(e.error(message(err)));
     return state ? STATES[state].code : 2;
 }
 
 /** Show everything a review found, numbered where it can be chosen. */
 export function showReview(review: REVIEW.Review, about: { name: string; url: string }, io: Console): void {
+    const { e } = styles(io);
+    if (e.people) {
+        showReviewTo(review, about, io, e);
+        return;
+    }
     io.err(`* ${about.name}: ${review.hashAlg}:${review.hash} (${review.signed ? 'signed' : 'unsigned'})`);
     let n = 0;
     for (const item of review.items) {
@@ -1468,6 +1622,37 @@ export function showReview(review: REVIEW.Review, about: { name: string; url: st
     for (const note of review.notes) io.err(`  ! ${note}`);
 }
 
+// The same review, for a person: what the bundle is, then each thing that
+// vouches for it — a signature, a certificate, an attestation — one to a line,
+// numbered where it can be chosen, and what is known of it on the right.
+function showReviewTo(review: REVIEW.Review, about: { name: string }, io: Console, e: Style): void {
+    io.err('');
+    io.err(`${e.bundle(e.bold(about.name))}  ${review.signed ? '' : `${e.yellow('unsigned')}  `}${e.dim(`${review.hashAlg}:${review.hash}`)}`);
+    let n = 0;
+    for (const item of review.items) {
+        const evidence = item.evidence;
+        const bad = evidence.type === 'attestation' && evidence.verdict === 'bad';
+        const [mark, verb, lines]: [Mark, string, string[]] = evidence.type === 'signature' ? ['signature', 'signed by', signerLines(e, evidence.identity, evidence.issuer)]
+            : evidence.type === 'certificate' ? ['signature', 'certificate', [...evidence.subject.split('\n'), ...(evidence.anchored ? [] : [e.yellow('not anchored')])]]
+            : ['attestation', bad ? e.red(e.bold('WARNING from')) : 'attested by', [...attesterLines(e, evidence), ...(evidence.createdAt ? [e.dim(`at ${evidence.createdAt}`)] : [])]];
+        const standing = item.excluded ? (bad ? e.red('marked it bad') : e.dim(item.excluded)) : item.known ? e.green(item.known) : e.yellow('new — not accepted before');
+        const block = marked(e, '      ', mark, verb, [...lines, standing]);
+        // The number sits in the margin of the first line, where it can be found.
+        if (!item.excluded) block[0] = `  ${e.cyan(String(++n).padStart(2))}  ${block[0]!.trimStart()}`;
+        io.err('');
+        for (const line of block) io.err(line);
+    }
+    if (!review.items.length) io.err(`      ${e.yellow('nothing vouches for it')}`);
+    if (review.notes.length) io.err('');
+    for (const note of review.notes) io.err(`  ${e.warn(note)}`);
+}
+
+// A question for the person at the terminal: `  question hint: ` plainly, and
+// with the hint dimmed for people.
+function prompt(e: Style, question: string, hint: string): string {
+    return e.people ? `${e.cyan('?')} ${question} ${e.dim(hint)} ${e.cyan('›')} ` : `  ${question} ${hint}: `;
+}
+
 // How an install that needs a decision gets one: everything, with --yes; the
 // person at the terminal, if there is one; otherwise nobody, and it stops.
 function decider(yes: boolean, io: Console) {
@@ -1476,16 +1661,17 @@ function decider(yes: boolean, io: Console) {
     if (!ask) return undefined;
     return async (review: REVIEW.Review, about: { name: string }) => {
         const choices = REVIEW.selectable(review);
-        io.err(`* ${about.name}: ${review.reason}`);
+        const { e } = styles(io);
+        io.err(e.people ? `${e.bundle(e.bold(about.name))}  ${review.reason}` : `* ${about.name}: ${review.reason}`);
         for (;;) {
-            const answer = (await ask(`  accept which? numbers (${choices.length > 1 ? '1,2' : '1'}), 'all', or Enter to decline: `)).trim().toLowerCase();
+            const answer = (await ask(prompt(e, 'accept which?', `numbers (${choices.length > 1 ? '1,2' : '1'}), 'all', or Enter to decline`))).trim().toLowerCase();
             if (!answer || answer === 'n' || answer === 'no' || answer === 'none') return [];
             if (answer === 'all' || answer === 'a' || answer === 'y' || answer === 'yes') return choices;
             const picked = answer.split(/[\s,]+/).map(Number);
             if (picked.every((index) => Number.isInteger(index) && index >= 1 && index <= choices.length)) {
                 return [...new Set(picked)].map((index) => choices[index - 1]!);
             }
-            io.err(`  '${answer}' is not one of 1–${choices.length}`);
+            io.err(`  ${e.people ? e.yellow(`'${answer}' is not one of 1–${choices.length}`) : `'${answer}' is not one of 1–${choices.length}`}`);
         }
     };
 }
@@ -1524,17 +1710,29 @@ async function update(args: string[], io: Console): Promise<number> {
         discover: values.discover,
         onReview: (review, about) => showReview(review, about, io),
         decide: decider(Boolean(values.yes), io),
-        log: (line) => io.err(line),
+        log: logger(io),
     });
 
     const changed = results.filter((result) => result.state === 'updated');
     const stuck = results.filter((result) => result.state !== 'updated' && result.state !== 'unchanged');
-    io.out(changed.length
-        ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
-        : `${results.length} checked, nothing changed`);
-    for (const result of stuck) io.out(`  ${result.record.name}: ${result.state} — ${result.reason ?? ''}`);
+    const { o, e } = styles(io);
+    if (o.people) {
+        io.out('');
+        io.out(changed.length
+            ? o.bundle(`${o.green(`${changed.length} of ${plural(results.length, 'bundle')} updated`)}: ${changed.map((result) => o.bold(result.record.name)).join(', ')}`)
+            : o.bundle(`${plural(results.length, 'bundle')} checked, ${o.green('nothing changed')}`));
+        for (const result of stuck) {
+            const bad = result.state === 'refused' || result.state === 'failed';
+            io.out(`   ${bad ? o.red('✖') : o.yellow('⚠')} ${o.bold(result.record.name)}  ${bad ? o.red(result.state) : o.yellow(result.state)}${result.reason ? o.dim(` — ${result.reason}`) : ''}`);
+        }
+    } else {
+        io.out(changed.length
+            ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
+            : `${results.length} checked, nothing changed`);
+        for (const result of stuck) io.out(`  ${result.record.name}: ${result.state} — ${result.reason ?? ''}`);
+    }
     if (stuck.some((result) => result.state === 'unconfirmed')) {
-        io.err('  run on a terminal to decide, or pass --yes to accept what was shown');
+        io.err(`  ${e.dim('run on a terminal to decide, or pass --yes to accept what was shown')}`);
     }
 
     // The worst outcome decides the exit code.
@@ -1557,7 +1755,8 @@ async function installed(args: string[], io: Console): Promise<number> {
     const SUITES = await import('./suite-install.ts');
     // Withdrawn attestations and new warnings only show up if they are asked
     // about; asking is cheap, and a failure leaves the cache to answer.
-    for (const problem of await INSTALL.refreshInstalled()) io.err(`! could not fetch an attestation, using the cache: ${problem}`);
+    const { o, e } = styles(io);
+    for (const problem of await INSTALL.refreshInstalled()) io.err(e.warn(`could not fetch an attestation, using the cache: ${problem}`));
     const checks = INSTALL.installed({ roots: values.root ?? [] });
 
     if (values.json) {
@@ -1568,7 +1767,9 @@ async function installed(args: string[], io: Console): Promise<number> {
             warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
         })), null, 2));
     } else if (!checks.length) {
-        io.out('nothing installed');
+        io.out(o.people ? o.dim('nothing installed') : 'nothing installed');
+    } else if (o.people) {
+        showInstalled(checks, io, o, INSTALL, SUITES);
     } else {
         for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
@@ -1605,6 +1806,47 @@ async function installed(args: string[], io: Console): Promise<number> {
         : state === 'missing' || state === 'changed' ? 2
         : STATES[state].code), 0);
     return worst;
+}
+
+// What 'installed' prints for a person: each install as a card — its name
+// and state, then where it is, where it came from, and who signed and vouched
+// for it — and then the suites.
+function showInstalled(checks: import('./install.ts').InstalledCheck[], io: Console, o: Style,
+    INSTALL: typeof import('./install.ts'), SUITES: typeof import('./suite-install.ts')): void {
+    const field = (label: string, value: string) => io.out(`   ${o.dim(label.padEnd(8))} ${value}`);
+    for (const [i, { record, path, state, reason, review }] of checks.entries()) {
+        const status = state === 'ok' ? o.green('✔ OK')
+            : state === 'missing' || state === 'changed' || state === 'invalid' ? o.red(`✖ ${state.toUpperCase()}`)
+            : o.yellow(`⚠ ${state.toUpperCase()}`);
+        if (i) io.out('');
+        io.out(`${o.bundle(o.bold(record.name))}  ${status}`);
+        if (state !== 'ok') io.out(`   ${state === 'missing' || state === 'changed' || state === 'invalid' ? o.red(reason ?? '') : o.yellow(reason ?? '')}`);
+        for (const warning of review ? INSTALL.warningsOf(review) : []) io.out(`   ${o.attestation(o.red(warning))}`);
+        if (record.scope !== undefined) field('plugin', `${INSTALL.labelOf(record)} ${o.dim(`(${record.package})`)}, for ${o.bold(record.scope)}`);
+        const suites = SUITES.suitesOf(record.name);
+        if (suites.length) field('suite', suites.join(', '));
+        field('at', path);
+        const source = INSTALL.sourceOf(record);
+        if (record.link !== undefined) field('linked', o.yellow(record.link));
+        else if (source !== record.url) field('source', source);
+        if (record.link === undefined) field('from', o.dim(record.url));
+        if (record.identity) for (const line of marked(o, '   ', 'signature', 'signed by', signerLines(o, record.identity, record.issuer))) io.out(line);
+        else if (record.subject) for (const line of marked(o, '   ', 'signature', 'signed by', record.subject.split('\n'))) io.out(line);
+        for (const attester of record.attestedBy ?? []) for (const line of marked(o, '   ', 'attestation', 'attested by', attesterSpecLines(o, attester))) io.out(line);
+        if (record.link === undefined) field('sha256', o.dim(record.sha256));
+        field('since', o.dim(record.at));
+    }
+    for (const suite of Object.values(SUITES.suites()).sort((a, b) => a.name.localeCompare(b.name))) {
+        io.out('');
+        io.out(`${o.bundle(`suite ${o.bold(suite.name)}`)}  ${o.dim(plural(suite.members.length, 'member'))}`);
+        field('from', suite.label ?? suite.source);
+        for (const member of suite.members) {
+            if (member.removed) field('left out', o.dim(member.listing));
+            else if (member.install === undefined || !INSTALL.records()[member.install]) {
+                io.out(`   ${o.yellow('⚠')} not installed: ${member.listing} ${o.dim(`— 'bundle update ${suite.name}' tries again`)}`);
+            }
+        }
+    }
 }
 
 // List archives under names, from an atproto account: a record naming each
@@ -1657,7 +1899,7 @@ async function publish(args: string[], io: Console): Promise<number> {
         if (each.for !== undefined) {
             app = apps.get(each.for) ?? await appListing('publish', each.for, true);
             apps.set(each.for, app);
-            io.err(`* listing ${each.name} as a plugin for ${app.label} (${app.uri})`);
+            io.err(styles(io).e.note(`listing ${each.name} as a plugin for ${app.label} (${app.uri})`, 'bundle'));
         }
         listings.push({ name: each.name, ...checked, for: app?.uri, title: each.title, description: each.description });
     }
@@ -1665,12 +1907,20 @@ async function publish(args: string[], io: Console): Promise<number> {
     const session = await signIn('publish', values, io, `atproto repo:${LISTING.LISTING}`);
     try {
         const written = await LISTING.publishAll(session, listings);
+        const { o, e } = styles(io);
         for (const [i, { uri, replaced }] of written.entries()) {
             const { name, for: app } = wanted[i]!;
-            io.out(`${replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
-            io.out(`  ${uri}`);
             const installed = app !== undefined ? apps.get(app)?.installed : undefined;
-            io.err(`  install it with: bundle install ${app !== undefined ? `--for ${installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`);
+            const command = `bundle install ${app !== undefined ? `--for ${installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`;
+            if (o.people) {
+                io.out(o.bundle(`${o.green(replaced ? 'updated' : 'published')} ${o.bold(name)}  ${o.dim(`as ${session.did}`)}`));
+                io.out(`   ${o.cyan(uri)}`);
+                io.err(`   ${e.dim('install it with:')} ${e.bold(command)}`);
+            } else {
+                io.out(`${replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
+                io.out(`  ${uri}`);
+                io.err(`  install it with: ${command}`);
+            }
         }
     } finally {
         await session.end?.();
@@ -1686,6 +1936,7 @@ async function listable(where: string, roots: string[], io: Console): Promise<{ 
     const LISTING = await import('./listing.ts');
     let url: string;
     let domain: string | undefined;
+    const { e } = styles(io);
     if (/^[a-z][a-z0-9+.-]*:/i.test(where)) {
         if (!/^https:\/\//i.test(where)) throw new Error(`publish: '${where}' is not an https URL`);
         url = where;
@@ -1694,22 +1945,28 @@ async function listable(where: string, roots: string[], io: Console): Promise<{ 
         if (!LISTING.isListedDomain(domain)) throw new Error(`publish: '${where}' is neither an https URL nor a domain name`);
         const INSTALL = await import('./install.ts');
         url = (await INSTALL.resolveAlias(domain)).url;
-        io.err(`* ${domain} names ${url}`);
+        io.err(e.note(`${domain} names ${url}`));
     }
 
-    io.err(`* fetching ${url}`);
+    io.err(e.note(`fetching ${url}`));
     const { patientFetch } = await import('./ratelimit.ts');
-    const response = await patientFetch(globalThis.fetch, { onWait: io.err })(url, { redirect: 'follow' });
+    const response = await patientFetch(globalThis.fetch, { onWait: logger(io) })(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`publish: ${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     if (!wholeFileHash(bytes)) throw new Error(`publish: ${url} is not an archive this tool can install`);
     const res = await verifyBundle(bytes, { roots, deep: true, integrity: true });
     if (res.state === 'invalid') {
-        io.err(`error: refusing to publish ${url}: ${res.reason}`);
+        io.err(e.error(`refusing to publish ${url}: ${res.reason}`));
         return STATES.invalid.code;
     }
-    io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
-    if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
+    if (e.people) {
+        io.err(e.bundle(`${e.bold(url)}  ${e.dim(`${plural(res.digests?.size ?? 0, 'member')}, all digests match`)}`));
+        if (res.signed) for (const line of marked(e, '   ', 'signature', res.identity ? 'signed by' : 'signed', res.identity ? signerLines(e, res.identity, res.issuer) : [])) io.err(line);
+        else io.err(`   ${e.warn('it is unsigned: installs will only accept it on the strength of attestations')}`);
+    } else {
+        io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
+        if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
+    }
     return domain ? { domain } : { url };
 }
 
@@ -1722,12 +1979,20 @@ async function unpublish(args: string[], io: Console): Promise<number> {
     const session = await signIn('unpublish', values, io, `atproto repo:${LISTING.LISTING}`);
     try {
         const { removed, missing } = await LISTING.unpublishAll(session, positionals);
-        for (const name of removed) io.out(`unpublished ${name} from ${session.did}`);
-        for (const name of missing) io.err(`error: ${session.did} has no listing called '${name}'`);
+        const { o, e } = styles(io);
+        for (const name of removed) io.out(o.people ? o.bundle(`unpublished ${o.bold(name)}  ${o.dim(`from ${session.did}`)}`) : `unpublished ${name} from ${session.did}`);
+        for (const name of missing) io.err(e.error(`${session.did} has no listing called '${name}'`));
         return missing.length ? 1 : 0;
     } finally {
         await session.end?.();
     }
+}
+
+// The line that says whose account is about to be written to.
+function signedIn(session: { did: string; pds: string; how: string }, e: Style): string {
+    return e.people
+        ? `${e.cyan('›')} signed in as ${e.bold(session.did)}  ${e.dim(`at ${session.pds}, through ${session.how}`)}`
+        : `* signed in as ${session.did} at ${session.pds}, through ${session.how}`;
 }
 
 // Sign in to write to an account's repository, with access to `scope` only
@@ -1744,8 +2009,8 @@ async function signIn(command: string, values: { as?: string | undefined; 'passw
     const OAUTH = await import('./oauth.ts');
     const session = password
         ? await ATPROTO.login(identifier, password)
-        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open, scope });
-    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+        : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open, scope });
+    io.err(signedIn(session, styles(io).e));
     return Object.assign(session, { handle: identifier.startsWith('did:') ? undefined : identifier.replace(/^@/, '').toLowerCase() });
 }
 
@@ -1759,7 +2024,7 @@ async function search(args: string[], io: Console): Promise<number> {
     await freshIndex(values, io, app?.uri);
     const found = LISTING.search(text, undefined, { for: app?.uri });
     printListings(found, Boolean(values.json), io, app);
-    if (!found.length && !values.json) io.err(`nothing listed${app ? ` for ${app.label}` : ''} matches '${text}'`);
+    if (!found.length && !values.json) io.err(styles(io).e.dim(`nothing listed${app ? ` for ${app.label}` : ''} matches '${text}'`));
     return 0;
 }
 
@@ -1771,7 +2036,7 @@ async function listings(args: string[], io: Console): Promise<number> {
     await freshIndex(values, io, app?.uri);
     const found = LISTING.listings(undefined, { for: app?.uri });
     printListings(found, Boolean(values.json), io, app);
-    if (!found.length && !values.json) io.err(app ? `no plugins listed for ${app.label}` : 'nothing listed');
+    if (!found.length && !values.json) io.err(styles(io).e.dim(app ? `no plugins listed for ${app.label}` : 'nothing listed'));
     return 0;
 }
 
@@ -1819,20 +2084,22 @@ async function freshIndex(values: { refresh?: boolean | undefined; offline?: boo
         return;
     }
     const index = POLICY.loadPolicy().discovery;
+    const { e } = styles(io);
     const stale = (why: string) => {
         if (!last) throw new Error(`no listing index, and ${why}`);
-        io.err(`! ${why} — the index is from ${last.at.toISOString()}`);
+        io.err(e.warn(`${why} — the index is from ${last.at.toISOString()}`));
     };
     if (!index) return stale("discovery is turned off by the policy ('bundle policy')");
     const covered = last !== null && apps.every((uri) => last.subjects.includes(uri));
     if (!values.refresh && last && last.index === index && covered && Date.now() - last.at.getTime() < LISTING.INDEX_AGE) return;
 
-    io.err(`* syncing the listing index from ${index}`);
+    io.err(e.note(`syncing the listing index from ${index}`));
     try {
         const report = await LISTING.syncIndex({ index, apps });
-        io.err(`  ${report.listings} listing${report.listings === 1 ? '' : 's'} from ${report.publishers} publisher${report.publishers === 1 ? '' : 's'}` +
-            `${report.refreshed ? `, ${report.refreshed} refreshed` : ''}${report.removed ? `, ${report.removed} gone` : ''}`);
-        for (const { did, error } of report.failed) io.err(`  ! ${did}: ${error} — kept what the index had`);
+        const counts = `${report.listings} listing${report.listings === 1 ? '' : 's'} from ${report.publishers} publisher${report.publishers === 1 ? '' : 's'}` +
+            `${report.refreshed ? `, ${report.refreshed} refreshed` : ''}${report.removed ? `, ${report.removed} gone` : ''}`;
+        io.err(`  ${e.dim(counts)}`);
+        for (const { did, error } of report.failed) io.err(`  ${e.warn(`${did}: ${error} — kept what the index had`)}`);
     } catch (err) {
         stale(`could not sync (${message(err)})`);
     }
@@ -1845,11 +2112,15 @@ function printListings(found: import('./listing.ts').Listing[], json: boolean, i
         })), null, 2));
         return;
     }
-    if (app && found.length) io.err(`* plugins for ${app.label}; install one with: bundle install --for ${app.installed ?? '<the app>'} <the first column>`);
+    const { o, e } = styles(io);
+    if (app && found.length) io.err(e.note(`plugins for ${app.label}; install one with: bundle install --for ${app.installed ?? '<the app>'} <the first column>`, 'bundle'));
     const width = Math.max(0, ...found.map((each) => each.install.length));
     for (const each of found) {
         const about = [each.title && each.title !== each.name ? each.title : undefined, each.description].filter(Boolean).join(' — ');
-        io.out(about ? `${each.install.padEnd(width)}  ${about}` : each.install);
+        // For people the name is what to copy, so it stands out, and the rest
+        // steps back; the padding is computed on the plain name either way.
+        if (o.people) io.out(`${o.bundle(o.bold(each.install))}${about ? `${' '.repeat(width - each.install.length)}  ${o.dim(about)}` : ''}`);
+        else io.out(about ? `${each.install.padEnd(width)}  ${about}` : each.install);
     }
 }
 
@@ -1864,12 +2135,13 @@ async function lexicon(args: string[], io: Console): Promise<number> {
     const LEXICON = await import('./lexicon.ts');
     const docs = LEXICON.lexicons();
     const [sub] = positionals;
+    const { o, e } = styles(io);
 
     if (sub === undefined) {
         for (const doc of docs) {
-            io.out(doc.id);
-            io.out(`  dns:    TXT _lexicon.${LEXICON.authorityOf(doc.id)}  "did=<the publishing account's DID>"`);
-            io.out(`  record: at://<that DID>/${LEXICON.SCHEMA_COLLECTION}/${doc.id}`);
+            io.out(o.bold(doc.id));
+            io.out(`  ${o.dim('dns:   ')} TXT _lexicon.${LEXICON.authorityOf(doc.id)}  "did=<the publishing account's DID>"`);
+            io.out(`  ${o.dim('record:')} at://<that DID>/${LEXICON.SCHEMA_COLLECTION}/${doc.id}`);
         }
         return 0;
     }
@@ -1881,8 +2153,10 @@ async function lexicon(args: string[], io: Console): Promise<number> {
                 : status.state === 'different' ? 'published, but not this version'
                 : status.state === 'unpublished' ? `not published by ${status.authority}`
                 : `no authority — ${status.dns} has no 'did=' TXT record`;
-            io.out(`${status.nsid}: ${what}`);
-            if (status.uri) io.out(`  ${status.uri}`);
+            io.out(o.people
+                ? `${status.state === 'current' ? o.green('✔') : status.state === 'different' ? o.yellow('⚠') : o.red('✖')} ${o.bold(status.nsid)}  ${o.dim(what)}`
+                : `${status.nsid}: ${what}`);
+            if (status.uri) io.out(`  ${o.people ? o.cyan(status.uri) : status.uri}`);
             if (status.state !== 'current') worst = 1;
         }
         return worst;
@@ -1898,11 +2172,11 @@ async function lexicon(args: string[], io: Console): Promise<number> {
         for (const doc of docs) {
             const authority = await LEXICON.authorityDid(doc.id);
             const dns = `_lexicon.${LEXICON.authorityOf(doc.id)}`;
-            io.out(`${doc.id}`);
+            io.out(o.bold(doc.id));
             io.out(`  would write at://${did}/${LEXICON.SCHEMA_COLLECTION}/${doc.id}`);
-            io.out(authority === did ? `  ${dns} names ${did}: good`
-                : authority ? `  ${dns} names ${authority}, not ${did}: publish would refuse`
-                : `  ${dns} has no 'did=' record: add TXT "did=${did}" first`);
+            io.out(authority === did ? `  ${dns} names ${did}: ${o.green('good')}`
+                : authority ? `  ${dns} names ${authority}, not ${did}: ${o.red('publish would refuse')}`
+                : `  ${dns} has no 'did=' record: ${o.yellow(`add TXT "did=${did}" first`)}`);
         }
         return 0;
     }
@@ -1914,13 +2188,13 @@ async function lexicon(args: string[], io: Console): Promise<number> {
     const OAUTH = await import('./oauth.ts');
     const session = password
         ? await ATPROTO.login(identifier, password)
-        : await OAUTH.oauthLogin(identifier, { log: io.err, open: io.open, scope: `atproto repo:${LEXICON.SCHEMA_COLLECTION}` });
-    io.err(`* signed in as ${session.did} at ${session.pds}, through ${session.how}`);
+        : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open, scope: `atproto repo:${LEXICON.SCHEMA_COLLECTION}` });
+    io.err(signedIn(session, styles(io).e));
     try {
         for (const each of await LEXICON.publishLexicons(session, { force: values.force })) {
-            io.out(`published ${each.nsid}`);
-            io.out(`  ${each.uri}`);
-            if (each.authority !== session.did) io.err(`  ! ${each.dns} does not name ${session.did} yet, so nothing can resolve it until it does`);
+            io.out(o.people ? `${o.green('published')} ${o.bold(each.nsid)}` : `published ${each.nsid}`);
+            io.out(`  ${o.people ? o.cyan(each.uri) : each.uri}`);
+            if (each.authority !== session.did) io.err(`  ${e.warn(`${each.dns} does not name ${session.did} yet, so nothing can resolve it until it does`)}`);
         }
     } finally {
         await session.end?.();
@@ -1973,8 +2247,9 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
         if (FS.existsSync(which) && !values.force) throw new Error(`policy: ${which} is already there (--force to replace it)`);
         FS.mkdirSync(PATH.dirname(which), { recursive: true });
         FS.writeFileSync(which, POLICY.formatPolicyFile(POLICY.starterPolicy(), version()));
-        io.out(`wrote ${which}`);
-        io.err(`  its "$schema" is ${POLICY.schemaUrl(version())}`);
+        const { o, e } = styles(io);
+        io.out(o.people ? `${o.green('wrote')} ${o.bold(which)}` : `wrote ${which}`);
+        io.err(`  ${e.dim(`its "$schema" is ${POLICY.schemaUrl(version())}`)}`);
         return 0;
     }
     if (sub === 'check') {
@@ -1982,7 +2257,8 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
         // `readPolicyFile` is what installs read policies with; null is a file
         // that is not there, which is worth saying differently from a bad one.
         if (!POLICY.readPolicyFile(PATH.resolve(file))) throw new Error(`policy: ${file} does not exist`);
-        io.out(`${file}: a valid policy file`);
+        const { o } = styles(io);
+        io.out(o.people ? `${o.green('✔')} ${o.bold(file)}  ${o.dim('a valid policy file')}` : `${file}: a valid policy file`);
         return 0;
     }
     if (sub === 'show') {
@@ -1991,17 +2267,18 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
             ...(values.user || !values.system ? [POLICY.userPolicyPath()] : []),
         ];
         let shown = 0;
+        const { e } = styles(io);
         for (const path of paths) {
             const read = POLICY.readPolicyFile(path);
             if (!read) {
-                io.err(`* ${path}: none`);
+                io.err(e.people ? `${e.cyan('›')} ${path}  ${e.dim('none')}` : `* ${path}: none`);
                 continue;
             }
-            io.err(`* ${path}`);
+            io.err(e.people ? `${e.cyan('›')} ${e.bold(path)}` : `* ${path}`);
             io.out(POLICY.formatPolicyFile(read, version()).trimEnd());
             shown++;
         }
-        if (!shown) io.err("  no policy files — 'bundle policy init' writes one");
+        if (!shown) io.err(`  ${e.dim("no policy files — 'bundle policy init' writes one")}`);
         return 0;
     }
     if (sub !== undefined) throw new Error(`policy: unknown subcommand '${sub}' (show, init or check)`);
@@ -2012,6 +2289,11 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
             ...effective,
             systemFile: POLICY.systemPolicyPath(), userFile: POLICY.userPolicyPath(),
         }, null, 2));
+        return 0;
+    }
+    const { o } = styles(io);
+    if (o.people) {
+        showPolicy(effective, io, o, POLICY);
         return 0;
     }
     io.out(`machine policy: ${POLICY.systemPolicyPath()}${effective.files.includes(POLICY.systemPolicyPath()) ? '' : ' (none)'}`);
@@ -2033,6 +2315,40 @@ async function policyCommand(args: string[], io: Console): Promise<number> {
     io.out(`discovery:         ${effective.discovery || 'off'}`);
     if (effective.maxAge !== undefined) io.out(`max age:           ${Math.round(effective.maxAge / 1000)}s`);
     return 0;
+}
+
+// The policy in force, for a person: the files it comes from, then what it
+// requires, whom it trusts, and whom it will not hear from, grouped.
+function showPolicy(effective: ReturnType<typeof import('./policy.ts').loadPolicy>, io: Console, o: Style, POLICY: typeof import('./policy.ts')): void {
+    const list = (items: string[]) => (items.length ? items.join(', ') : o.dim('none'));
+    const field = (label: string, value: string) => io.out(`   ${o.dim(label.padEnd(12))} ${value}`);
+    const file = (path: string) => (effective.files.includes(path) ? path : `${o.dim(path)} ${o.dim('(none)')}`);
+    io.out(o.bold('files'));
+    field('machine', file(POLICY.systemPolicyPath()));
+    field('user', file(POLICY.userPolicyPath()));
+    field('schema', o.dim(POLICY.schemaUrl(version())));
+    io.out('');
+    const out = (lines: string[]) => { for (const line of lines) io.out(line); };
+    io.out(o.bold('required'));
+    out(marked(o, '   ', 'signature', 'a signature ', [effective.signature.length ? `yes ${o.dim(`(${effective.signature.join(', ')})`)}` : o.dim('no')]));
+    out(marked(o, '   ', 'signature', 'same issuer ', [effective.sameIssuer.length ? `yes ${o.dim(`(${effective.sameIssuer.join(', ')})`)}` : o.dim('no')]));
+    for (const { attesters, quorum, source } of effective.attesters) {
+        out(marked(o, '   ', 'attestation', `attested by${quorum ? ` ${quorum} of` : ''}`, [o.dim(`(${source})`)]));
+        for (const attester of attesters) out(attesterLines(o, { did: attester.did, kind: attester.kind }).map((line) => `      ${line}`));
+    }
+    for (const { list: issuers, source } of effective.issuers) field('issuers', `${issuers.join(', ')} ${o.dim(`(${source})`)}`);
+    io.out('');
+    io.out(o.bold('trusted'));
+    if (!effective.trust.signers.length) out(marked(o, '   ', 'signature', 'signers  ', [o.dim('none')]));
+    for (const signer of effective.trust.signers) out(marked(o, '   ', 'signature', 'signed by', signerLines(o, signer.identity, signer.issuer)));
+    if (!effective.trust.attesters.length) out(marked(o, '   ', 'attestation', 'attesters', [o.dim('none')]));
+    for (const attester of effective.trust.attesters) out(marked(o, '   ', 'attestation', 'attested by', attesterLines(o, { did: attester.did, kind: attester.kind })));
+    if (effective.trust.certificates.length) field('roots', list(effective.trust.certificates));
+    io.out('');
+    field('blocks on', effective.block.length ? o.red(effective.block.map(({ did }) => did).join(', ')) : o.dim('none'));
+    field('ignores', list(effective.ignore));
+    field('discovery', effective.discovery || o.dim('off'));
+    if (effective.maxAge !== undefined) field('max age', `${Math.round(effective.maxAge / 1000)}s`);
 }
 
 // Re-check installs against what is known now, and say what has changed since
@@ -2072,6 +2388,33 @@ async function validate(args: string[], io: Console): Promise<number> {
     }
 
     const who = (seen: Seen) => `${seen.handle ? `${seen.handle} (${seen.did})` : seen.did}${seen.kind ? ` as ${seen.kind}` : ''}`;
+    const { o, e } = styles(io);
+    if (o.people) {
+        for (const each of results) {
+            const attention = exit(each) > 0;
+            if (values.quiet && !attention) continue;
+            const name = o.bundle(o.bold(each.record.name));
+            if (each.skipped) {
+                io.out(`${name}  ${o.dim(`validated ${each.record.validatedAt}, recently enough`)}`);
+                continue;
+            }
+            const bad = each.check.state === 'missing' || each.check.state === 'changed' || each.check.state === 'invalid';
+            if (each.check.state !== 'ok') io.out(`${name}  ${(bad ? o.red : o.yellow)(`${bad ? '✖' : '⚠'} ${each.check.state.toUpperCase()}`)} ${o.dim(`— ${each.check.reason}`)}`);
+            else if (!attention && !each.added.length && !each.removed.length) io.out(`${name}  ${o.green('✔ OK')} ${o.dim('— nothing new')}`);
+            else io.out(name);
+            const out = (lines: string[]) => { for (const line of lines) io.out(line); };
+            for (const seen of each.added.filter((one) => one.verdict === 'bad')) {
+                out(marked(o, '   ', 'attestation', o.red(o.bold('WARNING from')), [...attesterLines(o, seen), o.red('has marked it bad since it was last checked')]));
+            }
+            if (!values.quiet) {
+                for (const seen of each.added.filter((one) => one.verdict === 'good')) out(marked(o, '   ', 'attestation', `${o.green('new:')} attested by`, attesterLines(o, seen)));
+                for (const seen of each.removed) out(marked(o, '   ', 'attestation', `${o.yellow('withdrawn:')}${seen.verdict === 'bad' ? ' a warning from' : ''}`, attesterLines(o, seen)));
+                for (const problem of each.problems) io.err(`   ${e.warn(`${problem} — the cache answered instead`)}`);
+            }
+        }
+        if (!results.length && !values.quiet) io.out(o.dim('nothing installed'));
+        return code;
+    }
     for (const each of results) {
         const attention = exit(each) > 0;
         if (values.quiet && !attention) continue;
@@ -2101,38 +2444,43 @@ async function uninstall(args: string[], io: Console): Promise<number> {
     const INSTALL = await import('./install.ts');
     const SUITES = await import('./suite-install.ts');
     const which = positionals[0];
+    const { o, e } = styles(io);
 
     // A suite: what it brought goes, and what was here anyway stays.
     const suite = which !== undefined && !INSTALL.records()[which] ? SUITES.findSuite(which) : undefined;
     if (suite !== undefined) {
         const { suite: gone, members } = await SUITES.uninstallSuite(suite);
-        io.out(`removed suite ${gone.name}`);
-        io.err(`  it came from ${gone.source}`);
+        io.out(o.people ? o.bundle(`${o.red('removed')} suite ${o.bold(gone.name)}`) : `removed suite ${gone.name}`);
+        io.err(`  ${e.dim(`it came from ${gone.source}`)}`);
         for (const member of members) {
-            if (member.state === 'removed') io.out(`removed ${member.install}`);
-            else if (member.install !== undefined) io.err(`  kept ${member.install}: ${member.reason}`);
+            if (member.state === 'removed') io.out(o.people ? `   ${o.red('-')} ${o.bundle(o.bold(member.install!))}` : `removed ${member.install}`);
+            else if (member.install !== undefined) io.err(e.people ? `   ${e.green('=')} ${e.bundle(e.bold(member.install))}  ${e.dim(`kept: ${member.reason}`)}` : `  kept ${member.install}: ${member.reason}`);
         }
         return 0;
     }
 
     const record = INSTALL.uninstall(which);
-    io.out(`removed ${record.name} from ${record.dir}`);
-    io.err(`  it came from ${record.url}`);
+    io.out(o.people ? `${o.bundle(`${o.red('removed')} ${o.bold(record.name)}`)}  ${o.dim(`from ${record.dir}`)}` : `removed ${record.name} from ${record.dir}`);
+    io.err(`  ${e.dim(`it came from ${record.url}`)}`);
     // Uninstalled by itself, it is left out of its suites from now on.
     for (const name of SUITES.forget([record.name], record.plugins.map((plugin) => plugin.name))) {
-        io.err(`  it was in suite ${name}, which leaves it out from now on — installing it again brings it back`);
+        io.err(`  ${e.dim(`it was in suite ${name}, which leaves it out from now on — installing it again brings it back`)}`);
     }
     // Its plugins went with it — unless another install of the same app
     // still loads them.
-    for (const plugin of record.plugins) io.out(`removed its plugin ${INSTALL.labelOf(plugin)} (${plugin.package}) from ${plugin.dir}`);
+    for (const plugin of record.plugins) {
+        io.out(o.people
+            ? `   ${o.red('-')} ${o.bundle(`plugin ${o.bold(INSTALL.labelOf(plugin) ?? plugin.name)}`)}  ${o.dim(`(${plugin.package}) from ${plugin.dir}`)}`
+            : `removed its plugin ${INSTALL.labelOf(plugin)} (${plugin.package}) from ${plugin.dir}`);
+    }
     if (record.sharedWith.length) {
-        io.err(`  its plugins stay: ${record.sharedWith.join(', ')} ${record.sharedWith.length === 1 ? 'is' : 'are'} the same app, and ${record.sharedWith.length === 1 ? 'loads' : 'load'} them too`);
+        io.err(`  ${e.dim(`its plugins stay: ${record.sharedWith.join(', ')} ${record.sharedWith.length === 1 ? 'is' : 'are'} the same app, and ${record.sharedWith.length === 1 ? 'loads' : 'load'} them too`)}`);
     }
     // This package going takes its shell hook with it — the hook would only
     // look for a `bundle` that is no longer there.
     if (!positionals[0]) {
         const COMPLETION = await import('./completion.ts');
-        for (const file of COMPLETION.removeHooks()) io.err(`  took bundle's shell setup out of ${file}`);
+        for (const file of COMPLETION.removeHooks()) io.err(`  ${e.dim(`took bundle's shell setup out of ${file}`)}`);
     }
     return 0;
 }
@@ -2145,6 +2493,12 @@ async function suite(args: string[], io: Console): Promise<number> {
     const SUITE = await import('./suite.ts');
     const [sub, ...rest] = positionals;
     const file = values.suite;
+    const { o, e } = styles(io);
+    // What a member requires, for people: a heading, then each requirement under it.
+    const requires = (require: import('./suite.ts').SuiteRequire | undefined, indent: string, out = io.out, style = o) => {
+        out(`${indent}${style.dim('requires')}`);
+        for (const line of requireLines(require, style, `${indent}  `)) out(line);
+    };
 
     if (sub === 'add') {
         if (!rest.length) throw new Error('suite add: name the listings to add, as @<handle or did>/<name> or at:// addresses');
@@ -2163,8 +2517,13 @@ async function suite(args: string[], io: Console): Promise<number> {
                 ...(member.require?.identity ? [`signed by ${member.require.identity} via ${member.require.issuer}`] : []),
                 ...(member.require?.attesters ?? []).map((attester) => `attested by ${attester}`),
             ];
-            io.out(`${at >= 0 ? 'updated' : 'added'} ${target} in ${spec.name} (${file})${where ? `, for ${where.label}` : ''}`);
-            io.out(required.length ? `  requiring: ${required.join('; ')}` : '  requiring nothing: each install decides on its own');
+            if (o.people) {
+                io.out(o.bundle(`${o.green(at >= 0 ? 'updated' : 'added')} ${o.bold(target)} in ${o.bold(spec.name)}  ${o.dim(`(${file})${where ? `, for ${where.label}` : ''}`)}`));
+                requires(member.require, '   ');
+            } else {
+                io.out(`${at >= 0 ? 'updated' : 'added'} ${target} in ${spec.name} (${file})${where ? `, for ${where.label}` : ''}`);
+                io.out(required.length ? `  requiring: ${required.join('; ')}` : '  requiring nothing: each install decides on its own');
+            }
         }
         SUITE.writeSpec(file, spec, version());
         return 0;
@@ -2177,14 +2536,14 @@ async function suite(args: string[], io: Console): Promise<number> {
             const uri = await memberUri(target, spec);
             const at = spec.members.findIndex((each) => each.listing === uri);
             if (at < 0) {
-                io.err(`error: ${spec.name} has no member ${target}`);
+                io.err(e.error(`${spec.name} has no member ${target}`));
                 missing++;
                 continue;
             }
             spec.members.splice(at, 1);
-            io.out(`removed ${target} from ${spec.name} (${file})`);
+            io.out(o.people ? o.bundle(`${o.red('removed')} ${o.bold(target)} from ${o.bold(spec.name)}  ${o.dim(`(${file})`)}`) : `removed ${target} from ${spec.name} (${file})`);
             const dependent = spec.members.filter((each) => each.for === uri);
-            if (dependent.length) io.err(`  ! still for it: ${dependent.map((each) => each.label ?? each.listing).join(', ')} — remove them too: for now, 'suite publish' refuses plugins for an app not in the suite`);
+            if (dependent.length) io.err(`  ${e.warn(`still for it: ${dependent.map((each) => each.label ?? each.listing).join(', ')} — remove them too: for now, 'suite publish' refuses plugins for an app not in the suite`)}`);
         }
         SUITE.writeSpec(file, spec, version());
         return missing ? 1 : 0;
@@ -2193,7 +2552,7 @@ async function suite(args: string[], io: Console): Promise<number> {
     // would read the spec — so whoever is asked to permit one can check it.
     const named = async (target: string): Promise<import('./suite.ts').SuiteSpec> => {
         const found = await (await import('./suite-install.ts')).fetchTarget(target);
-        io.err(`* ${target} is ${found.uri}`);
+        io.err(e.note(`${target} is ${found.uri}`, 'bundle'));
         return { name: found.name, title: found.record.title, description: found.record.description, members: found.record.members };
     };
     if (sub === 'validate') {
@@ -2218,7 +2577,7 @@ async function suite(args: string[], io: Console): Promise<number> {
                 inspected = await inspectMember(member.listing, values, (floor?.attesters ?? []).map(({ did }) => did));
             } catch (err) {
                 problems.push(`${label}: ${message(err)}`);
-                io.out(`FAIL  ${label} — ${message(err)}`);
+                io.out(o.people ? `${o.red('✖')} ${o.bundle(o.bold(label))}  ${o.red(message(err))}` : `FAIL  ${label} — ${message(err)}`);
                 continue;
             }
             const app = LISTING.appOf(inspected.found.record);
@@ -2233,11 +2592,23 @@ async function suite(args: string[], io: Console): Promise<number> {
             const review = REVIEW.judge(inspected.gathered, { policy: { ...POLICY.emptyPolicy(), discovery: false }, minimum: floor ? [floor] : [] });
             mine.push(...review.unmet);
             problems.push(...mine.map((problem) => `${label}: ${problem}`));
-            io.out(`${mine.length ? 'FAIL' : 'OK  '}  ${label} — ${inspected.url}, ${inspected.gathered.hashAlg}:${inspected.gathered.hash}`);
-            for (const problem of mine) io.out(`      ${problem}`);
-            if (!mine.length) io.out(`      requires ${describeRequire(member.require)}`);
+            if (o.people) {
+                io.out(`${mine.length ? o.red('✖') : o.green('✔')} ${o.bundle(o.bold(label))}  ${o.dim(inspected.url)}`);
+                io.out(`     ${o.dim(`${inspected.gathered.hashAlg}:${inspected.gathered.hash}`)}`);
+                for (const problem of mine) io.out(`     ${o.red(problem)}`);
+                if (!mine.length) requires(member.require, '     ');
+            } else {
+                io.out(`${mine.length ? 'FAIL' : 'OK  '}  ${label} — ${inspected.url}, ${inspected.gathered.hashAlg}:${inspected.gathered.hash}`);
+                for (const problem of mine) io.out(`      ${problem}`);
+                if (!mine.length) io.out(`      requires ${describeRequire(member.require)}`);
+            }
         }
-        io.out(problems.length
+        if (o.people) io.out('');
+        io.out(o.people
+            ? problems.length
+                ? o.red(`${o.bold(spec.name)}: ${plural(problems.length, 'problem')}`)
+                : `${o.green('✔')} ${o.bold(spec.name)}: consistent, and every member carries what it requires`
+            : problems.length
             ? `${spec.name}: ${problems.length} problem${problems.length === 1 ? '' : 's'}`
             : `${spec.name}: consistent, and every member carries what it requires`);
         return problems.length ? 1 : 0;
@@ -2252,12 +2623,15 @@ async function suite(args: string[], io: Console): Promise<number> {
             if (!member) throw new Error(`suite update: ${spec.name} has no member ${rest[i]}`);
             const label = member.label ?? member.listing;
             const inspected = await inspectMember(member.listing, values, (member.require?.attesters ?? []).map((spec) => parseAttester(spec).subject));
-            io.err(`* ${label} is at ${inspected.url}`);
+            io.err(e.note(`${label} is at ${inspected.url}`, 'bundle'));
             const require = await chooseRequire(label, inspected, values, io, member.require ?? {});
             if (require && Object.keys(require).length) member.require = require;
             else delete member.require;
             SUITE.writeSpec(file, spec, version());
-            io.out(`${label}: requiring ${describeRequire(member.require)}`);
+            if (o.people) {
+                io.out(o.bundle(o.bold(label)));
+                requires(member.require, '   ');
+            } else io.out(`${label}: requiring ${describeRequire(member.require)}`);
         }
         return 0;
     }
@@ -2272,10 +2646,18 @@ async function suite(args: string[], io: Console): Promise<number> {
         const { name, members } = rest[0] !== undefined ? await named(rest[0]) : SUITE.readSpec(file);
         if (!members.length) throw new Error(`suite attest: ${name} has no members`);
         const { hashAlg, hex } = SUITE.suiteHash({ members });
-        io.err(`* suite ${name}: ${hashAlg}:${hex}, which says:`);
-        for (const member of members) {
-            io.err(`  ${member.listing}${member.for !== undefined ? ` for ${member.for}` : ''}`);
-            io.err(`    requires ${describeRequire(member.require)}`);
+        if (e.people) {
+            io.err(e.bundle(`suite ${e.bold(name)}  ${e.dim(`${hashAlg}:${hex}`)}, which says:`));
+            for (const member of members) {
+                io.err(`   ${e.bundle(e.bold(member.listing))}${member.for !== undefined ? e.dim(` for ${member.for}`) : ''}`);
+                requires(member.require, '      ', io.err, e);
+            }
+        } else {
+            io.err(`* suite ${name}: ${hashAlg}:${hex}, which says:`);
+            for (const member of members) {
+                io.err(`  ${member.listing}${member.for !== undefined ? ` for ${member.for}` : ''}`);
+                io.err(`    requires ${describeRequire(member.require)}`);
+            }
         }
         const { COLLECTION } = await import('./attestation.ts');
         const session = await signIn('suite attest', values, io, `atproto repo:${COLLECTION}`);
@@ -2283,11 +2665,19 @@ async function suite(args: string[], io: Console): Promise<number> {
             const ATPROTO = await import('./atproto.ts');
             if (values.revoke) {
                 await ATPROTO.revokeAll(session, [hex]);
-                io.out(`withdrew ${session.did}'s attestation of suite ${name} (${hashAlg}:${hex})`);
+                io.out(o.people
+                    ? o.attestation(`withdrew suite ${o.bold(name)}  ${o.dim(`${hashAlg}:${hex}`)}`)
+                    : `withdrew ${session.did}'s attestation of suite ${name} (${hashAlg}:${hex})`);
             } else {
                 const [written] = await ATPROTO.attestAll(session, [{ hashAlg, hex, kind: values.kind, verdict, note: values.note }]);
-                io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} suite ${name} (${hashAlg}:${hex}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
-                io.out(`  ${written!.uri}`);
+                if (o.people) {
+                    io.out(o.attestation(`${verdict === 'bad' ? o.red(o.bold('marked bad')) : o.green('attested')} suite ${o.bold(name)}${values.kind ? ` as ${values.kind}` : ''}`));
+                    io.out(`   ${o.dim(`${hashAlg}:${hex}`)}`);
+                    io.out(`   ${o.cyan(written!.uri)}`);
+                } else {
+                    io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} suite ${name} (${hashAlg}:${hex}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
+                    io.out(`  ${written!.uri}`);
+                }
             }
         } finally {
             await session.end?.();
@@ -2301,6 +2691,19 @@ async function suite(args: string[], io: Console): Promise<number> {
             return 0;
         }
         const { hashAlg, hex } = SUITE.suiteHash(spec);
+        if (o.people) {
+            io.out(`${o.bundle(`suite ${o.bold(spec.name)}`)}${spec.title ? ` — ${spec.title}` : ''}  ${o.dim(`(${rest[0] ?? file})`)}`);
+            if (spec.description) io.out(`   ${spec.description}`);
+            io.out(`   ${o.dim(`${hashAlg}:${hex} — what an attestation of it names`)}`);
+            for (const member of spec.members) {
+                io.out('');
+                io.out(`   ${o.bundle(o.bold(member.label ?? member.listing))}${member.for !== undefined ? `  ${o.dim(`for ${member.forLabel ?? member.for}`)}` : ''}`);
+                if (member.label) io.out(`      ${o.dim(member.listing)}`);
+                requires(member.require, '      ');
+            }
+            if (!spec.members.length) io.err(`   ${e.dim(`no members yet — 'bundle suite add --suite ${file} <listing>'`)}`);
+            return 0;
+        }
         io.out(`${spec.name}${spec.title ? ` — ${spec.title}` : ''}  (${rest[0] ?? file})`);
         io.out(`  ${hashAlg}:${hex} — what an attestation of it names`);
         if (spec.description) io.out(`  ${spec.description}`);
@@ -2339,9 +2742,16 @@ async function suite(args: string[], io: Console): Promise<number> {
                 throw new Error(`suite publish: ${session.did} lists a bundle called '${spec.name}', which @<account>/${spec.name} installs instead — give the suite another name`);
             }
             const { uri, replaced } = await SUITE.publishSuite(session, spec);
-            io.out(`${replaced ? 'updated' : 'published'} suite ${spec.name} as ${session.did}`);
-            io.out(`  ${uri}`);
-            io.err(`  install it with: bundle install @${session.handle ?? session.did}/${spec.name}`);
+            const command = `bundle install @${session.handle ?? session.did}/${spec.name}`;
+            if (o.people) {
+                io.out(o.bundle(`${o.green(replaced ? 'updated' : 'published')} suite ${o.bold(spec.name)}  ${o.dim(`as ${session.did}`)}`));
+                io.out(`   ${o.cyan(uri)}`);
+                io.err(`   ${e.dim('install it with:')} ${e.bold(command)}`);
+            } else {
+                io.out(`${replaced ? 'updated' : 'published'} suite ${spec.name} as ${session.did}`);
+                io.out(`  ${uri}`);
+                io.err(`  install it with: ${command}`);
+            }
         } finally {
             await session.end?.();
         }
@@ -2352,10 +2762,10 @@ async function suite(args: string[], io: Console): Promise<number> {
         const session = await signIn('suite unpublish', values, io, `atproto repo:${SUITE.SUITE}`);
         try {
             if (!await SUITE.unpublishSuite(session, rest[0]!)) {
-                io.err(`error: ${session.did} has no suite called '${rest[0]}'`);
+                io.err(e.error(`${session.did} has no suite called '${rest[0]}'`));
                 return 1;
             }
-            io.out(`unpublished suite ${rest[0]} from ${session.did}`);
+            io.out(o.people ? o.bundle(`unpublished suite ${o.bold(rest[0]!)}  ${o.dim(`from ${session.did}`)}`) : `unpublished suite ${rest[0]} from ${session.did}`);
         } finally {
             await session.end?.();
         }
@@ -2424,28 +2834,33 @@ async function chooseRequire(target: string, inspected: Awaited<ReturnType<typeo
         if (e.type !== 'attestation') return false;
         return (current?.attesters ?? []).some((spec) => { const { subject, kind } = parseAttester(spec); return subject === e.did && (!kind || kind === e.kind); });
     };
+    const { e } = styles(io);
     if (current) {
         const kept = offered.filter(now).map((item) => numbered.indexOf(item) + 1);
-        io.err(`* required now: ${describeRequire(current)}${kept.length ? ` — ${kept.join(', ')} above` : ''}`);
+        if (e.people) {
+            io.err('');
+            io.err(`${e.cyan('›')} required now${kept.length ? e.dim(` — ${kept.join(', ')} above`) : ''}`);
+            for (const line of requireLines(current, e, '    ')) io.err(line);
+        } else io.err(e.note(`required now: ${describeRequire(current)}${kept.length ? ` — ${kept.join(', ')} above` : ''}`));
         const gone = describeMissing(current, offered.filter(now));
-        if (gone.length) io.err(`  ! not carried by what it serves now: ${gone.join(', ')}`);
+        if (gone.length) io.err(`  ${e.warn(`not carried by what it serves now: ${gone.join(', ')}`)}`);
     }
     let chosen = offered;
     if (!offered.length) {
-        io.err(`  nothing it carries can be required${current ? ': what is required stays' : ': it is added requiring nothing'}`);
+        io.err(`  ${e.dim(`nothing it carries can be required${current ? ': what is required stays' : ': it is added requiring nothing'}`)}`);
         return current;
     }
     if (!values.yes) {
         if (!io.ask) throw new Error(`suite: choosing what to require of ${target} needs a terminal — or --yes, for all of it`);
         const among = offered.map((item) => numbered.indexOf(item) + 1).join(', ');
         for (;;) {
-            const answer = (await io.ask(`  require which of ${among}? numbers, 'all', 'none', or Enter to ${current ? 'keep what is required now' : 'require nothing'}: `)).trim().toLowerCase();
+            const answer = (await io.ask(prompt(e, `require which of ${among}?`, `numbers, 'all', 'none', or Enter to ${current ? 'keep what is required now' : 'require nothing'}`))).trim().toLowerCase();
             if (!answer) return current;
             if (answer === 'none' || answer === 'n' || answer === 'no') { chosen = []; break; }
             if (answer === 'all' || answer === 'a') { chosen = offered; break; }
             const picked = answer.split(/[\s,]+/).map(Number).map((n) => numbered[n - 1]);
             if (picked.every((item) => item && offered.includes(item))) { chosen = [...new Set(picked as REVIEW.ReviewItem[])]; break; }
-            io.err(`  '${answer}' is not among ${among}`);
+            io.err(`  ${e.people ? e.yellow(`'${answer}' is not among ${among}`) : `'${answer}' is not among ${among}`}`);
         }
     }
     const signature = chosen.find(({ evidence }) => evidence.type === 'signature')?.evidence as Extract<REVIEW.Evidence, { type: 'signature' }> | undefined;
@@ -2463,6 +2878,22 @@ function describeRequire(require: import('./suite.ts').SuiteRequire | undefined)
         ...(require?.attesters?.length ? [`attested by ${require.quorum !== undefined ? `${require.quorum} of ` : ''}${require.attesters.join(', ')}`] : []),
     ];
     return parts.join('; ') || 'nothing';
+}
+
+// The same, for people: each requirement on its own lines, under its mark,
+// indented by `indent`.
+function requireLines(require: import('./suite.ts').SuiteRequire | undefined, style: Style, indent: string): string[] {
+    const lines: string[] = [];
+    if (require?.identity || require?.issuer) {
+        lines.push(...marked(style, indent, 'signature', 'signed by', require.identity
+            ? signerLines(style, require.identity, require.issuer)
+            : [style.bold('any identity'), style.dim(`via ${require.issuer}`)]));
+    }
+    if (require?.attesters?.length) {
+        lines.push(...marked(style, indent, 'attestation', `attested by${require.quorum !== undefined ? ` ${require.quorum} of` : ''}`, []));
+        for (const spec of require.attesters) lines.push(...attesterSpecLines(style, spec).map((line) => `${indent}   ${line}`));
+    }
+    return lines.length ? lines : [`${indent}${style.dim('nothing required: each install decides on its own')}`];
 }
 
 // What is required that none of `carried` is.
@@ -2507,7 +2938,7 @@ async function suiteMember(target: string, where: { for: string; label: string }
     }
     const outside = where ? undefined : await pluginOutside(app, members);
     if (outside) throw new Error(`suite add: ${target}: ${outside}`);
-    io.err(`* ${target} is ${found.uri}, at ${url}`);
+    io.err(styles(io).e.note(`${target} is ${found.uri}, at ${url}`, 'bundle'));
     const require = await chooseRequire(target, inspected, values, io);
     return {
         listing: found.uri,
@@ -2543,10 +2974,17 @@ function audit(args: string[], io: Console): number {
     if (!bundle) throw new Error('audit: an archive path is required');
     if (values.check && values.approve) throw new Error('audit: --check and --approve are alternatives');
     const options = { bundle, verdict: values.verdict, baseline: values.baseline };
+    const { o, e } = styles(io);
 
     if (values.check) {
         const verdict = AUDIT.check(options);
         const notes = (verdict.findings ?? []).length;
+        if (e.people) {
+            io.err(e.bundle(`${e.bold(bundle)}  ${e.green(`✔ audited: ${verdict.summary ?? 'pass'}`)}`));
+            io.err(`   ${e.dim(`${verdict.reviewed ?? '?'} of ${verdict.members ?? '?'} members reviewed, ${plural(notes, 'finding')}` +
+                `${verdict.baselineSha256 ? `, as a diff against ${verdict.baselineSha256.slice(0, 16)}…` : ''}`)}`);
+            return 0;
+        }
         io.err(`* audited: ${verdict.summary ?? 'pass'}`);
         io.err(`  ${verdict.reviewed ?? '?'} of ${verdict.members ?? '?'} members reviewed, ` +
             `${notes} finding${notes === 1 ? '' : 's'}`);
@@ -2556,11 +2994,17 @@ function audit(args: string[], io: Console): number {
 
     if (values.approve) {
         const verdict = AUDIT.approve({ ...options, note: values.note });
-        io.err(`* recorded a pass over ${verdict.sha256!.slice(0, 16)}… in ${AUDIT.verdictPath(bundle, values.verdict)}`);
+        io.err(e.people
+            ? e.bundle(`${e.green('recorded a pass')} over ${e.bold(bundle)}  ${e.dim(`${verdict.sha256!.slice(0, 16)}… in ${AUDIT.verdictPath(bundle, values.verdict)}`)}`)
+            : `* recorded a pass over ${verdict.sha256!.slice(0, 16)}… in ${AUDIT.verdictPath(bundle, values.verdict)}`);
         return 0;
     }
 
     const found = AUDIT.prepare(options);
+    if (o.people) {
+        showAudit(found, bundle, io, o, e);
+        return 0;
+    }
     io.out(`${found.bundle}: ${STATES[found.state as VerificationState]?.label ?? found.state}, ${found.members.length} members`);
     io.out(`  sha256: ${found.sha256}`);
     if (found.state === 'unsigned') {
@@ -2594,6 +3038,37 @@ function audit(args: string[], io: Console): number {
     io.err(`    bundle audit --approve --note '<what you checked>' ${bundle}`);
     io.err("* then gate signing on it: bundle audit --check ... && bundle sign ...");
     return 0;
+}
+
+// What is about to be reviewed, for a person: the bundle, what runs first,
+// what changed since the baseline, and the two ways to record a verdict.
+function showAudit(found: ReturnType<typeof AUDIT.prepare>, bundle: string, io: Console, o: Style, e: Style): void {
+    const state = found.state as VerificationState;
+    const label = STATES[state]?.label ?? found.state;
+    io.out(`${o.bundle(o.bold(found.bundle))}  ${state === 'unsigned' ? o.dim(`${label} — not signed yet, as it should be`) : STATES[state] ? o.state(state, label) : label}`);
+    io.out(`   ${o.dim(`${plural(found.members.length, 'member')}  sha256:${found.sha256}`)}`);
+    if (found.prefix?.script) {
+        io.out(`   ${o.yellow('runs first:')} a ${bytes(found.prefix.bytes)} #! launcher`);
+        for (const line of found.prefix.script.trimEnd().split('\n')) io.out(`     ${o.dim('│')} ${line}`);
+    } else if (found.prefix) {
+        io.out(`   ${o.yellow('runs first:')} ${bytes(found.prefix.bytes)} of binary ${o.dim(`(sha256 ${found.prefix.sha256.slice(0, 16)}…)`)}`);
+    }
+    if (found.baseline) {
+        io.out(`   ${o.dim('against')} ${found.baseline.path} ${o.dim(`(${found.baseline.sha256.slice(0, 16)}…)`)}`);
+        io.out(`   ${o.green(`${found.baseline.added.length} added`)}, ${o.red(`${found.baseline.removed.length} removed`)}, ${found.baseline.carried} carried over` +
+            `${found.prefix ? `, prefix ${found.baseline.samePrefix ? 'unchanged' : o.yellow(o.bold('CHANGED'))}` : ''}`);
+        for (const name of found.baseline.added.slice(0, 10)) io.out(`     ${o.green('+')} ${name}`);
+        for (const name of found.baseline.removed.slice(0, 10)) io.out(`     ${o.red('-')} ${name}`);
+    } else {
+        io.out(`   ${o.dim('no baseline — the review is of everything, not a diff')}`);
+    }
+    io.err('');
+    io.err(`${e.cyan('›')} review it, then record the verdict:`);
+    io.err(`    ${e.bold(`BUNDLE_AUDIT_VERDICT=${found.verdict} \\`)}`);
+    io.err(`      ${e.bold(found.baseline ? `claude "/audit-bundle ${bundle} against ${found.baseline.path}"` : `claude "/audit-bundle ${bundle}"`)}`);
+    io.err(`  ${e.dim('or, having read it yourself:')}`);
+    io.err(`    ${e.bold(`bundle audit --approve --note '<what you checked>' ${bundle}`)}`);
+    io.err(`${e.signature('then gate signing on it:')} ${e.bold('bundle audit --check ... && bundle sign ...')}`);
 }
 
 // Wrap an archive in a node runtime that verifies itself before running it.
@@ -2631,15 +3106,17 @@ async function sea(args: string[], io: Console): Promise<number> {
 
     if (!app) {
         if (values.base) throw new Error('sea: --base reuses a runtime; without an archive there is nothing to add to it');
-        io.err('* building a verifying node (node runtime + verifier, no application)');
+        io.err(styles(io).e.note('building a verifying node (node runtime + verifier, no application)'));
         const built = await SEA.createSeaBase({
             output: values.output,
             node: values.node,
             sigstore: values.sigstore,
             bootstrap,
         });
-        io.err(`* wrote ${built.output} (${built.size} bytes, ${built.verifier.length} verifier members)`);
-        io.err(`* run an archive with it: ${built.output} <archive> [args...]`);
+        const { e } = styles(io);
+        io.err(e.people ? `${e.cyan('›')} wrote ${e.bold(built.output)}  ${e.dim(`${bytes(built.size)}, ${built.verifier.length} verifier members`)}`
+            : `* wrote ${built.output} (${built.size} bytes, ${built.verifier.length} verifier members)`);
+        io.err(e.note(`run an archive with it: ${built.output} <archive> [args...]`, 'bundle'));
         return 0;
     }
 
@@ -2653,11 +3130,12 @@ async function sea(args: string[], io: Console): Promise<number> {
         sigstore: values.sigstore,
         hashAlg: values.hash,
         bootstrap,
-        log: io.err,
+        log: logger(io),
     });
     if (res.output) {
-        io.err(`* wrote ${res.output} (${res.size} bytes, unsigned)`);
-        io.err(`* review it, then sign it: bundle sign ${res.output}${res.output.includes('.unsigned') ? '' : ' (in place)'}`);
+        const { e } = styles(io);
+        io.err(e.people ? e.bundle(`wrote ${e.bold(res.output)}  ${e.dim(`${bytes(res.size!)}, unsigned`)}`) : `* wrote ${res.output} (${res.size} bytes, unsigned)`);
+        io.err(e.note(`review it, then sign it: bundle sign ${res.output}${res.output.includes('.unsigned') ? '' : ' (in place)'}`, 'signature'));
     }
     return 0;
 }
@@ -2679,7 +3157,8 @@ async function trust(args: string[], io: Console): Promise<number> {
     if (values.sigstore) {
         const SIGSTORE = await import('./sigstore.ts');
         const path = await SIGSTORE.refreshTrustedRoot(values.mirror ? { mirror: values.mirror } : {});
-        io.out(`sigstore trust root refreshed: ${path}`);
+        const { o } = styles(io);
+        io.out(o.people ? o.signature(`sigstore trust root refreshed  ${o.dim(path)}`) : `sigstore trust root refreshed: ${path}`);
     }
 
     // Everyone whose attestations something on this machine may ask about:
@@ -2706,10 +3185,13 @@ async function trust(args: string[], io: Console): Promise<number> {
     for (const did of [...dids].sort()) {
         try {
             const { present, fetched, removed } = await ATPROTO.refreshAttester(did, network);
-            io.out(`${did}: ${present} attestation${present === 1 ? '' : 's'}` +
+            const { o } = styles(io);
+            io.out(o.people
+                ? o.attestation(`${o.bold(did)}  ${plural(present, 'attestation')}${fetched ? o.green(`, ${fetched} new`) : ''}${removed ? o.yellow(`, ${removed} withdrawn`) : ''}`)
+                : `${did}: ${present} attestation${present === 1 ? '' : 's'}` +
                 `${fetched ? `, ${fetched} new` : ''}${removed ? `, ${removed} withdrawn` : ''}`);
         } catch (err) {
-            io.err(`error: ${did}: ${message(err)}`);
+            io.err(styles(io).e.error(`${did}: ${message(err)}`));
             failed = true;
         }
     }
@@ -2737,9 +3219,12 @@ function skill(args: string[], io: Console): number {
 
     for (const name of names) {
         const res = SKILLS.install(name, { dir: values.dir, force: values.force });
-        for (const file of res.written) io.err(`+ ${PATH.relative(process.cwd(), file)}`);
-        for (const file of res.skipped) io.err(`= ${PATH.relative(process.cwd(), file)} (already there; --force to overwrite)`);
-        io.out(`installed skill '${res.name}' into ${PATH.relative(process.cwd(), res.path) || res.path}`);
+        const { o, e } = styles(io);
+        for (const file of res.written) io.err(e.line(`+ ${PATH.relative(process.cwd(), file)}`));
+        for (const file of res.skipped) io.err(e.line(`= ${PATH.relative(process.cwd(), file)} (already there; --force to overwrite)`));
+        io.out(o.people
+            ? `${o.green('installed')} skill ${o.bold(res.name)}  ${o.dim(`into ${PATH.relative(process.cwd(), res.path) || res.path}`)}`
+            : `installed skill '${res.name}' into ${PATH.relative(process.cwd(), res.path) || res.path}`);
     }
     return 0;
 }
@@ -2764,11 +3249,11 @@ interface SignerChoice {
 // the signature itself is made later, over the finished bytes.
 async function chooseSigner(values: SignerChoice, io: Console) {
     if (values.key && values.chain) {
-        io.err('* signing against the supplied certificate chain');
+        io.err(styles(io).e.note('signing against the supplied certificate chain', 'signature'));
         return fileSigner({ key: values.key, chain: values.chain, signAlg: values.sign });
     }
     const SIGSTORE = await import('./sigstore.ts');
-    io.err('* signing through sigstore');
+    io.err(styles(io).e.note('signing through sigstore', 'signature'));
     return await SIGSTORE.signer({
         signAlg: values.sign,
         flow: values.flow as 'auto' | 'ci' | 'browser' | 'device' | undefined,
@@ -2778,7 +3263,7 @@ async function chooseSigner(values: SignerChoice, io: Console) {
         fulcioURL: values.fulcio,
         rekorURL: values.rekor,
         tsaURL: values.tsa,
-        log: io.err,
+        log: logger(io),
     });
 }
 
