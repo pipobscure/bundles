@@ -1058,8 +1058,11 @@ test('attest signs in with OAuth — attestation-only scope, DPoP-bound — writ
     await session.end?.();
     assert.equal(AUTH.refreshTokens.size, live - 1);
     assert.ok(stateDir().startsWith(tmp), 'the state directory is this suite\'s own');
-    assert.deepEqual(FS.existsSync(stateDir()) ? FS.readdirSync(stateDir()).filter((name) => name !== 'installed.json' && name !== 'attestations') : [], [],
-        'nothing but install records and the attestation cache is ever written there');
+    // On macOS the state directory is also where installed apps and plugins
+    // are kept; those are this suite's installs, not anything sign-in left.
+    const installs = ['installed.json', 'attestations', 'apps', 'plugins'];
+    assert.deepEqual(FS.existsSync(stateDir()) ? FS.readdirSync(stateDir()).filter((name) => !installs.includes(name)) : [], [],
+        'nothing but installs, their records and the attestation cache is ever written there');
 });
 
 test('a PDS or sign-in server that says to slow down is waited for, and asked again with a fresh proof', async () => {
