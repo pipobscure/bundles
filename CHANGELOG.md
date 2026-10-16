@@ -3,6 +3,27 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## 0.1.4
+
+- **🌳 is the project's icon**, and `.nzip` files wear it. `bundle install` registers the file
+  type and its icon for the current user on every system, without administrator rights: on
+  Windows as the association's `DefaultIcon`; on Linux as `application/x-nzip` in
+  `$XDG_DATA_HOME/mime`, with a hicolor icon; on macOS through a small `NodeBundle.app` that
+  declares the type with Launch Services and opens nothing. Installing twice changes nothing,
+  a step that fails is reported without failing the install, and `uninstall` leaves it in
+  place. `BUNDLE_NO_DESKTOP_SETUP` turns it off; `BUNDLE_NO_WINDOWS_SETUP` still does too.
+- **Apps are kept as `.nzip`, and the `PATH` gets a link** (macOS and Linux). An app's archive
+  lives in bundle's data directory as `<name>.nzip` (`BUNDLE_APPS` overrides), and the command
+  in `~/.local/bin` is a symlink to it, so the archive keeps its extension and icon while you
+  type its bare name. Rename the link, or add another: `update` replaces the archive, so every
+  link runs the new version, `installed` lists them as *runs as*, and `uninstall` removes them
+  all. Existing installs move over on their next `update`. Windows is unchanged.
+- **Output for people on a terminal.** 🌳 marks bundles and apps, 🔐 signatures, ✍️ attestations;
+  names are bold, details dim, states in colour, and signers and attesters are a short
+  headline with the detail beneath (a GitHub Actions signer reads as repository, workflow and
+  ref). Piped or redirected, the output is the same text as before, byte for byte, so scripts
+  are unaffected. `NO_COLOR` and `TERM=dumb` are honoured.
+
 ## 0.1.3
 
 - **The launcher finds a node new enough for the app.** A bundle made with `create --launcher`
