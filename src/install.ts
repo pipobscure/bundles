@@ -149,8 +149,20 @@ export interface InstallRecord {
     sha256: string;
     /** When it was installed or last updated, ISO 8601. */
     at: string;
-    /** Where it was installed to, so an update can find it again. */
+    /**
+     * Where it was installed to, so an update can find it again: the directory
+     * on the PATH. For an app kept in the store (see `stored`), the directory
+     * its command links are in.
+     */
     dir: string;
+    /**
+     * For an app on macOS and Linux: where the archive itself is kept — in
+     * `appsDir()`, as `<name>.nzip` — with `dir` holding only a symlink to it,
+     * which is the command. Absent on Windows, where the archive is the
+     * command, and in records from before the store; those move into it on
+     * their next update.
+     */
+    stored?: string | undefined;
 }
 
 /** One attestation, as an install remembers having seen it. */
@@ -272,6 +284,34 @@ export function installDir(): string {
     return PATH.join(home, '.local', 'bin');
 }
 
+/**
+ * Where apps are kept, on macOS and Linux: `BUNDLE_APPS`, else `bundle/apps`
+ * in the data directory, beside the plugins. What sits on the PATH is a
+ * symlink into here, so the archive keeps its `.nzip` — and with it the file
+ * type and its icon — while the command is called by its bare name; an update
+ * replaces the archive here, and every link to it runs the new one; and the
+ * link can be renamed without the archive noticing.
+ *
+ * Windows keeps the archive on the PATH itself, as `<name>.nzip`: there the
+ * extension is what makes it runnable, and a symlink needs a privilege
+ * ordinary users do not have.
+ */
+export function appsDir(): string {
+    const configured = process.env['BUNDLE_APPS'];
+    if (configured) return PATH.resolve(configured);
+    return PATH.join(PATH.dirname(pluginsDir()), 'apps');
+}
+
+/** Whether apps are kept in `appsDir()` and linked onto the PATH: everywhere but Windows. */
+export function storesApps(): boolean {
+    return process.platform !== 'win32';
+}
+
+/** Where in `appsDir()` the app installed as `name` is kept. */
+export function storedPath(name: string): string {
+    return PATH.join(appsDir(), /\.nzip$/i.test(name) ? name : `${name}.nzip`);
+}
+
 /** Where the record of what is installed lives. */
 export function recordPath(): string {
     return PATH.join(stateDir(), 'installed.json');
@@ -338,9 +378,14 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     const before = records()[name];
     const record = await place(bytes, { name, dir, file, scope, pkg, label, source, url, response, options, log });
     // Installed over the same plugin linked for development: the link goes.
-    if (before && pathOf(before) !== pathOf(record)) remove(before);
+    if (before && before.scope !== undefined && pathOf(before) !== pathOf(record)) remove(before);
+    // Installed again somewhere else: the commands that were there go, and
+    // an archive kept on the PATH from before the store goes with them.
+    if (before && before.scope === undefined && before.dir !== record.dir) {
+        for (const command of commandsOf(before)) FS.rmSync(command, { force: true });
+    }
 
-    log(`* installed ${pathOf(record)}`);
+    log(record.stored !== undefined ? `* installed ${PATH.join(dir, name)}, which runs ${record.stored}` : `* installed ${pathOf(record)}`);
     if (scope === undefined && !onPath(dir)) {
         log(`! ${dir} is not on your PATH — add it, or set BUNDLE_INSTALL_DIR to somewhere that is`);
     }
@@ -413,9 +458,62 @@ function forApp(target: string, app: string, scope: string | undefined): void {
     }
 }
 
-/** Where an install's file is. */
+/** Where an install's archive is: in the store, or on the PATH as it always was. */
 export function pathOf(record: InstallRecord): string {
-    return PATH.join(record.dir, record.file ?? record.name);
+    return record.stored ?? PATH.join(record.dir, record.file ?? record.name);
+}
+
+/**
+ * The commands that run an app: for one in the store, every symlink in its
+ * directory that points at its archive, by whatever name it has been given
+ * since; otherwise the file on the PATH, when it is there. A plugin is no
+ * command, and has none.
+ */
+export function commandsOf(record: InstallRecord): string[] {
+    if (record.scope !== undefined) return [];
+    if (record.stored === undefined) {
+        const path = pathOf(record);
+        return FS.existsSync(path) ? [path] : [];
+    }
+    let entries: string[];
+    try {
+        entries = FS.readdirSync(record.dir);
+    } catch {
+        return [];
+    }
+    const target = PATH.resolve(record.stored);
+    return entries.map((entry) => PATH.join(record.dir, entry)).filter((path) => {
+        try {
+            return FS.lstatSync(path).isSymbolicLink() && PATH.resolve(record.dir, FS.readlinkSync(path)) === target;
+        } catch {
+            return false;
+        }
+    }).sort();
+}
+
+// Put the command `path` in place as a symlink to `stored`, replacing what is
+// there — the way installing over a file of the same name always has. Made
+// beside it and renamed over it, so there is never a moment without one.
+function linkCommand(path: string, stored: string): void {
+    FS.mkdirSync(PATH.dirname(path), { recursive: true });
+    const temporary = `${path}.incoming-${process.pid}`;
+    FS.rmSync(temporary, { force: true });
+    FS.symlinkSync(stored, temporary);
+    try {
+        FS.renameSync(temporary, path);
+    } catch (err) {
+        FS.rmSync(temporary, { force: true });
+        throw err;
+    }
+}
+
+// Whether `path` is an ordinary file, rather than a link or nothing.
+function isPlainFile(path: string): boolean {
+    try {
+        return FS.lstatSync(path).isFile();
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -477,6 +575,7 @@ export async function update(name: string | string[] | undefined, options: Insta
 // fetch, and — if something new came back — give it the same review an install
 // gets, against what this install has accepted.
 async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult> {
+    previous = intoStore(previous, log);
     if (previous.link !== undefined) {
         log(`* ${previous.name}: linked to ${previous.link}, which is always as it is`);
         return { record: previous, state: 'unchanged' };
@@ -538,6 +637,33 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
     });
     log(`  updated`);
     return { record, state: 'updated', previous: previous.sha256 };
+}
+
+// An app installed before the store, moved into it: its archive copied to
+// `storedPath()` and the file on the PATH made a link to the copy. Only when
+// the file is still the bytes that were installed — anything else is for
+// `installed` to report, not for this to carry along — and otherwise, or
+// where there is no store, the record as it is.
+function intoStore(record: InstallRecord, log: (line: string) => void): InstallRecord {
+    if (!storesApps() || record.scope !== undefined || record.stored !== undefined) return record;
+    const command = pathOf(record);
+    if (!isPlainFile(command)) return record;
+    const bytes = FS.readFileSync(command);
+    if (digest(bytes) !== record.sha256) return record;
+    const stored = storedPath(record.name);
+    FS.mkdirSync(PATH.dirname(stored), { recursive: true });
+    const temporary = `${stored}.incoming-${process.pid}`;
+    try {
+        FS.writeFileSync(temporary, bytes, { mode: 0o755 });
+        FS.chmodSync(temporary, 0o755);
+        FS.renameSync(temporary, stored);
+    } catch (err) {
+        FS.rmSync(temporary, { force: true });
+        throw err;
+    }
+    linkCommand(command, stored);
+    log(`* ${record.name}: moved into ${appsDir()} — ${command} is now a link to it`);
+    return remember({ ...record, stored });
 }
 
 /**
@@ -1017,8 +1143,10 @@ export function uninstall(which?: string): Uninstalled {
     return { ...record, plugins, sharedWith };
 }
 
-// An install's file, and for a plugin the name it was installed as beside it.
+// An install's file — for an app in the store, its archive and every command
+// that links to it — and for a plugin the name it was installed as beside it.
 function remove(record: InstallRecord): void {
+    for (const command of commandsOf(record)) FS.rmSync(command, { force: true });
     FS.rmSync(pathOf(record), { force: true });
     if (record.scope !== undefined) FS.rmSync(labelFile(pathOf(record)), { force: true });
 }
@@ -1135,9 +1263,12 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     log(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
 
     // A plugin is the app's data, not a command: it is not made executable,
-    // and the desktop is not told about it.
+    // and the desktop is not told about it. An app is kept in the store and
+    // linked onto the PATH, where there is a store.
     const plugin = scope !== undefined;
-    const target = PATH.join(dir, file ?? name);
+    const stored = !plugin && storesApps() ? storedPath(name) : undefined;
+    const command = PATH.join(dir, file ?? name);
+    const target = stored ?? command;
     FS.mkdirSync(PATH.dirname(target), { recursive: true });
     const temporary = `${target}.incoming-${process.pid}`;
     try {
@@ -1153,6 +1284,14 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     if (label !== undefined) {
         FS.writeFileSync(temporary, `${label}\n`);
         FS.renameSync(temporary, labelFile(target));
+    }
+    if (stored !== undefined) {
+        // A new install gets its command. An update leaves the commands as
+        // they are — renamed, or removed on purpose — since they point at the
+        // archive just replaced; except that one from before the store whose
+        // file had changed, which `intoStore()` left on the PATH, is replaced
+        // by a link now that there are verified bytes to link to.
+        if (!previous || (previous.stored === undefined && isPlainFile(command))) linkCommand(command, stored);
     }
 
     if ((options.associate ?? desktopSetupWanted()) && !plugin) {
@@ -1184,6 +1323,7 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         sha256: digest(bytes),
         at: new Date().toISOString(),
         dir,
+        stored,
     });
 }
 

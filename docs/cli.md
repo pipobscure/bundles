@@ -1,4 +1,4 @@
-# `bundle` command reference
+# 🌳 `bundle` command reference
 
 Everything `bundle` does, command by command. `bundle <command> --help` prints one command's
 options in brief, and `bundle --help` lists the commands; this is the long form. For what the tool is and how to get started, see the
@@ -12,9 +12,9 @@ bundle --help                            bundle -v, --version
 
 | Building and signing | |
 |---|---|
-| [`create`](#create) | build an archive from a list of files, behind a launcher or a binary if asked |
+| [`create`](#create) | 🌳 build an archive from a list of files, behind a launcher or a binary if asked |
 | [`audit`](#audit) | report what is about to be reviewed, and gate signing on the verdict |
-| [`sign`](#sign) | sign an archive as it is: `app.unsigned.nzip` into `app.nzip`, or in place |
+| [`sign`](#sign) | 🔐 sign an archive as it is: `app.unsigned.nzip` into `app.nzip`, or in place |
 | [`sea`](#sea) | build a node runtime that verifies an archive before running it, unsigned until signed |
 
 | Checking and running | |
@@ -24,7 +24,7 @@ bundle --help                            bundle -v, --version
 
 | Vouching | |
 |---|---|
-| [`attest`](#attest) | vouch for archives from an atproto account, warn against them, or withdraw that |
+| [`attest`](#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that |
 | [`lexicon`](#lexicon) | show, check or publish the atproto lexicons attestations and listings are written in |
 
 | Publishing and finding | |
@@ -84,6 +84,13 @@ bundle --help                            bundle -v, --version
   are repeated: records are written at a key of their own, so a write sent twice is one write.
 - **Errors go to stderr**, results to stdout. `--json`, where offered, prints a machine-readable
   result on stdout and nothing else there.
+- **On a terminal, the output is formatted for people.** When stdout or stderr is a terminal,
+  what goes there is marked up: 🌳 marks bundles and apps, 🔐 signatures, ✍️ attestations, and
+  colour shows states. Piped or redirected, it is the plain, stable, line-oriented text shown in
+  this reference, and that is what scripts should parse. Each stream decides for itself, so
+  `bundle installed | less` pipes plain text while prompts on stderr stay formatted. `NO_COLOR`
+  turns the colour off, and `TERM=dumb` turns the formatting off altogether. A Windows console
+  other than Windows Terminal gets no emoji, which it would draw as boxes.
 - **Nothing is done without asking that is not yours to decide.** A signer or attester nobody
   has accepted is a question; editing your shell's startup file is a question. With no
   terminal to ask on, those commands stop and say so (exit 4) rather than assume a yes.
@@ -385,7 +392,7 @@ doing the mounting. The cost is isolation: the program shares the process with t
 For a process of its own, spawn node with the arguments [`mountArgv`](api.md#the-library)
 returns.
 
-## Vouching
+## ✍️ Vouching
 
 ### `attest`
 
@@ -861,9 +868,20 @@ releases elsewhere without breaking every install.
 **Where it goes.** The name comes from the server's `Content-Disposition`, or the last
 segment of the URL, reduced to a bare file name: a suggestion from somebody else's server names
 a file, never a path. `--name` overrides it. The `.nzip` extension comes off everywhere but
-Windows, where it is what makes the file runnable. The file goes to `~/.local/bin`
-(`%LOCALAPPDATA%\bundle\bin` on Windows; `BUNDLE_INSTALL_DIR` or `--dir` anywhere), is made
-executable, and you are told if that directory is not on your `PATH`.
+Windows, where it is what makes the file runnable. The command goes in `~/.local/bin`
+(`%LOCALAPPDATA%\bundle\bin` on Windows; `BUNDLE_INSTALL_DIR` or `--dir` anywhere), and you are
+told if that directory is not on your `PATH`.
+
+**🌳 On macOS and Linux the archive is kept apart from the command.** The archive itself goes
+to `$XDG_DATA_HOME/bundle/apps/<name>.nzip` (`~/Library/Application Support/bundle/apps/` on
+macOS; `BUNDLE_APPS` anywhere), made executable, and what goes on the `PATH` is a symlink to
+it. So the archive keeps its `.nzip`, and with it the file type and its icon, while you call it
+by its bare name. An update replaces the archive, and every link to it runs the new one. You can
+rename the link, or add another, without changing the archive: `update` keeps working through
+it, `installed` lists every link in that directory under *runs as*, and `uninstall` removes
+them all. A link moved to some other directory is not found again. An install made before
+this layout moves into it on its next `update`, keeping its command as a link. On Windows the
+archive is the command, as `<name>.nzip` on the `PATH`.
 
 On Windows it also registers `.nzip` for the current user, adds it to `PATHEXT`, and
 broadcasts the change so a new terminal sees it. The association names one node for every
@@ -876,6 +894,18 @@ than through `setx`, which would freeze a copy of the machine's value. Both halv
 before they are written, so installing twice changes nothing. An `.nzip` default set in
 Windows' app settings is reported rather than overridden. cmd runs an archive by name, or by an
 unquoted path, but refuses a *quoted* path. See [examples/echo-argv/windows](../examples/echo-argv/windows/).
+
+**🌳 `.nzip` files get the bundle icon**, on every system, for the current user and without
+administrator rights. On Windows, `NodeBundle`'s `DefaultIcon` points at a copy in
+`%LOCALAPPDATA%\bundle\icons\nzip.ico`, and Explorer is told to redraw. On Linux and other
+freedesktop systems, `$XDG_DATA_HOME/mime/packages/pipobscure-bundle-nzip.xml` declares
+`application/x-nzip` for `*.nzip`, with its icon in `$XDG_DATA_HOME/icons/hicolor`, and
+`update-mime-database` is run. On macOS, a small app at
+`~/Library/Application Support/bundle/NodeBundle.app` declares the type
+`com.pipobscure.bundle.nzip` and its icon, and is registered with Launch Services; it never
+opens files itself. Each part is checked before it is written, so installing twice changes
+nothing, and a part that fails is reported without failing the install. Plugins do none of
+this. `uninstall` leaves it in place, since other archives may rely on it.
 
 **A domain works in place of a URL.** `bundle install tool.example.com` looks for a TXT
 record on that domain of the form `nzip:<url>`. The URL is a full `https:` URL, or a
@@ -1086,7 +1116,8 @@ suite, or that you have since installed by hand, stays, and so does one another 
 An install a suite has, uninstalled by itself, is left out of that suite from then on, until it
 is installed again.
 
-Deletes the file and forgets the record. With no argument it removes what `bundle install`
+Deletes the archive, and on macOS and Linux every link to it in its directory, and forgets
+the record. With no argument it removes what `bundle install`
 left behind, found by the URL it came from whatever it ended up called, and also takes the
 shell setup out of every startup file it was added to. The `.nzip` association on Windows is
 left alone: other archives may need it.
@@ -1306,6 +1337,7 @@ a file that is already there unless forced, so local edits survive.
 | What | Where | |
 |---|---|---|
 | Installed programs | `~/.local/bin`; `%LOCALAPPDATA%\bundle\bin` on Windows | `BUNDLE_INSTALL_DIR`, or `--dir` |
+| Installed archives | `$XDG_DATA_HOME/bundle/apps/<name>.nzip` (`~/.local/share/…`); `~/Library/Application Support/bundle/apps/` on macOS; on Windows, the programs themselves | `BUNDLE_APPS` |
 | Install records | `installed.json` in the state directory | |
 | Installed suites | `suites.json` in the state directory: which install came from which member, and what each suite brought | |
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
@@ -1315,7 +1347,8 @@ a file that is already there unless forced, so local edits survive.
 | Policy | see [`policy`](#policy) | `BUNDLE_POLICY`, `BUNDLE_SYSTEM_POLICY` |
 | Sigstore trust root | `$XDG_DATA_HOME/sigstore-js` (`~/.local/share/sigstore-js`); `~/Library/Application Support/sigstore-js` on macOS; `%LOCALAPPDATA%\sigstore-js\Data` on Windows | `BUNDLE_SIGSTORE_ROOT`, `--sigstore-root` |
 | Shell setup | `~/.bashrc`, `${ZDOTDIR:-~}/.zshrc`, `~/.config/fish/config.fish`, PowerShell's `$PROFILE`, only with your yes | `BUNDLE_SHELL`, `BUNDLE_POWERSHELL_PROFILE` |
-| `.nzip` association | `HKCU\Software\Classes` and the user's `PATHEXT`, on Windows | `BUNDLE_NO_WINDOWS_SETUP` |
+| `.nzip` association | `HKCU\Software\Classes` and the user's `PATHEXT`, on Windows | `BUNDLE_NO_DESKTOP_SETUP` |
+| `.nzip` icon | `%LOCALAPPDATA%\bundle\icons` on Windows; `$XDG_DATA_HOME/mime` and `$XDG_DATA_HOME/icons/hicolor` (`~/.local/share`) on Linux; `~/Library/Application Support/bundle/NodeBundle.app` on macOS | `BUNDLE_NO_DESKTOP_SETUP` |
 
 Nothing from signing in is ever stored: not the sigstore certificate's key, nor an OAuth
 session.
@@ -1325,10 +1358,11 @@ session.
 | Variable | |
 |---|---|
 | `BUNDLE_INSTALL_DIR` | where `install` puts programs |
+| `BUNDLE_APPS` | where `install` keeps the archives those programs link to, on macOS and Linux |
 | `BUNDLE_PLUGINS` | where plugin scopes are, for `install --for` and the plugin loader alike |
 | `BUNDLE_SEA_THREAD` | set by an executable's main thread for its workers: what it verified and mounted. Not something to set yourself |
 | `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. |
-| `BUNDLE_NO_WINDOWS_SETUP` | do not register `.nzip` or touch `PATHEXT` on Windows |
+| `BUNDLE_NO_DESKTOP_SETUP` | do not register `.nzip` or its icon with the desktop, or touch `PATHEXT` on Windows. `BUNDLE_NO_WINDOWS_SETUP`, its old name, still works |
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file |
 | `BUNDLE_ATTESTATIONS` | the attestation cache directory |
 | `BUNDLE_SIGSTORE_ROOT` | the sigstore trust root to check against, instead of the cache |

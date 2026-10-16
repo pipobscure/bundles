@@ -309,8 +309,11 @@ export const HELP: Record<string, string> = {
                         listing it was installed from (@<handle or did>/<name>,
                         or an at:// address), or its package name — into the
                         app's scope rather than onto the PATH
-  -d, --dir <dir>       where to install (default: ~/.local/bin, or
-                        %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides)
+  -d, --dir <dir>       where the command goes (default: ~/.local/bin, or
+                        %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides).
+                        On macOS and Linux it is a link to the archive, which
+                        is kept as <name>.nzip in bundle's data directory
+                        (BUNDLE_APPS overrides), so it can be renamed freely
       --no-shell        installing itself, do not offer to set up the shell
 
   everything that vouches for the archive is found and shown: its signature,
@@ -438,7 +441,9 @@ export const HELP: Record<string, string> = {
   too, stays. An install a suite has, uninstalled by itself, is left out of
   that suite from then on, until it is installed again.
 
-  deletes the file and forgets the record. With no argument it removes this
+  deletes the archive — and on macOS and Linux every link to it in its
+  directory, whatever it is called now — and forgets the record. With no
+  argument it removes this
   package's own install — what 'bundle install' left behind. An app's plugins
   go with it, unless another install of the same app still loads them. The
   .nzip association on Windows is left alone: other archives may need it.`,
@@ -1320,7 +1325,7 @@ async function install(args: string[], io: Console): Promise<number> {
         // part is still offered. Switching shells is one 'bundle install'.
         const existing = Object.values(INSTALL.records()).find((record) => record.url === target);
         const { o } = styles(io);
-        if (existing && FS.existsSync(PATH.join(existing.dir, existing.name))) {
+        if (existing && FS.existsSync(INSTALL.pathOf(existing))) {
             io.out(o.people
                 ? `${o.bundle(`${o.bold(existing.name)} is already installed`)}  ${o.dim(`in ${existing.dir} — 'bundle update' fetches a newer one`)}`
                 : `${existing.name} is already installed in ${existing.dir} ('bundle update' fetches a newer one)`);
@@ -1761,7 +1766,8 @@ async function installed(args: string[], io: Console): Promise<number> {
 
     if (values.json) {
         io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
-            name: record.name, scope: record.scope, package: record.package, label: INSTALL.labelOf(record), path, state, sha256, reason,
+            name: record.name, scope: record.scope, package: record.package, label: INSTALL.labelOf(record), path,
+            commands: record.scope === undefined ? INSTALL.commandsOf(record) : undefined, state, sha256, reason,
             source: INSTALL.sourceOf(record), url: record.url, identity: record.identity, issuer: record.issuer,
             attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record), suites: SUITES.suitesOf(record.name),
             warnings: review ? INSTALL.warningsOf(review) : [], at: record.at,
@@ -1777,6 +1783,10 @@ async function installed(args: string[], io: Console): Promise<number> {
             const suites = SUITES.suitesOf(record.name);
             if (suites.length) io.out(`  suite:  ${suites.join(', ')}`);
             io.out(`  at:     ${path}`);
+            if (record.stored !== undefined) {
+                const commands = INSTALL.commandsOf(record);
+                io.out(`  runs as: ${commands.length ? commands.join(', ') : `nothing — no link in ${record.dir} points at it`}`);
+            }
             const source = INSTALL.sourceOf(record);
             if (record.link !== undefined) io.out(`  linked: ${record.link}`);
             else if (source !== record.url) io.out(`  source: ${source}`);
@@ -1826,6 +1836,11 @@ function showInstalled(checks: import('./install.ts').InstalledCheck[], io: Cons
         const suites = SUITES.suitesOf(record.name);
         if (suites.length) field('suite', suites.join(', '));
         field('at', path);
+        if (record.stored !== undefined) {
+            const commands = INSTALL.commandsOf(record);
+            if (!commands.length) field('runs as', o.yellow(`nothing — no link in ${record.dir} points at it`));
+            for (const [n, command] of commands.entries()) field(n ? '' : 'runs as', command);
+        }
         const source = INSTALL.sourceOf(record);
         if (record.link !== undefined) field('linked', o.yellow(record.link));
         else if (source !== record.url) field('source', source);

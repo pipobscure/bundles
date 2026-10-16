@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
-import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias, labelOf } from '../src/install.ts';
+import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias, labelOf, appsDir, storedPath, commandsOf, pathOf } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
 import { selectable, type Review } from '../src/review.ts';
 import { UNDECIDED, main } from '../src/cli.ts';
@@ -236,7 +236,8 @@ test('installed re-checks each record: the bytes, and who signed them', async ()
     served.bytes = first;
     served.etag = '"checks"';
     await install(URL_, { ...options, name: 'checked.nzip' });
-    const file = PATH.join(BIN, 'checked.nzip');
+    // The archive that is checked: in the store, or on Windows on the PATH.
+    const file = WINDOWS ? PATH.join(BIN, 'checked.nzip') : storedPath('checked.nzip');
 
     const ok = installedChecks({ roots }).find((check) => check.record.name === 'checked.nzip');
     assert.equal(ok?.state, 'ok');
@@ -320,6 +321,68 @@ test('update with no name checks everything, and uninstall forgets one', async (
     assert.equal(record.name, 'other.nzip');
     assert.equal(FS.existsSync(PATH.join(BIN, 'other.nzip')), false);
     assert.equal(Object.hasOwn(records(), 'other.nzip'), false);
+});
+
+test('an app is kept in the store with its .nzip, and the command on the PATH is a link to it', { skip: WINDOWS && 'Windows keeps the archive on the PATH' }, async () => {
+    served.bytes = first;
+    served.etag = '"stored"';
+    const record = await install(URL_, { ...options, name: 'kept' });
+    const command = PATH.join(BIN, 'kept');
+
+    assert.equal(record.stored, PATH.join(appsDir(), 'kept.nzip'));
+    assert.equal(pathOf(record), record.stored);
+    assert.deepEqual(FS.readFileSync(record.stored!), first);
+    assert.ok(FS.statSync(record.stored!).mode & 0o111, 'the archive is executable');
+    assert.ok(FS.lstatSync(command).isSymbolicLink());
+    assert.equal(FS.readlinkSync(command), record.stored);
+    assert.deepEqual(commandsOf(record), [command]);
+
+    // Renamed by the person: still found, and an update reaches it, since it
+    // replaces the archive the link points at.
+    const renamed = PATH.join(BIN, 'k');
+    FS.renameSync(command, renamed);
+    assert.deepEqual(commandsOf(records()['kept']!), [renamed]);
+    served.bytes = second;
+    served.etag = '"stored-2"';
+    const [result] = await update('kept', options);
+    assert.equal(result?.state, 'updated');
+    assert.deepEqual(FS.readFileSync(renamed), second);
+    assert.ok(!FS.existsSync(command), 'an update does not put back a command the person renamed');
+
+    // A second name for it is a second command; uninstall takes every one.
+    FS.symlinkSync(record.stored!, PATH.join(BIN, 'kk'));
+    assert.deepEqual(commandsOf(records()['kept']!), [renamed, PATH.join(BIN, 'kk')]);
+    uninstall('kept');
+    assert.ok(!FS.existsSync(record.stored!));
+    assert.ok(!FS.existsSync(renamed) && !FS.existsSync(PATH.join(BIN, 'kk')));
+});
+
+test('an app installed before the store moves into it on its next update, and keeps its command', { skip: WINDOWS && 'Windows keeps the archive on the PATH' }, async () => {
+    served.bytes = first;
+    served.etag = '"old"';
+    const record = await install(URL_, { ...options, name: 'old' });
+    // As a record from before the store: the archive itself on the PATH.
+    const command = PATH.join(BIN, 'old');
+    FS.rmSync(command);
+    FS.copyFileSync(record.stored!, command);
+    FS.rmSync(record.stored!);
+    const all = records();
+    delete all['old']!.stored;
+    FS.writeFileSync(recordPath(), `${JSON.stringify({ version: 1, installs: all }, null, 2)}\n`);
+    assert.equal(pathOf(records()['old']!), command);
+    assert.equal(installedChecks({ roots }).find((check) => check.record.name === 'old')?.state, 'ok');
+
+    // Nothing new is published, and it moves all the same.
+    const lines: string[] = [];
+    const [result] = await update('old', { ...options, log: (line) => lines.push(line) });
+    assert.equal(result?.state, 'unchanged');
+    const moved = records()['old']!;
+    assert.equal(moved.stored, storedPath('old'));
+    assert.deepEqual(FS.readFileSync(moved.stored!), first);
+    assert.ok(FS.lstatSync(command).isSymbolicLink());
+    assert.ok(lines.some((line) => line.includes('moved into')), lines.join('\n'));
+    assert.equal(installedChecks({ roots }).find((check) => check.record.name === 'old')?.state, 'ok');
+    uninstall('old');
 });
 
 test('the installed name comes from the server, and cannot escape the directory', () => {
