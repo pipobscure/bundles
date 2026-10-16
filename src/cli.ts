@@ -144,6 +144,8 @@ export const HELP: Record<string, string> = {
     attest: `attest options:                     usage: attest [options] <archive>...
       --as <handle | did>  the account to attest as
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --from <file>     attest these too: the file 'publish --from' reads —
+                        each entry's archive, fetched from its url or domain
       --kind <kind>     what is being said: published, audited, reproduced —
                         or, with --verdict bad, malware, vulnerable, …
       --verdict <v>     good (the default) to vouch for it, bad to warn
@@ -160,7 +162,9 @@ export const HELP: Record<string, string> = {
   the account's own PDS, asking for write access to attestation records and
   nothing else where the server supports that. Nothing is kept — the session is
   revoked when the command is done, so every attest is approved by whoever it
-  speaks for.
+  speaks for. An app-password session is kept for 5 minutes, encrypted with
+  the password, so commands in a row sign in once
+  (BUNDLE_ATPROTO_SESSION_TTL; 0 turns that off).
 
   writes com.pipobscure.bundle.attestation/<hash> to the account's repository, naming
   the archive's whole-file hash — the hash a signature covers. The archive is
@@ -1035,9 +1039,11 @@ async function attest(args: string[], io: Console): Promise<number> {
         options: OPTIONS.attest,
     });
     const archives = [...new Set(positionals)];
-    if (!archives.length) throw new Error('attest: at least one archive path is required');
-    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
-    if (!identifier) throw new Error('attest: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER');
+    // The same file 'publish --from' reads: each entry's archive, fetched
+    // from its URL or its domain's, is attested as the local ones are.
+    const listed = values.from !== undefined ? readListingFile(values.from, 'attest') : [];
+    if (!archives.length && !listed.length) throw new Error('attest: at least one archive path is required (or --from <file>)');
+    if (!(values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'])) throw new Error('attest: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER');
     if (values.kind !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.kind)) throw new Error(`attest: '${values.kind}' is not a valid kind`);
     if (values.verdict !== 'good' && values.verdict !== 'bad') throw new Error(`attest: --verdict is good or bad, not '${values.verdict}'`);
     const verdict: 'good' | 'bad' = values.verdict;
@@ -1064,19 +1070,18 @@ async function attest(args: string[], io: Console): Promise<number> {
         }
         checked.push({ archive, ...hashed });
     }
+    for (const { where } of listed) {
+        const fetched = await fetchListed(where, values.root ?? [], io, 'attest', !values.revoke);
+        if (typeof fetched === 'number') return fetched;
+        const hashed = wholeFileHash(fetched.bytes);
+        if (!hashed) throw new Error(`attest: ${fetched.url} carries no manifest, so it is not an archive this tool can vouch for`);
+        checked.push({ archive: fetched.url, ...hashed });
+    }
 
-    // Never from an argument: a command line is visible to every process on
-    // the machine, and ends up in shell history.
-    const password = values['password-file']
-        ? FS.readFileSync(values['password-file'], 'utf-8').trim()
-        : process.env['BUNDLE_ATPROTO_PASSWORD'];
+    // One sign-in for everything named.
     const ATPROTO = await import('./atproto.ts');
-    const OAUTH = await import('./oauth.ts');
-    // One sign-in for everything named, and nothing kept afterwards.
-    const session = password
-        ? await ATPROTO.login(identifier, password)
-        : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open });
-    io.err(signedIn(session, e));
+    const { COLLECTION } = await import('./attestation.ts');
+    const session = await signIn('attest', values, io, `atproto repo:${COLLECTION}`);
     try {
         // All of them in one batch, not a request each: every request counts
         // against the account's rate limits.
@@ -1878,21 +1883,7 @@ async function publish(args: string[], io: Console): Promise<number> {
         wanted.push({ name: positionals[i]!, where: positionals[i + 1]!, title: values.title, description: values.description, for: values.for });
     }
     if (values.from !== undefined) {
-        let entries: unknown;
-        try {
-            entries = JSON.parse(FS.readFileSync(values.from, 'utf-8'));
-        } catch (err) {
-            throw new Error(`publish: ${values.from} is not JSON: ${message(err)}`);
-        }
-        if (!Array.isArray(entries)) throw new Error(`publish: ${values.from} is not an array of listings`);
-        for (const [i, entry] of entries.entries()) {
-            const { name, url, domain, title, description, for: app } = (entry ?? {}) as Record<string, unknown>;
-            const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
-            if (typeof name !== 'string' || (typeof url === 'string') === (typeof domain === 'string')) {
-                throw new Error(`publish: ${values.from}, entry ${i + 1}: needs a "name", and a "url" or a "domain"`);
-            }
-            wanted.push({ name, where: (url ?? domain) as string, title: text(title), description: text(description), for: text(app) ?? values.for });
-        }
+        for (const entry of readListingFile(values.from, 'publish')) wanted.push({ ...entry, for: entry.for ?? values.for });
     }
     if (!wanted.length) throw new Error('publish: a name, and a URL or a domain, are required (or --from <file>)');
     if (wanted.length > 1 && (values.title !== undefined || values.description !== undefined)) {
@@ -1908,8 +1899,9 @@ async function publish(args: string[], io: Console): Promise<number> {
     const listings: import('./listing.ts').Publishing[] = [];
     const apps = new Map<string, Awaited<ReturnType<typeof appListing>>>();
     for (const each of wanted) {
-        const checked = await listable(each.where, values.root ?? [], io);
-        if (typeof checked === 'number') return checked;
+        const fetched = await fetchListed(each.where, values.root ?? [], io, 'publish');
+        if (typeof fetched === 'number') return fetched;
+        const checked = fetched.domain ? { domain: fetched.domain } : { url: fetched.url };
         let app: Awaited<ReturnType<typeof appListing>> | undefined;
         if (each.for !== undefined) {
             app = apps.get(each.for) ?? await appListing('publish', each.for, true);
@@ -1943,21 +1935,53 @@ async function publish(args: string[], io: Console): Promise<number> {
     return 0;
 }
 
-// What one listing names, checked: a URL as it is, or a domain — listed
-// instead of the URL its `nzip:` record names, so the publisher keeps
-// managing that in DNS — and in either case an archive that holds together.
-// An exit code, when it does not.
-async function listable(where: string, roots: string[], io: Console): Promise<{ url: string } | { domain: string } | number> {
+/** One entry of the file 'publish --from' and 'attest --from' read. */
+interface ListingEntry {
+    name: string;
+    /** The archive's https URL, or a domain whose `nzip:` record names it. */
+    where: string;
+    title?: string | undefined;
+    description?: string | undefined;
+    for?: string | undefined;
+}
+
+// The file 'publish --from' and 'attest --from' both read: a JSON array of
+// { "name", "url" | "domain", "title"?, "description"?, "for"? } — one file
+// for a release, which lists it and vouches for it alike.
+function readListingFile(file: string, command: string): ListingEntry[] {
+    let entries: unknown;
+    try {
+        entries = JSON.parse(FS.readFileSync(file, 'utf-8'));
+    } catch (err) {
+        throw new Error(`${command}: ${file} is not JSON: ${message(err)}`);
+    }
+    if (!Array.isArray(entries)) throw new Error(`${command}: ${file} is not an array of listings`);
+    return entries.map((entry, i) => {
+        const { name, url, domain, title, description, for: app } = (entry ?? {}) as Record<string, unknown>;
+        const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+        if (typeof name !== 'string' || (typeof url === 'string') === (typeof domain === 'string')) {
+            throw new Error(`${command}: ${file}, entry ${i + 1}: needs a "name", and a "url" or a "domain"`);
+        }
+        return { name, where: (url ?? domain) as string, title: text(title), description: text(description), for: text(app) };
+    });
+}
+
+// What one listing names, fetched and checked: a URL as it is, or a domain —
+// which 'publish' lists instead of the URL its `nzip:` record names, so the
+// publisher keeps managing that in DNS — and in either case an archive that
+// holds together, unless `verify` is false (withdrawing an attestation needs
+// only the hash). An exit code, when it does not hold together.
+async function fetchListed(where: string, roots: string[], io: Console, command: string, verify = true): Promise<{ url: string; domain?: string | undefined; bytes: Buffer } | number> {
     const LISTING = await import('./listing.ts');
     let url: string;
     let domain: string | undefined;
     const { e } = styles(io);
     if (/^[a-z][a-z0-9+.-]*:/i.test(where)) {
-        if (!/^https:\/\//i.test(where)) throw new Error(`publish: '${where}' is not an https URL`);
+        if (!/^https:\/\//i.test(where)) throw new Error(`${command}: '${where}' is not an https URL`);
         url = where;
     } else {
         domain = where.replace(/\.$/, '').toLowerCase();
-        if (!LISTING.isListedDomain(domain)) throw new Error(`publish: '${where}' is neither an https URL nor a domain name`);
+        if (!LISTING.isListedDomain(domain)) throw new Error(`${command}: '${where}' is neither an https URL nor a domain name`);
         const INSTALL = await import('./install.ts');
         url = (await INSTALL.resolveAlias(domain)).url;
         io.err(e.note(`${domain} names ${url}`));
@@ -1966,12 +1990,13 @@ async function listable(where: string, roots: string[], io: Console): Promise<{ 
     io.err(e.note(`fetching ${url}`));
     const { patientFetch } = await import('./ratelimit.ts');
     const response = await patientFetch(globalThis.fetch, { onWait: logger(io) })(url, { redirect: 'follow' });
-    if (!response.ok) throw new Error(`publish: ${url}: ${response.status} ${response.statusText}`);
+    if (!response.ok) throw new Error(`${command}: ${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (!wholeFileHash(bytes)) throw new Error(`publish: ${url} is not an archive this tool can install`);
+    if (!wholeFileHash(bytes)) throw new Error(`${command}: ${url} is not an archive this tool can install`);
+    if (!verify) return { url, domain, bytes };
     const res = await verifyBundle(bytes, { roots, deep: true, integrity: true });
     if (res.state === 'invalid') {
-        io.err(e.error(`refusing to publish ${url}: ${res.reason}`));
+        io.err(e.error(`refusing to ${command} ${url}: ${res.reason}`));
         return STATES.invalid.code;
     }
     if (e.people) {
@@ -1982,7 +2007,7 @@ async function listable(where: string, roots: string[], io: Console): Promise<{ 
         io.err(`* ${url}: ${res.signed ? `signed${res.identity ? ` by ${res.identity}` : ''}` : 'unsigned'}, ${res.digests?.size ?? 0} members, all digests match`);
         if (!res.signed) io.err('  ! it is unsigned: installs will only accept it on the strength of attestations');
     }
-    return domain ? { domain } : { url };
+    return { url, domain, bytes };
 }
 
 // Take listings down: those that are there, as one batch.
@@ -2196,15 +2221,7 @@ async function lexicon(args: string[], io: Console): Promise<number> {
         return 0;
     }
 
-    const password = values['password-file']
-        ? FS.readFileSync(values['password-file'], 'utf-8').trim()
-        : process.env['BUNDLE_ATPROTO_PASSWORD'];
-    const ATPROTO = await import('./atproto.ts');
-    const OAUTH = await import('./oauth.ts');
-    const session = password
-        ? await ATPROTO.login(identifier, password)
-        : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open, scope: `atproto repo:${LEXICON.SCHEMA_COLLECTION}` });
-    io.err(signedIn(session, styles(io).e));
+    const session = await signIn('lexicon', values, io, `atproto repo:${LEXICON.SCHEMA_COLLECTION}`);
     try {
         for (const each of await LEXICON.publishLexicons(session, { force: values.force })) {
             io.out(o.people ? `${o.green('published')} ${o.bold(each.nsid)}` : `published ${each.nsid}`);
@@ -3343,6 +3360,7 @@ export const OPTIONS = {
     },
     attest: {
         as:              { type: 'string' },
+        from:            { type: 'string' },
         kind:            { type: 'string' },
         note:            { type: 'string' },
         verdict:         { type: 'string', default: 'good' },

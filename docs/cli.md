@@ -401,6 +401,7 @@ bundle attest [options] <archive>...
 bundle attest --as audit.example.com --kind audited app.nzip app app.unsigned.nzip   # one sign-in for all three
 bundle attest --as scanner.example --verdict bad --kind malware app.nzip
 bundle attest --as audit.example.com --revoke app.nzip
+bundle attest --as pipobscure.com --kind published --from listings.json               # what publish --from lists
 ```
 
 An attestation is an atproto record, in the attester's own repository, saying *I vouch for the
@@ -412,13 +413,18 @@ withdraw their attestation.
 
 - **Every archive named is checked first.** One whose bytes or signature do not hold
   together stops them all, before anyone signs in.
+- **`--from` takes the file [`publish --from`](#publish) reads.** Each entry's archive is
+  fetched from its `url`, or from the URL its `domain`'s `nzip:` record names, checked like a
+  local one, and attested with the rest; the other fields are not used here. One file then
+  both lists a release and vouches for it.
 - **Then one sign-in covers them all.** It uses OAuth in the browser, against the account's
   own PDS. It asks for write access to attestation records and nothing else
   (`repo:com.pipobscure.bundle.attestation`). It falls back to general write access only on a
   server that does not offer that, and says so.
 - **Nothing is kept.** The session is revoked when the command is done, so every attestation
   is approved by whoever it speaks for. In CI, where there is no browser, an app password
-  from `BUNDLE_ATPROTO_PASSWORD` or `--password-file` is used instead.
+  from `BUNDLE_ATPROTO_PASSWORD` or `--password-file` is used instead, and its session is
+  kept for a few minutes so commands in a row sign in once (see [Signing in](#signing-in)).
 - **What it writes** is `at://<your DID>/com.pipobscure.bundle.attestation/<hash>`: one record
   per account per file, so attesting again replaces the old record.
 - **All of them go in one request**: atproto's `applyWrites`, up to 200 records each, rather
@@ -439,6 +445,7 @@ How attestations are used, and what they do and do not prove, is in [`install`](
 | `--kind <kind>` | what is being said: `published`, `audited`, `reproduced`, or with `--verdict bad`, `malware`, `vulnerable`, … |
 | `--verdict <good or bad>` | `good` (the default) vouches for the file; `bad` warns against it |
 | `--note <text>` | a short note kept with the attestation |
+| `--from <file>` | attest these too: the JSON file [`publish --from`](#publish) reads, each entry's archive fetched from its `url` or `domain` |
 | `--revoke` | withdraw your attestations of these archives instead |
 | `--password-file <file>` | use an app password from this file instead of signing in (`BUNDLE_ATPROTO_PASSWORD` works too). Never take a password as an argument. |
 | `-r, --root <file>` | an extra trusted root, for checking the archives first; repeatable |
@@ -1341,6 +1348,7 @@ a file that is already there unless forced, so local edits survive.
 | Install records | `installed.json` in the state directory | |
 | Installed suites | `suites.json` in the state directory: which install came from which member, and what each suite brought | |
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
+| App-password sessions | `sessions/` in the state directory: one per account, encrypted with its password, for five minutes — see [Signing in](#signing-in) | `BUNDLE_ATPROTO_SESSION_TTL` |
 | Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
 | Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows | `BUNDLE_PLUGINS` |
 | The state directory | `$XDG_STATE_HOME/bundle` (`~/.local/state/bundle`); `~/Library/Application Support/bundle` on macOS; `%LOCALAPPDATA%\bundle\Data` on Windows | |
@@ -1350,8 +1358,25 @@ a file that is already there unless forced, so local edits survive.
 | `.nzip` association | `HKCU\Software\Classes` and the user's `PATHEXT`, on Windows | `BUNDLE_NO_DESKTOP_SETUP` |
 | `.nzip` icon | `%LOCALAPPDATA%\bundle\icons` on Windows; `$XDG_DATA_HOME/mime` and `$XDG_DATA_HOME/icons/hicolor` (`~/.local/share`) on Linux; `~/Library/Application Support/bundle/NodeBundle.app` on macOS | `BUNDLE_NO_DESKTOP_SETUP` |
 
-Nothing from signing in is ever stored: not the sigstore certificate's key, nor an OAuth
-session.
+The sigstore certificate's key and OAuth sessions are never stored. An app-password session
+is, for a few minutes (`sessions/` in the state directory, above), encrypted with the password.
+
+## Signing in
+
+Every command that writes to an atproto account — `attest`, `publish`, `unpublish`, `suite
+publish`, `suite unpublish`, `suite attest`, `lexicon publish` — signs in the same way: OAuth
+in the browser, asking for the one collection it writes, revoked when the command is done; or,
+with `BUNDLE_ATPROTO_PASSWORD` or `--password-file`, an app password.
+
+An app-password session is kept for five minutes, so that a script running these one after
+another signs in once: `createSession` is among the most tightly rate-limited calls a PDS has.
+It is one file per account in `sessions/` in the state directory, readable only by you, and
+encrypted (AES-GCM) with a key derived (scrypt) from the app password. The file is worth nothing
+without the password, and with the password anyone could sign in anyway, so keeping it gives
+nothing away; a changed or revoked password stops it working by itself. A session the PDS turns
+down before then is dropped and signed in for again, once. `BUNDLE_ATPROTO_SESSION_TTL` sets
+how long (`90s`, `10m`, never past the token's own expiry); `0` keeps none. OAuth sessions are
+never kept: they are bound to a key that only ever exists in memory.
 
 ## Environment
 
@@ -1369,7 +1394,8 @@ session.
 | `BUNDLE_SHELL` | the shell `install` sets up and `shell` prints for, instead of detecting it |
 | `BUNDLE_POWERSHELL_PROFILE` | the PowerShell profile `install` adds its setup to, instead of asking PowerShell |
 | `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest`, `publish`, `unpublish` and `lexicon publish` act as, without `--as` |
-| `BUNDLE_ATPROTO_PASSWORD` | an app password: `attest`, `publish`, `unpublish` and `lexicon publish` use it instead of signing in, for CI |
+| `BUNDLE_ATPROTO_PASSWORD` | an app password: every command that writes to an account uses it instead of signing in, for CI |
+| `BUNDLE_ATPROTO_SESSION_TTL` | how long an app-password session is kept for the next command (default `5m`; `0` keeps none) — see [Signing in](#signing-in) |
 | `BUNDLE_OAUTH_CLIENT_ID` | a hosted OAuth client metadata URL, instead of the loopback development client |
 | `SOURCE_DATE_EPOCH` | the latest time `create` dates a member with, in seconds: for reproducible builds from a fresh checkout |
 | `BUNDLE_RATE_LIMIT_WAIT` | the longest a rate-limited request waits before asking again, in seconds (default: 600). `0` never waits |

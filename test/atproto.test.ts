@@ -1060,9 +1060,56 @@ test('attest signs in with OAuth — attestation-only scope, DPoP-bound — writ
     assert.ok(stateDir().startsWith(tmp), 'the state directory is this suite\'s own');
     // On macOS the state directory is also where installed apps and plugins
     // are kept; those are this suite's installs, not anything sign-in left.
-    const installs = ['installed.json', 'attestations', 'apps', 'plugins'];
+    // `sessions` is what the app-password sign-ins earlier in this suite
+    // kept; an OAuth session is never written there (see the test of it).
+    const installs = ['installed.json', 'attestations', 'apps', 'plugins', 'sessions'];
     assert.deepEqual(FS.existsSync(stateDir()) ? FS.readdirSync(stateDir()).filter((name) => !installs.includes(name)) : [], [],
         'nothing but installs, their records and the attestation cache is ever written there');
+});
+
+test('an app-password session is kept for minutes, encrypted with the password, and only the password opens it', async () => {
+    const kim = account();
+    const signIns = () => requests.filter((line) => line.endsWith('/xrpc/com.atproto.server.createSession')).length;
+    const dir = PATH.join(tmp, 'kept-sessions');
+    let clock = Date.now();
+    const cache = ATPROTO.sessionCache({ dir, ttl: 5 * 60_000, now: () => clock });
+    assert.ok(cache);
+    const archive = await version();
+    const hashed = wholeFileHash(archive)!;
+
+    // The first command signs in; the next, a moment later, does not.
+    requests.length = 0;
+    const first = await ATPROTO.login(kim.did, kim.password, { sessions: cache });
+    assert.equal(first.how, 'an app password');
+    const second = await ATPROTO.login(kim.did, kim.password, { sessions: cache });
+    assert.equal(second.how, 'an app password (a session from a moment ago)');
+    await ATPROTO.attest(second, { hashAlg: hashed.hashAlg, hex: hashed.hash, kind: 'audited' });
+    assert.equal(signIns(), 1, 'one createSession for two commands');
+
+    // What is on disk is no use without the password: the token is not in
+    // it, the wrong password opens nothing, and only its owner can read it.
+    const [file] = FS.readdirSync(dir);
+    const text = FS.readFileSync(PATH.join(dir, file!), 'utf-8');
+    assert.ok(!text.includes('token') && !text.includes(kim.did), 'neither the token nor the account in the clear');
+    assert.equal(cache.read(kim.did, 'not-the-password'), null);
+    if (process.platform !== 'win32') assert.equal(FS.statSync(PATH.join(dir, file!)).mode & 0o077, 0, 'readable by its owner only');
+
+    // Five minutes on, it is gone, and the next command signs in again.
+    clock += 5 * 60_000 + 1;
+    assert.equal((await ATPROTO.login(kim.did, kim.password, { sessions: cache })).how, 'an app password');
+    assert.equal(signIns(), 2);
+
+    // A kept session the PDS turns down is dropped, signed in for once, and
+    // the request made again — the command never sees the refusal.
+    cache.write(kim.did, kim.password, { did: kim.did, pds: kim.pds, token: 'revoked' });
+    const stale = await ATPROTO.login(kim.did, kim.password, { sessions: cache });
+    assert.equal(stale.how, 'an app password (a session from a moment ago)');
+    await ATPROTO.attest(stale, { hashAlg: hashed.hashAlg, hex: hashed.hash, kind: 'reproduced' });
+    assert.equal(signIns(), 3);
+    assert.equal(cache.read(kim.did, kim.password)?.token, 'token', 'the fresh session is what is kept now');
+
+    // BUNDLE_ATPROTO_SESSION_TTL=0 keeps nothing at all.
+    assert.equal(ATPROTO.sessionCache({ dir, ttl: 0 }), false);
 });
 
 test('a PDS or sign-in server that says to slow down is waited for, and asked again with a fresh proof', async () => {
@@ -1077,7 +1124,8 @@ test('a PDS or sign-in server that says to slow down is waited for, and asked ag
     // An app password: createSession and the write are both told to wait, once.
     THROTTLE.set('/xrpc/com.atproto.server.createSession', [slowDown({ 'retry-after': '0' })]);
     THROTTLE.set('/xrpc/com.atproto.repo.putRecord', [slowDown({ 'ratelimit-reset': String(Math.floor(Date.now() / 1000)) })]);
-    const session = await ATPROTO.login(tilly.did, tilly.password, { onWait });
+    // Signed in afresh each time: what is under test is createSession itself.
+    const session = await ATPROTO.login(tilly.did, tilly.password, { onWait, sessions: false });
     await ATPROTO.attest(session, { hashAlg: hashed.hashAlg, hex: hashed.hash }, { onWait });
     assert.ok(tilly.records.has(`${COLLECTION}/${hashed.hash}`), 'written, once asked again');
     assert.match(waits[0]!, /\(com\.atproto\.server\.createSession\) is rate limiting \(429\): waiting 0s, as it asks \(Retry-After\)/);
@@ -1098,7 +1146,7 @@ test('a PDS or sign-in server that says to slow down is waited for, and asked ag
 
     // A wait nobody would sit through is not waited for: it says when to come back.
     THROTTLE.set('/xrpc/com.atproto.server.createSession', [slowDown({ 'retry-after': String(24 * 3600) })]);
-    await assert.rejects(ATPROTO.login(tilly.did, tilly.password, { onWait }), (err: Error & { code?: string }) =>
+    await assert.rejects(ATPROTO.login(tilly.did, tilly.password, { onWait, sessions: false }), (err: Error & { code?: string }) =>
         err.code === 'ERR_BUNDLE_RATE_LIMITED' && /asks to wait 24h 0m, until .* longer than the 10m this waits; try again then, or allow more with BUNDLE_RATE_LIMIT_WAIT/.test(err.message));
     THROTTLE.clear();
 });
@@ -1637,6 +1685,46 @@ test('a plugin is listed against its app: found with --for, never among apps, an
     assert.equal(await main(['install', '--yes', '--for', `@${extender.did}/not-installed-here`, `@${extender.did}/host-extra`], elsewhere), 70);
     assert.match(elsewhere.stderr.join('\n'), /is at:\/\/.*not-installed-here, which no app installed here came from — install the app first/);
     remove(host.name);
+});
+
+test('attest --from takes the file publish --from reads, and the two commands in a row sign in once', async () => {
+    const rue = account();
+    const one = FS.readFileSync(await version());
+    const two = FS.readFileSync(await version());
+    DOWNLOADS.set('/release/one.nzip', one);
+    DOWNLOADS.set('/release/two.nzip', two);
+    const file = PATH.join(tmp, 'release.json');
+    FS.writeFileSync(file, JSON.stringify([
+        { name: 'one', url: 'https://dl.test/release/one.nzip', description: 'the first' },
+        { name: 'two', url: 'https://dl.test/release/two.nzip' },
+    ]));
+    const signIns = () => requests.filter((line) => line === `POST ${rue.pds}/xrpc/com.atproto.server.createSession`).length;
+    process.env['BUNDLE_ATPROTO_PASSWORD'] = rue.password;
+    try {
+        requests.length = 0;
+        const listed = collector();
+        assert.equal(await main(['publish', '--as', rue.did, '--from', file], listed), 0, listed.stderr.join('\n'));
+        const attested = collector();
+        assert.equal(await main(['attest', '--as', rue.did, '--kind', 'published', '--from', file], attested), 0, attested.stderr.join('\n'));
+        assert.equal(signIns(), 1, 'the second command reuses the first one\'s session');
+        assert.match(attested.stderr.join('\n'), /signed in as .* through an app password \(a session from a moment ago\)/);
+
+        // Each entry's archive, by the hash of what its URL serves.
+        for (const bytes of [one, two]) {
+            const { hash } = wholeFileHash(bytes)!;
+            assert.ok(rue.records.has(`${COLLECTION}/${hash}`), `an attestation of ${hash.slice(0, 12)}…`);
+        }
+        assert.match(attested.stdout.join('\n'), /attested https:\/\/dl\.test\/release\/one\.nzip \(sha256:[0-9a-f]+\) as did:plc:.* \(published\)/);
+
+        // Withdrawn the same way; and an entry whose archive does not hold
+        // together stops them all, as a local one does.
+        assert.equal(await main(['attest', '--as', rue.did, '--revoke', '--from', file], collector()), 0);
+        assert.equal([...rue.records.keys()].filter((key) => key.startsWith(`${COLLECTION}/`)).length, 0);
+        DOWNLOADS.set('/release/two.nzip', Buffer.from('not an archive'));
+        assert.equal(await main(['attest', '--as', rue.did, '--from', file], collector()), 70);
+    } finally {
+        delete process.env['BUNDLE_ATPROTO_PASSWORD'];
+    }
 });
 
 test('bundle publish lists several under one sign-in, as one batch — from the command line, or --from a file', async () => {

@@ -73,7 +73,7 @@ const VALUES: Record<string, Hint> = {
     'publish.for': 'installed',
     'suite.suite': 'files',
     root: 'files', output: 'files', files: 'files', key: 'files', chain: 'files', prefix: 'files',
-    node: 'files', base: 'files', dir: 'files', archive: 'files', 'password-file': 'files', 'sigstore-root': 'files',
+    node: 'files', base: 'files', dir: 'files', archive: 'files', 'password-file': 'files', 'sigstore-root': 'files', from: 'files',
     flow: ['auto', 'ci', 'browser', 'device'],
     connector: ['github', 'google', 'microsoft'],
     hash: ['sha256', 'sha384', 'sha512'],

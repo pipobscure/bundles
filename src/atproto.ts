@@ -1,7 +1,10 @@
 import * as DNS from 'node:dns';
+import * as CRYPTO from 'node:crypto';
+import * as FS from 'node:fs';
+import * as PATH from 'node:path';
 import {
     COLLECTION, cacheDir, readDocument, writeDocument, readProof, writeProof, removeProof, cachedKeys, readHead, writeHead,
-    parseAttester, isDid, readRecord, recordUri,
+    parseAttester, isDid, readRecord, recordUri, stateDir, parseDuration,
     type Attester, type AttestationRecord, type Verdict,
 } from './attestation.ts';
 import { patientFetch, type Patience } from './ratelimit.ts';
@@ -486,23 +489,152 @@ export interface Session {
  * atproto is moving away from passwords, and a PDS need not accept them.
  * `identifier` is a handle or a DID; the PDS is found from the DID document
  * rather than assumed, so this works for any account on any host.
+ *
+ * A session is kept for a few minutes (see `SessionCache`), so that a script
+ * running one command after another signs in once rather than each time:
+ * `createSession` is among the most tightly rate-limited calls a PDS has.
  */
-export async function login(identifier: string, password: string, options: NetworkOptions = {}): Promise<Session> {
-    const did = identifier.startsWith('did:')
-        ? identifier
-        : (await resolveHandle(identifier, options)).did;
-    const doc = await resolveDid(did, options);
-    const pds = pdsEndpoint(doc);
-    const session = await xrpcPost(pds, 'com.atproto.server.createSession', { identifier: did, password }, undefined, options) as {
-        did?: string; accessJwt?: string;
+export async function login(identifier: string, password: string, options: NetworkOptions & { sessions?: SessionCache | false | undefined } = {}): Promise<Session> {
+    const { sessions, ...network } = options;
+    const cache = sessions === undefined ? sessionCache() : sessions;
+    const fetch = net(network);
+    const fresh = async () => {
+        const did = identifier.startsWith('did:')
+            ? identifier
+            : (await resolveHandle(identifier, network)).did;
+        const doc = await resolveDid(did, network);
+        const pds = pdsEndpoint(doc);
+        const session = await xrpcPost(pds, 'com.atproto.server.createSession', { identifier: did, password }, undefined, network) as {
+            did?: string; accessJwt?: string;
+        };
+        if (session.did !== did || !session.accessJwt) throw new Error(`${pds} logged in as ${String(session.did)}, not ${did}`);
+        const kept = { did, pds, token: session.accessJwt };
+        if (cache) cache.write(identifier, password, kept);
+        return kept;
     };
-    if (session.did !== did || !session.accessJwt) throw new Error(`${pds} logged in as ${String(session.did)}, not ${did}`);
-    const token = session.accessJwt;
-    const fetch = net(options);
+
+    const cached = cache ? cache.read(identifier, password) : null;
+    let current = cached ?? await fresh();
+    const bearer = (init: RequestInit, token: string): RequestInit => ({
+        ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` },
+    });
     return {
-        did, pds, how: 'an app password',
-        request: (url, init) => fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` } }),
+        did: current.did, pds: current.pds,
+        how: cached ? 'an app password (a session from a moment ago)' : 'an app password',
+        request: async (url, init) => {
+            const response = await fetch(url, bearer(init, current.token));
+            // A kept session the PDS no longer honours — expired early, or
+            // revoked — is dropped, and the request made again, once, with a
+            // session signed in for it.
+            if (cached && current === cached && await rejectsToken(response)) {
+                cache && cache.forget(identifier);
+                current = await fresh();
+                if (current.did !== cached.did) throw new Error(`${identifier} is now ${current.did}, not ${cached.did}: run the command again`);
+                return fetch(url, bearer(init, current.token));
+            }
+            return response;
+        },
     };
+}
+
+// Whether a response says the token it was sent with is no good: 401, or the
+// 400 with `ExpiredToken` or `InvalidToken` a PDS answers an expired one with.
+async function rejectsToken(response: Response): Promise<boolean> {
+    if (response.status === 401) return true;
+    if (response.status !== 400) return false;
+    const { name } = await errorOf(response.clone());
+    return name === 'ExpiredToken' || name === 'InvalidToken';
+}
+
+/** A session `login()` signed in, as it is kept. */
+export interface KeptSession {
+    did: string;
+    pds: string;
+    token: string;
+}
+
+/**
+ * Where `login()` keeps a session between commands, and for how long.
+ *
+ * One file per account, in `sessions/` in the state directory, readable only
+ * by its owner, and **encrypted with a key derived from the app password** —
+ * so the file is worth nothing to anyone without that password, and anyone
+ * with it could sign in anyway. Keeping it exposes nothing new; the short
+ * lifetime is tidiness, not the protection. A changed or revoked password
+ * stops it working by itself, since the token no longer decrypts.
+ *
+ * The lifetime is `BUNDLE_ATPROTO_SESSION_TTL` (default 5m; 0 turns keeping
+ * off), and never past the token's own expiry. An OAuth session is never kept:
+ * it is bound to a key that only ever exists in memory.
+ */
+export interface SessionCache {
+    read(identifier: string, password: string): KeptSession | null;
+    write(identifier: string, password: string, session: KeptSession): void;
+    forget(identifier: string): void;
+}
+
+/** The default session cache, or false when the environment turns it off. */
+export function sessionCache({ dir = PATH.join(stateDir(), 'sessions'), ttl = sessionTtl(), now = () => Date.now() }: {
+    dir?: string; ttl?: number; now?: () => number;
+} = {}): SessionCache | false {
+    if (ttl <= 0) return false;
+    const file = (identifier: string) => PATH.join(dir, `${CRYPTO.createHash('sha256').update(identifier.replace(/^@/, '').toLowerCase()).digest('hex').slice(0, 32)}.json`);
+    // scrypt, because what it starts from is a password; the identifier is in
+    // the salt, so one password's key opens one account's file and no other.
+    const key = (identifier: string, password: string, salt: Buffer) =>
+        CRYPTO.scryptSync(password, Buffer.concat([salt, Buffer.from(identifier.replace(/^@/, '').toLowerCase())]), 32);
+    return {
+        read(identifier, password) {
+            try {
+                const kept = JSON.parse(FS.readFileSync(file(identifier), 'utf-8')) as { v: number; until: number; salt: string; iv: string; tag: string; data: string };
+                if (kept.v !== 1 || !(kept.until > now())) return null;
+                const decipher = CRYPTO.createDecipheriv('aes-256-gcm', key(identifier, password, Buffer.from(kept.salt, 'base64')), Buffer.from(kept.iv, 'base64'));
+                decipher.setAuthTag(Buffer.from(kept.tag, 'base64'));
+                const plain = Buffer.concat([decipher.update(Buffer.from(kept.data, 'base64')), decipher.final()]);
+                const session = JSON.parse(plain.toString('utf-8')) as KeptSession;
+                return typeof session.did === 'string' && typeof session.pds === 'string' && typeof session.token === 'string' ? session : null;
+            } catch {
+                // Not there, from another password, or not one of ours: none.
+                return null;
+            }
+        },
+        write(identifier, password, session) {
+            try {
+                const salt = CRYPTO.randomBytes(16);
+                const iv = CRYPTO.randomBytes(12);
+                const cipher = CRYPTO.createCipheriv('aes-256-gcm', key(identifier, password, salt), iv);
+                const data = Buffer.concat([cipher.update(JSON.stringify(session)), cipher.final()]);
+                const until = Math.min(now() + ttl, tokenExpiry(session.token) - 30_000);
+                FS.mkdirSync(dir, { recursive: true, mode: 0o700 });
+                const path = file(identifier);
+                const temporary = `${path}.incoming-${process.pid}`;
+                FS.writeFileSync(temporary, JSON.stringify({
+                    v: 1, until, salt: salt.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64'),
+                }), { mode: 0o600 });
+                FS.renameSync(temporary, path);
+            } catch {
+                // A session that cannot be kept is only signed in for again.
+            }
+        },
+        forget(identifier) {
+            FS.rmSync(file(identifier), { force: true });
+        },
+    };
+}
+
+function sessionTtl(): number {
+    const configured = process.env['BUNDLE_ATPROTO_SESSION_TTL'];
+    return configured === undefined || configured === '' ? 5 * 60_000 : configured === '0' ? 0 : parseDuration(configured);
+}
+
+// When a JWT says it expires, in milliseconds; never, for one that does not say.
+function tokenExpiry(token: string): number {
+    try {
+        const exp = (JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf-8')) as { exp?: unknown }).exp;
+        return typeof exp === 'number' ? exp * 1000 : Infinity;
+    } catch {
+        return Infinity;
+    }
 }
 
 /** What an attestation says: of which file, and — when not simply vouching for it — what about it. */
