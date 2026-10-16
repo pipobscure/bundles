@@ -57,6 +57,7 @@
     "skills/",
     "schemas/",
     "lexicons/",
+    "icons/",
     "bundle.nzip",
     "shell-base",
     "README.md",
@@ -81,7 +82,8 @@
     "trust": "node --no-warnings dist/main.js trust",
     "schema:release": "node --no-warnings tools/schema.ts build/policy.schema.json",
     "prepublishOnly": "node --no-warnings --experimental-vfs tools/prepublish.ts",
-    "testpki": "node --no-warnings --experimental-vfs tools/testpki.ts"
+    "testpki": "node --no-warnings --experimental-vfs tools/testpki.ts",
+    "icons": "node --no-warnings tools/icons.ts"
   },
   "dependencies": {
     "@sigstore/bundle": "^5.0.0",

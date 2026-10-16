@@ -41,8 +41,12 @@ const HOME = PATH.join(tmp, 'home');
 const BIN = PATH.join(HOME, 'bin');
 process.env['BUNDLE_INSTALL_DIR'] = BIN;
 // These tests install for real, including through the CLI; none of them may
-// leave a file association behind on the machine running them.
+// leave a file association, a file type or an icon behind on the machine
+// running them. The older name too, which is what an older CLI reads.
+process.env['BUNDLE_NO_DESKTOP_SETUP'] = '1';
 process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
+// ...and if one ever did, it would land in here rather than the real ~/.local/share.
+process.env['XDG_DATA_HOME'] = PATH.join(HOME, '.local', 'share');
 process.env['XDG_STATE_HOME'] = PATH.join(HOME, 'state');
 process.env['LOCALAPPDATA'] = PATH.join(HOME, 'AppData');
 // Installing itself offers to edit the shell's startup file: never the real one.

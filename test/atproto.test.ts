@@ -46,7 +46,10 @@ process.env['HOME'] = PATH.join(tmp, 'home');
 // installs for real, and must never read or write the machine's own.
 process.env['LOCALAPPDATA'] = PATH.join(tmp, 'AppData', 'Local');
 process.env['APPDATA'] = PATH.join(tmp, 'AppData', 'Roaming');
+// No file association, file type or icon for the machine running this either.
+process.env['BUNDLE_NO_DESKTOP_SETUP'] = '1';
 process.env['BUNDLE_NO_WINDOWS_SETUP'] = '1';
+process.env['XDG_DATA_HOME'] = PATH.join(tmp, 'home', '.local', 'share');
 delete process.env['BUNDLE_ATTESTERS'];
 // Discovery goes to the fake index below; no machine policy.
 const POLICY_FILE = PATH.join(tmp, 'policy.json');

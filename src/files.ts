@@ -138,6 +138,17 @@ export function launcherPath(): string {
     return PATH.join(packageRoot(), 'shell-base');
 }
 
+/**
+ * One of the icons this package ships for `.nzip` files — `bundle.svg`,
+ * `nzip.ico` or `nzip.icns` — which `bundle install` copies to wherever the
+ * desktop looks for them. Beside the package root, like the launcher: in
+ * `node_modules` from npm, and a member of the archive when the bundled CLI
+ * runs, which is why it is copied out rather than pointed at.
+ */
+export function iconPath(name: string): string {
+    return PATH.join(packageRoot(), 'icons', name);
+}
+
 /** This package's own root — the directory its `package.json` sits in. */
 export function packageRoot(): string {
     return PATH.resolve(PATH.dirname(fileURLToPath(import.meta.url)), '..');

@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createBundle } from '../src/api.ts';
 import { ensureWindowsAssociation, parseRegQuery } from '../src/install.ts';
-import { APP, WINDOWS, scratch, tree } from './helpers.ts';
+import { APP, ROOT, WINDOWS, scratch, tree } from './helpers.ts';
 
 // How an archive starts on Windows, which is the one thing a `#!` prefix cannot
 // answer there.
@@ -26,6 +26,7 @@ const SKIP = WINDOWS ? false : 'the .nzip association is a Windows mechanism; un
 const tmp = scratch('windows');
 const CLASSES = 'HKCU\\Software\\Classes';
 const ENVIRONMENT = 'HKCU\\Environment';
+const ICON_FILE = PATH.join(process.env['LOCALAPPDATA'] ?? '', 'bundle', 'icons', 'nzip.ico');
 
 /** One registry value, or null when it is not set. */
 function read(key: string, name: string): string | null {
@@ -45,9 +46,12 @@ const before = WINDOWS
     ? {
         extension: read(`${CLASSES}\\.nzip`, ''),
         command: read(`${CLASSES}\\NodeBundle\\shell\\open\\command`, ''),
+        icon: read(`${CLASSES}\\NodeBundle\\DefaultIcon`, ''),
         pathext: read(ENVIRONMENT, 'PATHEXT'),
+        // The icon file the setup copies out, which goes again if it was not there.
+        iconFile: FS.existsSync(ICON_FILE),
     }
-    : { extension: null, command: null, pathext: null };
+    : { extension: null, command: null, icon: null, pathext: null, iconFile: true };
 
 test.after(() => {
     if (WINDOWS) {
@@ -55,6 +59,9 @@ test.after(() => {
         else reg(['add', `${CLASSES}\\.nzip`, '/ve', '/d', before.extension, '/f']);
         if (before.command === null) reg(['delete', `${CLASSES}\\NodeBundle`, '/f']);
         else reg(['add', `${CLASSES}\\NodeBundle\\shell\\open\\command`, '/ve', '/d', before.command, '/f']);
+        if (before.command !== null && before.icon === null) reg(['delete', `${CLASSES}\\NodeBundle\\DefaultIcon`, '/f']);
+        else if (before.icon !== null) reg(['add', `${CLASSES}\\NodeBundle\\DefaultIcon`, '/ve', '/d', before.icon, '/f']);
+        if (!before.iconFile) FS.rmSync(ICON_FILE, { force: true });
         if (before.pathext === null) reg(['delete', ENVIRONMENT, '/v', 'PATHEXT', '/f']);
         else reg(['add', ENVIRONMENT, '/v', 'PATHEXT', '/t', 'REG_EXPAND_SZ', '/d', before.pathext, '/f']);
     }
@@ -117,6 +124,11 @@ test('the Windows setup registers .nzip and extends PATHEXT', { skip: SKIP }, ()
 
     const pathext = read(ENVIRONMENT, 'PATHEXT');
     assert.ok(pathext?.split(';').some((ext) => ext.trim().toUpperCase() === '.NZIP'), pathext ?? '(unset)');
+
+    // The icon: a copy of the shipped one where it stays put, and the
+    // ProgID's DefaultIcon naming it.
+    assert.equal(read(`${CLASSES}\\NodeBundle\\DefaultIcon`, ''), `"${ICON_FILE}",0`);
+    assert.deepEqual(FS.readFileSync(ICON_FILE), FS.readFileSync(PATH.join(ROOT, 'icons', 'nzip.ico')));
 });
 
 test('running the setup again changes nothing', { skip: SKIP }, () => {

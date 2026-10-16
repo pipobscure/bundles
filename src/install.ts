@@ -19,6 +19,7 @@ import {
 import { inheritFor, minimumsFor } from './suite-install.ts';
 import type { NetworkOptions } from './atproto.ts';
 import { FLOOR, windowsNode, type FoundNode } from './runtime.ts';
+import { iconPath } from './files.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -214,10 +215,13 @@ export interface InstallOptions {
      */
     scope?: string | undefined;
     /**
-     * Register `.nzip` and extend PATHEXT on Windows (default: true, or false
-     * when `BUNDLE_NO_WINDOWS_SETUP` is set). Turn it off when something else
-     * owns the association — an installer, or a test suite, which has no
-     * business rewriting the machine it runs on.
+     * Set the desktop up for `.nzip` files, for this user — see
+     * `ensureDesktopSetup()`: on Windows the association, PATHEXT and the
+     * icon; on macOS and Linux the file type and its icon. Default: true, or
+     * false when `BUNDLE_NO_DESKTOP_SETUP` (or the older
+     * `BUNDLE_NO_WINDOWS_SETUP`) is set. Turn it off when something else owns
+     * the file type — an installer, or a test suite, which has no business
+     * rewriting the machine it runs on.
      */
     associate?: boolean | undefined;
     log?: ((line: string) => void) | undefined;
@@ -976,8 +980,9 @@ export type Uninstalled = InstallRecord & {
  *
  * `which` is a name, a URL, the domain it was installed by, or nothing — and
  * nothing means this package's own install, which is what somebody typing
- * `bundle uninstall` means. The file association on Windows is left alone:
- * other archives may rely on it, and it is not this one's to take away.
+ * `bundle uninstall` means. The desktop setup — the association on
+ * Windows, the file type and its icon everywhere — is left alone: other
+ * archives may rely on it, and it is not this one's to take away.
  *
  * An app's plugins go with it: nothing can load them any more. The exception
  * is another install of the same app — the same package, under another name —
@@ -1130,7 +1135,7 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     log(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
 
     // A plugin is the app's data, not a command: it is not made executable,
-    // and Windows is not told how to run it.
+    // and the desktop is not told about it.
     const plugin = scope !== undefined;
     const target = PATH.join(dir, file ?? name);
     FS.mkdirSync(PATH.dirname(target), { recursive: true });
@@ -1150,9 +1155,8 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         FS.renameSync(temporary, labelFile(target));
     }
 
-    const associating = options.associate ?? !process.env['BUNDLE_NO_WINDOWS_SETUP'];
-    if (process.platform === 'win32' && associating && !plugin) {
-        for (const line of ensureWindowsAssociation(name)) log(`  ${line}`);
+    if ((options.associate ?? desktopSetupWanted()) && !plugin) {
+        for (const line of ensureDesktopSetup(name)) log(`  ${line}`);
     }
 
     const { result } = gathered;
@@ -1274,13 +1278,283 @@ function onPath(dir: string): boolean {
     });
 }
 
+// ------------------------------------------------------------- the desktop ---
+
+/**
+ * Whether installs set the desktop up for `.nzip` files: yes, unless
+ * `BUNDLE_NO_DESKTOP_SETUP` is set — or `BUNDLE_NO_WINDOWS_SETUP`, its name
+ * from when the only setup there was happened on Windows, honoured still so
+ * that nothing which set it starts rewriting a desktop now.
+ */
+export function desktopSetupWanted(): boolean {
+    return !process.env['BUNDLE_NO_DESKTOP_SETUP'] && !process.env['BUNDLE_NO_WINDOWS_SETUP'];
+}
+
+/** How the desktop setup runs a program — injected by tests, which have none of them. */
+export type Runner = (command: string, args: string[]) => { status: number | null; error?: Error | undefined; stderr?: string | undefined };
+
+const run: Runner = (command, args) => spawnSync(command, args, { encoding: 'utf-8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
+
+/**
+ * Tell this user's desktop about `.nzip` files, as far as each platform has a
+ * way to: on Windows, how to run one and what it looks like
+ * (`ensureWindowsAssociation()`); on macOS (`ensureMacFileType()`) and the
+ * freedesktop unixes (`ensureFreedesktopFileType()`), what kind of file it is
+ * and its icon — the tree in `icons/`. A `#!` prefix is what runs an archive
+ * there, so nothing else is needed for that.
+ *
+ * The same rules for every platform: per-user, never anything that needs an
+ * administrator; idempotent, so what is already right is left alone and the
+ * notes returned say only what changed; and a failure is a note, never a
+ * failed install — the archive is on the PATH either way, and an icon is not
+ * worth refusing it over. `bundle uninstall` leaves all of it where it is.
+ */
+export function ensureDesktopSetup(name = 'a bundle'): string[] {
+    try {
+        if (process.platform === 'win32') return ensureWindowsAssociation(name);
+        if (process.platform === 'darwin') return ensureMacFileType();
+        return ensureFreedesktopFileType();
+    } catch (err) {
+        return [`could not register the .nzip file type: ${message(err)}`];
+    }
+}
+
+// Write `bytes` to `path` unless that is what is there already, and say
+// whether it wrote. Through a temporary file and a rename, so a desktop that
+// reads the file at the wrong moment sees the old one or the new one, never
+// half of either. Read and written rather than copied, because the source may
+// be a member of the mounted archive the CLI runs from.
+function writeIfChanged(path: string, bytes: Buffer, mode = 0o644): boolean {
+    try {
+        if (FS.readFileSync(path).equals(bytes) && (process.platform === 'win32' || (FS.statSync(path).mode & 0o777) === mode)) return false;
+    } catch {
+        // Not there yet, which is what the write is for.
+    }
+    FS.mkdirSync(PATH.dirname(path), { recursive: true });
+    const temporary = `${path}.incoming-${process.pid}`;
+    try {
+        FS.writeFileSync(temporary, bytes, { mode });
+        if (process.platform !== 'win32') FS.chmodSync(temporary, mode);
+        FS.renameSync(temporary, path);
+    } catch (err) {
+        FS.rmSync(temporary, { force: true });
+        throw err;
+    }
+    return true;
+}
+
+// Every file in `files` put in place, and whether any of them changed.
+function writeAll(files: Record<string, Buffer | string>, modes: Record<string, number> = {}): boolean {
+    let changed = false;
+    for (const [path, content] of Object.entries(files)) {
+        if (writeIfChanged(path, Buffer.from(content), modes[path])) changed = true;
+    }
+    return changed;
+}
+
+/** The MIME type `.nzip` files are registered as on the freedesktop desktops. */
+export const NZIP_MIME = 'application/x-nzip';
+
+/**
+ * The shared-mime-info package that declares `.nzip`: a name, the glob that
+ * recognises one, and its icon — `application-x-nzip`, the name the icon
+ * theme spec derives from the type, put beside it in the user's hicolor theme.
+ * The generic icon is what a theme falls back to before that, and the
+ * subclass says what it is underneath: a zip, which archive tools can open —
+ * the `#!` prefix in front is the kind of leading data zip readers expect.
+ */
+export function mimePackageXml(): string {
+    return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!-- Written by `bundle install` (@pipobscure/bundle); it is rewritten when it differs. -->',
+        '<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">',
+        `  <mime-type type="${NZIP_MIME}">`,
+        '    <comment>Node bundle</comment>',
+        '    <sub-class-of type="application/zip"/>',
+        '    <glob pattern="*.nzip"/>',
+        `    <icon name="${NZIP_MIME.replace('/', '-')}"/>`,
+        '    <generic-icon name="package-x-generic"/>',
+        '  </mime-type>',
+        '</mime-info>',
+        '',
+    ].join('\n');
+}
+
+/**
+ * Register `.nzip` with a freedesktop desktop — GNOME, KDE, and the rest that
+ * read shared-mime-info and the icon theme spec — for the current user, under
+ * `$XDG_DATA_HOME` (`~/.local/share` by default):
+ *
+ *   mime/packages/pipobscure-bundle-nzip.xml      the type (`mimePackageXml()`)
+ *   icons/hicolor/scalable/mimetypes/application-x-nzip.svg    its icon
+ *
+ * and then `update-mime-database`, which is what turns the packages into the
+ * cache file managers actually read. Both files are compared before they are
+ * written, and nothing is run when neither changed.
+ *
+ * The icon cache is only refreshed when there already is one. GTK trusts an
+ * `icon-theme.cache` for as long as the theme directory itself is no newer,
+ * and a file added in a subdirectory does not make it newer — so creating a
+ * cache in a directory other programs also drop icons into would hide theirs.
+ * Without one, the icon is found by looking, which is what this needs.
+ */
+export function ensureFreedesktopFileType({ dataHome = xdgDataHome(), runner = run }: {
+    dataHome?: string | undefined;
+    runner?: Runner | undefined;
+} = {}): string[] {
+    const mime = PATH.join(dataHome, 'mime');
+    const hicolor = PATH.join(dataHome, 'icons', 'hicolor');
+    const changed = writeAll({
+        [PATH.join(mime, 'packages', 'pipobscure-bundle-nzip.xml')]: mimePackageXml(),
+        [PATH.join(hicolor, 'scalable', 'mimetypes', `${NZIP_MIME.replace('/', '-')}.svg`)]: FS.readFileSync(iconPath('bundle.svg')),
+    });
+    if (!changed) return [];
+
+    const notes = ['registered the .nzip file type and its icon, for this user'];
+    const updated = runner('update-mime-database', [mime]);
+    if (updated.error || updated.status !== 0) {
+        notes.push(`the desktop will know it once 'update-mime-database ${mime}' has run (${failure(updated)})`);
+    }
+    if (FS.existsSync(PATH.join(hicolor, 'icon-theme.cache'))) {
+        const cached = runner('gtk-update-icon-cache', ['-q', '-t', hicolor]);
+        if (cached.error || cached.status !== 0) {
+            notes.push(`the icon shows once 'gtk-update-icon-cache -t ${hicolor}' has run (${failure(cached)})`);
+        }
+    }
+    return notes;
+}
+
+function xdgDataHome(): string {
+    const configured = process.env['XDG_DATA_HOME'];
+    // The spec says a relative value is to be ignored, as if it were unset.
+    return configured && PATH.isAbsolute(configured) ? configured : PATH.join(OS.homedir(), '.local', 'share');
+}
+
+// Why a program did not do its job, in a few words.
+function failure(res: ReturnType<Runner>): string {
+    if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return 'it is not installed here';
+    if (res.error) return message(res.error);
+    return (res.stderr ?? '').trim().split('\n')[0] || `exit ${res.status}`;
+}
+
+/** The uniform type identifier `.nzip` is declared as on macOS. */
+export const NZIP_UTI = 'com.pipobscure.bundle.nzip';
+
+/** The bundle identifier of the app that declares it. */
+const MAC_APP_ID = 'com.pipobscure.bundle';
+
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+
+/**
+ * The `Info.plist` of the app that declares `.nzip` on macOS: an exported
+ * type, `com.pipobscure.bundle.nzip`, for the extension, with the icon, and a
+ * document type naming it with the role None — so Finder shows the icon and a
+ * name, and never offers this app to open one with.
+ *
+ * It conforms to `public.archive` rather than `public.zip-archive`, though a
+ * zip is what it is: a zip archive is something Archive Utility opens on a
+ * double-click, by unpacking it, and that is not what anybody double-clicking
+ * an app means. `CFBundleVersion` moves only when this declaration does.
+ */
+export function macInfoPlist(): string {
+    const string = (value: string) => `<string>${value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</string>`;
+    return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        '<dict>',
+        `    <key>CFBundleIdentifier</key>${string(MAC_APP_ID)}`,
+        `    <key>CFBundleName</key>${string('Node Bundle')}`,
+        `    <key>CFBundleDisplayName</key>${string('Node Bundle')}`,
+        `    <key>CFBundleExecutable</key>${string('NodeBundle')}`,
+        `    <key>CFBundleIconFile</key>${string('nzip.icns')}`,
+        `    <key>CFBundleInfoDictionaryVersion</key>${string('6.0')}`,
+        `    <key>CFBundlePackageType</key>${string('APPL')}`,
+        `    <key>CFBundleShortVersionString</key>${string('1.0')}`,
+        `    <key>CFBundleVersion</key>${string('1')}`,
+        '    <key>LSUIElement</key><true/>',
+        '    <key>UTExportedTypeDeclarations</key>',
+        '    <array>',
+        '        <dict>',
+        `            <key>UTTypeIdentifier</key>${string(NZIP_UTI)}`,
+        `            <key>UTTypeDescription</key>${string('Node bundle')}`,
+        `            <key>UTTypeIconFile</key>${string('nzip.icns')}`,
+        '            <key>UTTypeConformsTo</key>',
+        `            <array>${string('public.data')}${string('public.archive')}</array>`,
+        '            <key>UTTypeTagSpecification</key>',
+        '            <dict>',
+        `                <key>public.filename-extension</key><array>${string('nzip')}</array>`,
+        '            </dict>',
+        '        </dict>',
+        '    </array>',
+        '    <key>CFBundleDocumentTypes</key>',
+        '    <array>',
+        '        <dict>',
+        `            <key>CFBundleTypeName</key>${string('Node bundle')}`,
+        `            <key>CFBundleTypeRole</key>${string('None')}`,
+        `            <key>CFBundleTypeIconFile</key>${string('nzip.icns')}`,
+        `            <key>LSItemContentTypes</key><array>${string(NZIP_UTI)}</array>`,
+        '        </dict>',
+        '    </array>',
+        '</dict>',
+        '</plist>',
+        '',
+    ].join('\n');
+}
+
+/** Where the app that declares `.nzip` goes on macOS. */
+export function macAppDir(home = OS.homedir()): string {
+    return PATH.join(home, 'Library', 'Application Support', 'bundle', 'NodeBundle.app');
+}
+
+/**
+ * Give `.nzip` files a name and the tree icon in Finder, for the current user.
+ *
+ * macOS has no file for that the way Linux does: what a file type is and what
+ * it looks like are declared by an application, in its `Info.plist`, and
+ * known once Launch Services has seen the application. So this writes the
+ * smallest application that can — `NodeBundle.app`, beside this tool's other
+ * state in `~/Library/Application Support/bundle`, out of the way of
+ * Launchpad and the Applications folder — and has `lsregister` look at it.
+ * It is never run: its executable only says so and exits.
+ *
+ * As everywhere, files are compared before they are written, and
+ * `lsregister` is only asked when one of them changed.
+ */
+export function ensureMacFileType({ home = OS.homedir(), runner = run }: {
+    home?: string | undefined;
+    runner?: Runner | undefined;
+} = {}): string[] {
+    const app = macAppDir(home);
+    const executable = PATH.join(app, 'Contents', 'MacOS', 'NodeBundle');
+    const changed = writeAll({
+        [PATH.join(app, 'Contents', 'Info.plist')]: macInfoPlist(),
+        [PATH.join(app, 'Contents', 'Resources', 'nzip.icns')]: FS.readFileSync(iconPath('nzip.icns')),
+        [executable]: [
+            '#!/bin/sh',
+            '# Not an application: this bundle only tells macOS what a .nzip file is,',
+            '# and what it looks like. `bundle install` wrote it; archives run by name.',
+            'exit 0',
+            '',
+        ].join('\n'),
+    }, { [executable]: 0o755 });
+    if (!changed) return [];
+
+    const registered = runner(LSREGISTER, ['-f', app]);
+    if (registered.error || registered.status !== 0) {
+        return [`wrote ${app}, but could not register it with Launch Services (${failure(registered)})`];
+    }
+    return ['registered the .nzip file type and its icon, for this user'];
+}
+
 /** The ProgID this tool registers `.nzip` against. */
 const PROG_ID = 'NodeBundle';
 
 /**
  * Make `.nzip` runnable for the current user on Windows: associate it with a
- * file type that runs node with the archive mounted, and put the extension on
- * PATHEXT so the name alone is enough.
+ * file type that runs node with the archive mounted, put the extension on
+ * PATHEXT so the name alone is enough, and give the file type the tree icon
+ * (`windowsIcon()`).
  *
  * Which node is the one `windowsNode()` finds, as a `#!` launcher would on
  * unix: the one on PATH when it is new enough, else the one running this,
@@ -1291,23 +1565,53 @@ const PROG_ID = 'NodeBundle';
  *
  * Everything here is per-user — HKCU and `HKCU\Environment`, never `/M` — so it
  * needs no administrator. A machine-wide association is an installer's job, and
- * the node installer is the right place for it. Both halves are idempotent:
+ * the node installer is the right place for it. All of it is idempotent:
  * what is already right is left alone, and what is missing is written.
+ *
+ * The icon does not depend on a node being found, so it is set either way;
+ * and when it or the association changed, Explorer is told (`refreshExplorer()`),
+ * or it would go on showing what it had cached.
  */
 export function ensureWindowsAssociation(name = 'a bundle'): string[] {
     if (process.platform !== 'win32') return [];
     const node = windowsNode();
+    const association = node ? associate(node) : [];
+    const icon = windowsIcon();
+    const refreshed = association.length || icon.length ? refreshExplorer() : [];
     if (!node) {
         return [
             `! no node ${FLOOR} or newer: not on PATH, not this one (${process.version}), and no version manager (nvm-windows, fnm, volta, mise) has one`,
             `  .nzip files will not open until one is installed — then run 'bundle install' again`,
+            ...icon, ...refreshed,
             ...shadowed(),
         ];
     }
-    const notes = [...associate(node), ...extendPathExt()];
+    const notes = [...association, ...extendPathExt()];
     if (notes.length) notes.push(`${name} runs by name once a new terminal picks that up`);
-    notes.push(...shadowed());
+    notes.push(...icon, ...refreshed, ...shadowed());
     return notes;
+}
+
+/**
+ * The tree icon for `.nzip` files, for the current user: `nzip.ico` copied to
+ * `%LOCALAPPDATA%\bundle\icons\` — beside the `bin` directory installs go
+ * to, and somewhere that stays put when this package is updated or run from
+ * a temporary `npx` copy — and named by the ProgID's `DefaultIcon`.
+ */
+function windowsIcon(): string[] {
+    const base = process.env['LOCALAPPDATA'] || PATH.join(OS.homedir(), 'AppData', 'Local');
+    const path = PATH.join(base, 'bundle', 'icons', 'nzip.ico');
+    const value = `"${path}",0`;
+    try {
+        const copied = writeIfChanged(path, FS.readFileSync(iconPath('nzip.ico')));
+        if (query(`HKCU\\Software\\Classes\\${PROG_ID}\\DefaultIcon`, '') !== value) {
+            reg(['add', `HKCU\\Software\\Classes\\${PROG_ID}\\DefaultIcon`, '/ve', '/d', value, '/f']);
+            return ['gave .nzip files the bundle icon, for this user'];
+        }
+        return copied ? ['updated the .nzip icon'] : [];
+    } catch (err) {
+        return [`could not set the .nzip icon: ${message(err)}`];
+    }
 }
 
 /**
@@ -1419,6 +1723,34 @@ function announce(): string[] {
         }
     } catch (err) {
         return [`open a new terminal for it to take effect (could not broadcast: ${message(err)})`];
+    }
+}
+
+/**
+ * Tell Explorer that file associations changed, so it redraws the icons it
+ * has cached rather than going on showing the old ones until the next sign-in.
+ * That is `SHChangeNotify(SHCNE_ASSOCCHANGED)` from shell32, through
+ * `node:ffi` as `announce()` does. It returns nothing and waits for nobody.
+ */
+function refreshExplorer(): string[] {
+    const SHCNE_ASSOCCHANGED = 0x08000000;
+    const SHCNF_IDLIST = 0;
+
+    try {
+        const { DynamicLibrary } = require('node:ffi') as typeof import('node:ffi');
+        const shell32 = new DynamicLibrary('shell32.dll');
+        try {
+            const notify = shell32.getFunction('SHChangeNotify', {
+                arguments: ['int32', 'uint32', 'pointer', 'pointer'],
+                return: 'void',
+            });
+            notify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0n, 0n);
+            return [];
+        } finally {
+            shell32.close();
+        }
+    } catch (err) {
+        return [`Explorer may show the old icon until you sign in again (could not tell it: ${message(err)})`];
     }
 }
 

@@ -2,3 +2,8 @@ examples/echo-argv/windows/probe.cmd text eol=crlf
 # The launcher is a #!/bin/sh script put in front of archives: with CRLF it
 # would not run anywhere it is meant to.
 shell-base text eol=lf
+# The icons are rendered by tools/icons.ts and checked in; the containers are
+# binary, and the drawing is copied byte for byte into the user's icon theme.
+*.ico binary
+*.icns binary
+icons/*.svg text eol=lf

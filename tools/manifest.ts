@@ -42,7 +42,9 @@ const files = moduleFiles({
     // package root — and inside the archive, the archive is the package root.
     files: ['package.json', 'shell-base'],
     // `lexicons` is read by `bundle lexicon publish`, beside the package root.
-    dirs: ['dist', 'skills', 'lexicons'],
+    // `icons` is what `bundle install` registers as the `.nzip` file icon,
+    // copied out of the package root — the mount, when this archive runs.
+    dirs: ['dist', 'skills', 'lexicons', 'icons'],
     dependencies: RUNTIME,
     // The bundle is what runs; the maps and declarations beside it are what you
     // read, and `files` in package.json already ships those.
