@@ -1,4 +1,4 @@
-# Attestations: who vouches for a bundle, over atproto
+# ✍️ Attestations: who vouches for a bundle, over atproto
 
 **Status:** implemented (first cut)
 **Author:** Philipp Dunkel

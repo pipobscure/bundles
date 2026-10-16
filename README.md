@@ -1,4 +1,6 @@
-# bundle
+# 🌳 bundle
+
+<img src="icons/bundle.svg" width="96" alt="🌳">
 
 **Ship a Node.js app as one signed file, and install other people's apps knowing exactly what
 you are getting.**
@@ -19,12 +21,12 @@ Node runs the app straight out of the file.
 
 ## What you can do with it
 
-- **Ship an app as one file.** A file you can run by name, a standalone executable with Node
+- 🌳 **Ship an app as one file.** A file you can run by name, a standalone executable with Node
   built in, or an archive to mount. Built once, signed once.
 - **Install apps safely.** `bundle install` takes a URL, a domain, or a name someone
   published, shows you everything that vouches for what it fetched, and asks you before it
   trusts anyone new. Nothing runs to install it.
-- **Know who vouches for what.** Signatures say who built it. Attestations let others vouch
+- **Know who vouches for what.** 🔐 Signatures say who built it. ✍️ Attestations let others vouch
   for it ("I audited this", "I rebuilt it and got the same bytes") or warn against it.
 - **Find apps.** Publish your app under a name; anyone can `bundle search` for it and install
   it by that name.
@@ -141,7 +143,7 @@ bundle audit --check app.unsigned.nzip && bundle sign app.unsigned.nzip     # ->
   [Claude Code](https://claude.com/claude-code) skill that reads every file in the archive,
   and `bundle audit --check` refuses to let signing go ahead without a clean verdict over
   exactly those bytes. Or read it yourself and `bundle audit --approve`.
-- **Signing uses sigstore by default**: your CI's identity, or a browser sign-in. There is
+- 🔐 **Signing uses sigstore by default**: your CI's identity, or a browser sign-in. There is
   no key to keep or lose. Your own certificate authority works too (`--key`, `--chain`).
 - **The same files make the same archive**, so anyone can rebuild yours and compare. Each
   member is dated with its file's own time, never the time of the build. For a rebuild that
@@ -206,7 +208,7 @@ starting point, and `bundle policy` shows what is in force:
 }
 ```
 
-Anyone with an Atmosphere (atproto) account can attest: vouch for an archive, warn against it,
+✍️ Anyone with an Atmosphere (atproto) account can attest: vouch for an archive, warn against it,
 or withdraw that. `bundle attest --as you.example --kind audited app.nzip` is one sign-in in
 the browser, and the record lives in your own account. `bundle trust` keeps the cached
 attestations fresh for checks that can't reach the network.
@@ -301,9 +303,9 @@ lists the commands.
 
 | Building and signing | |
 |---|---|
-| [`create`](docs/cli.md#create) | build an unsigned archive from a list of files |
+| [`create`](docs/cli.md#create) | 🌳 build an unsigned archive from a list of files |
 | [`audit`](docs/cli.md#audit) | report what is about to be reviewed, and gate signing on the verdict |
-| [`sign`](docs/cli.md#sign) | sign an archive as it is: `app.unsigned.nzip` into `app.nzip` |
+| [`sign`](docs/cli.md#sign) | 🔐 sign an archive as it is: `app.unsigned.nzip` into `app.nzip` |
 | [`sea`](docs/cli.md#sea) | build a node runtime that verifies an archive before running it |
 
 | Checking and running | |
@@ -313,7 +315,7 @@ lists the commands.
 
 | Vouching | |
 |---|---|
-| [`attest`](docs/cli.md#attest) | vouch for archives from an atproto account, warn against them, or withdraw that |
+| [`attest`](docs/cli.md#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that |
 | [`lexicon`](docs/cli.md#lexicon) | show, check or publish the atproto lexicons attestations and listings are written in |
 
 | Publishing and finding | |

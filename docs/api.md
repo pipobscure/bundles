@@ -1,4 +1,4 @@
-# Using `@pipobscure/bundle` from code
+# 🌳 Using `@pipobscure/bundle` from code
 
 Everything the `bundle` command does is available as an API, and the plugin loader is only
 available as one. This is the reference for both. For what the tool does, see the

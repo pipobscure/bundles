@@ -3,7 +3,7 @@ name: audit-bundle
 description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle) — or a suite of them. Use before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — before RUNNING or shipping one you received, and before PUBLISHING or PERMITTING a suite (`bundle suite publish`, `bundle suite attest --kind permitted`). Triggers on "audit/review/vet/inspect/check this bundle/suite", "is this safe to sign", "is this safe to run", "should we permit this suite", "what is in this bundle", or diffing one against a previously approved version.
 ---
 
-# Auditing a bundle
+# 🌳 Auditing a bundle
 
 A signature answers *who produced these bytes*. It does not answer *are these bytes
 safe*. Those are different questions, and the second one is why this skill exists: every

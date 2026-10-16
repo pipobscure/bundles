@@ -1,4 +1,4 @@
-# How `bundle` works, and why it is built this way
+# 🌳 How `bundle` works, and why it is built this way
 
 This is the technical companion to the [README](../README.md): the archive format, what is
 signed and how it is checked, the verifying mount, the executables, and the trust model
@@ -35,7 +35,7 @@ ZIP entry comment. A final `AUTHORITY.PEM` member declares the algorithms and ca
 signing certificate chain — a real, extractable filename, so `unzip` plus `openssl x509`
 tells you who signed something without any of this code.
 
-**The signature** covers the *entire file*: any prefix, every member, the whole central
+🔐 **The signature** covers the *entire file*: any prefix, every member, the whole central
 directory, and the fixed part of the end-of-central-directory record — everything up to the
 EOCD's trailing comment. That comment then records both:
 
@@ -294,7 +294,7 @@ again, so a moved release moves every install with it.
 
 ## Attestations
 
-An attestation is an atproto record in the attester's own repository, keyed by the archive's
+✍️ An attestation is an atproto record in the attester's own repository, keyed by the archive's
 whole-file hash: *I vouch for these bytes*, optionally saying what kind of claim it is
 (`published`, `audited`, `reproduced`), or the opposite, a warning (`malware`,
 `vulnerable`). Anyone with an atproto account can attest, and only they can withdraw it.
