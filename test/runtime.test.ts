@@ -122,6 +122,17 @@ test('a node on PATH too old for the app: the newest a version manager has, from
     assert.match(launch('27.1.0', { home }).stdout, /^ran v27\.4\.0 /m);
 });
 
+test('the launcher runs a node bundle downloaded, from its data directory or BUNDLE_NODE_DIR', { skip: SKIP }, () => {
+    const home = PATH.join(tmp, 'h-own');
+    fakeNode(PATH.join(home, '.local', 'share', 'bundle', 'node', 'v27.2.0', 'bin', 'node'), 'v27.2.0');
+    assert.match(launch('27.1.0', { home }).stdout, /^ran v27\.2\.0 /m, 'Linux: the XDG data directory');
+    fakeNode(PATH.join(home, 'Library', 'Application Support', 'bundle', 'node', 'v27.3.0', 'bin', 'node'), 'v27.3.0');
+    assert.match(launch('27.1.0', { home }).stdout, /^ran v27\.3\.0 /m, 'macOS: Application Support');
+    const elsewhere = PATH.join(tmp, 'own-elsewhere');
+    fakeNode(PATH.join(elsewhere, 'v27.4.0', 'bin', 'node'), 'v27.4.0');
+    assert.match(launch('27.1.0', { home, env: { BUNDLE_NODE_DIR: elsewhere } }).stdout, /^ran v27\.4\.0 /m);
+});
+
 test('with no node new enough anywhere, the launcher says what it found and how to fix it', { skip: SKIP }, () => {
     const home = PATH.join(tmp, 'h-none');
     fakeNode(PATH.join(tmp, 'p-none', 'node'), 'v26.11.1');
@@ -131,8 +142,8 @@ test('with no node new enough anywhere, the launcher says what it found and how 
     assert.equal(res.stdout, '');
     assert.match(res.stderr, /^launcher-28\.0\.0: needs node 28\.0\.0 or newer, and none was found$/m);
     assert.match(res.stderr, /^ {2}on PATH: node v26\.11\.1 at \S+p-none\/node$/m);
-    assert.match(res.stderr, /version managers \(nvm, fnm, volta, asdf, mise, n\): none has one installed/);
-    assert.match(res.stderr, /install node 28 or newer — e\.g\. 'nvm install 28' or 'fnm install 28', or from https:\/\/nodejs\.org/);
+    assert.match(res.stderr, /version managers \(nvm, fnm, volta, asdf, mise, n\), and bundle's own: none has one installed/);
+    assert.match(res.stderr, /install node 28 or newer — 'bundle node install', or e\.g\. 'nvm install 28' or 'fnm install 28', or from https:\/\/nodejs\.org/);
 
     const bare = launch('28.0.0', { home: PATH.join(tmp, 'h-empty') });
     assert.equal(bare.status, 69);
@@ -208,4 +219,7 @@ test('on Windows, .nzip opens with the node on PATH, else this one, else the new
     }, 'then the newest a version manager has');
     assert.equal(windowsNode({ env: { ...env, NVM_HOME: PATH.join(root, 'nvm-home') }, execPath, run, minimum: '28.2.0' })?.from, 'fnm');
     assert.equal(windowsNode({ env, execPath, run, minimum: '29.0.0' }), undefined, 'none new enough');
+
+    const own = node(PATH.join(root, 'Local', 'bundle', 'node', 'v29.1.0', 'node.exe'), 'v29.1.0');
+    assert.deepEqual(windowsNode({ env, execPath, run, minimum: '29.0.0' }), { path: own, version: 'v29.1.0', from: 'bundle' }, 'and one bundle downloaded');
 });

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs the archive after this script with a node that is new enough for it:
 # the node on PATH, when it is; otherwise the newest one a version manager has
-# installed (nvm, fnm, volta, asdf, mise, n); otherwise an error saying so.
+# installed (nvm, fnm, volta, asdf, mise, n), or bundle has downloaded
+# ('bundle node install'); otherwise an error saying so.
 # Nothing is installed or changed. `bundle create --launcher` sets `need` to
 # the app's engines.node minimum, never below what --vfs-load needs.
 need=26.11.1
@@ -49,6 +50,8 @@ node=$(command -v node) && have=$("$node" --version 2>/dev/null) && atleast "$ha
     look "${ASDF_DATA_DIR:-$HOME/.asdf}/installs/nodejs" bin/node
     look "${MISE_DATA_DIR:-$data/mise}/installs/node" bin/node
     look "${N_PREFIX:-/usr/local}/n/versions/node" bin/node
+    look "${BUNDLE_NODE_DIR:-$data/bundle/node}" bin/node
+    look "$HOME/Library/Application Support/bundle/node" bin/node
     # The directory's name is the manager's word for it; the node itself confirms.
     if [ -n "$best" ] && atleast "$("$best" --version 2>/dev/null)" "$need"; then
         node=$best
@@ -56,8 +59,8 @@ node=$(command -v node) && have=$("$node" --version 2>/dev/null) && atleast "$ha
         echo "${0##*/}: needs node $need or newer, and none was found" >&2
         if [ -n "$node" ]; then echo "  on PATH: node ${have:-of unknown version} at $node" >&2
         else echo "  on PATH: no node" >&2; fi
-        echo "  version managers (nvm, fnm, volta, asdf, mise, n): none has one installed" >&2
-        echo "  install node ${need%%.*} or newer — e.g. 'nvm install ${need%%.*}' or 'fnm install ${need%%.*}', or from https://nodejs.org — and run this again" >&2
+        echo "  version managers (nvm, fnm, volta, asdf, mise, n), and bundle's own: none has one installed" >&2
+        echo "  install node ${need%%.*} or newer — 'bundle node install', or e.g. 'nvm install ${need%%.*}' or 'fnm install ${need%%.*}', or from https://nodejs.org — and run this again" >&2
         exit 69
     fi
 }

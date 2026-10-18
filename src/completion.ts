@@ -51,6 +51,7 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
     skill: 'skills',
     policy: (positionals) => (positionals.length === 0 ? ['show', 'init', 'check'] : positionals[0] === 'check' ? 'files' : null),
     lexicon: (positionals) => (positionals.length === 0 ? ['check', 'publish'] : null),
+    node: (positionals) => (positionals.length === 0 ? ['install'] : null),
     suite: (positionals) => (positionals.length === 0 ? ['add', 'remove', 'update', 'validate', 'show', 'publish', 'unpublish', 'attest']
         : positionals[0] === 'add' ? 'listed' : null),
     shell: (positionals) => (positionals.length === 0 ? ['bash', 'zsh', 'fish', 'powershell'] : null),
@@ -72,6 +73,7 @@ const VALUES: Record<string, Hint> = {
     'listings.for': 'installed',
     'publish.for': 'installed',
     'suite.suite': 'files',
+    'node.via': ['auto', 'download', 'mise', 'fnm', 'nvm', 'asdf', 'nvm-windows'],
     root: 'files', output: 'files', files: 'files', key: 'files', chain: 'files', prefix: 'files',
     node: 'files', base: 'files', dir: 'files', archive: 'files', 'password-file': 'files', 'sigstore-root': 'files', from: 'files',
     flow: ['auto', 'ci', 'browser', 'device'],

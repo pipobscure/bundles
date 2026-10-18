@@ -20,6 +20,7 @@ import { inheritFor, minimumsFor } from './suite-install.ts';
 import type { NetworkOptions } from './atproto.ts';
 import { FLOOR, windowsNode, type FoundNode } from './runtime.ts';
 import { iconPath } from './files.ts';
+import * as ENTRY from './app-entry.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -163,6 +164,14 @@ export interface InstallRecord {
      * their next update.
      */
     stored?: string | undefined;
+    /**
+     * For an app that asks for one (`bundle.app` in its package.json): what
+     * its entry in the desktop's applications made — see app-entry.ts —
+     * which an update replaces and uninstalling removes.
+     */
+    menu?: string[] | undefined;
+    /** Installed with `--no-menu`: its updates add no entry either. */
+    menuDeclined?: boolean | undefined;
 }
 
 /** One attestation, as an install remembers having seen it. */
@@ -236,6 +245,13 @@ export interface InstallOptions {
      * rewriting the machine it runs on.
      */
     associate?: boolean | undefined;
+    /**
+     * Give an app that asks for one an entry in the desktop's applications —
+     * the menu, Launchpad, Start (see app-entry.ts). Default: what the install
+     * being updated said, else true — or false when `BUNDLE_NO_DESKTOP_SETUP`
+     * is set. False declines it for this install's updates too.
+     */
+    menu?: boolean | undefined;
     log?: ((line: string) => void) | undefined;
     /** How a domain's TXT records are looked up (default: `node:dns`). For tests. */
     resolveTxt?: ((domain: string) => Promise<string[][]>) | undefined;
@@ -1108,7 +1124,8 @@ export type Uninstalled = InstallRecord & {
  * nothing means this package's own install, which is what somebody typing
  * `bundle uninstall` means. The desktop setup — the association on
  * Windows, the file type and its icon everywhere — is left alone: other
- * archives may rely on it, and it is not this one's to take away.
+ * archives may rely on it, and it is not this one's to take away. The app's
+ * own entry in the desktop's applications, if it has one, goes with it.
  *
  * An app's plugins go with it: nothing can load them any more. The exception
  * is another install of the same app — the same package, under another name —
@@ -1146,6 +1163,7 @@ export function uninstall(which?: string): Uninstalled {
 // An install's file — for an app in the store, its archive and every command
 // that links to it — and for a plugin the name it was installed as beside it.
 function remove(record: InstallRecord): void {
+    if (record.menu?.length) ENTRY.takeAway(record.menu);
     for (const command of commandsOf(record)) FS.rmSync(command, { force: true });
     FS.rmSync(pathOf(record), { force: true });
     if (record.scope !== undefined) FS.rmSync(labelFile(pathOf(record)), { force: true });
@@ -1297,6 +1315,10 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     if ((options.associate ?? desktopSetupWanted()) && !plugin) {
         for (const line of ensureDesktopSetup(name)) log(`  ${line}`);
     }
+    const menuDeclined = plugin ? undefined : options.menu === false || (options.menu === undefined && previous?.menuDeclined) || undefined;
+    // An entry made before is kept up to date; a first one is made unless the desktop is not to be touched.
+    const wanted = !menuDeclined && (options.menu ?? (previous?.menu?.length ? true : desktopSetupWanted()));
+    const menu = plugin ? undefined : appEntry(bytes, { name, archive: target, previous, wanted, log });
 
     const { result } = gathered;
     const attestedBy = gathered.evidence
@@ -1324,7 +1346,48 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         at: new Date().toISOString(),
         dir,
         stored,
+        menu,
+        menuDeclined,
     });
+}
+
+/**
+ * The entry an app asks for, made — or brought up to date, or taken away
+ * when it no longer asks or it is not wanted — and what it is made of now.
+ * Nothing here fails an install: the app is on the PATH either way.
+ */
+function appEntry(bytes: Buffer, { name, archive, previous, wanted, log }: {
+    name: string;
+    archive: string;
+    previous?: InstallRecord | undefined;
+    wanted: boolean;
+    log: (line: string) => void;
+}): string[] | undefined {
+    const ours = previous?.menu ?? [];
+    const { app, problem } = ENTRY.readDeclaration(bytes);
+    if (problem) log(`  ! no applications entry: ${problem}`);
+    if (!app || !wanted) {
+        // Not asked for any more, or declined: what an earlier version made goes.
+        if (ours.length && ENTRY.takeAway(ours).length) log(`  * took ${name} out of the applications`);
+        return undefined;
+    }
+    try {
+        const { icons, notes } = ENTRY.readIcons(bytes, app);
+        for (const note of notes) log(`  ! ${note}`);
+        const node = process.platform === 'win32' ? windowsNode()?.path : undefined;
+        const plan = ENTRY.planFor({ name, app, icons, archive, node, places: ENTRY.currentPlaces() });
+        if (!plan) {
+            log(process.platform === 'win32' ? `  ! no Start menu shortcut for ${name}: there is no node ${FLOOR} or newer to run it with — 'bundle node install'` : `  ! no applications entry for ${name}: bundle does not know this desktop`);
+            return ours.length ? ours : undefined;
+        }
+        const made = ENTRY.make(plan, { ours, name, runner: run });
+        for (const note of made.notes) log(`  ! ${note}`);
+        if (made.entry && !previous?.menu?.length) log(`  * added ${app.title} to the applications: ${made.entry}`);
+        return made.paths.length ? made.paths : undefined;
+    } catch (err) {
+        log(`  ! could not make the applications entry for ${name}: ${message(err)}`);
+        return ours.length ? ours : undefined;
+    }
 }
 
 function validators(response: Response): { etag?: string | undefined; lastModified?: string | undefined } {

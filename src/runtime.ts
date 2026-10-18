@@ -18,8 +18,8 @@ import { launcherPath } from './files.ts';
 // Windows runs no launcher: a `.nzip` opens through the file association that
 // `bundle install` registers, which names one node for every archive. That
 // node is chosen the same way — the one on PATH, then the one running the
-// install, then a version manager's (nvm-windows, fnm, volta, mise) — by
-// `windowsNode()`.
+// install, then a version manager's (nvm-windows, fnm, volta, mise) or one
+// bundle downloaded (`bundle node install`) — by `windowsNode()`.
 
 /** The oldest node that runs a bundle: --experimental-vfs with --vfs-load. */
 export const FLOOR = '26.11.1';
@@ -149,7 +149,8 @@ export interface FoundNode {
 /**
  * The node a `.nzip` should open with on Windows, at least `minimum`: the one
  * on PATH when it is new enough, else the one running this, else the newest
- * a version manager has installed — nvm-windows, fnm, volta, mise. Undefined
+ * a version manager has installed — nvm-windows, fnm, volta, mise — or bundle
+ * has downloaded into its own directory (`nodesDir()` in nodes.ts). Undefined
  * when there is none. `env`, `execPath` and `run` are for tests.
  */
 export function windowsNode({ minimum = FLOOR, env = process.env, execPath = process.execPath, run = versionOf }: {
@@ -173,6 +174,8 @@ export function windowsNode({ minimum = FLOOR, env = process.env, execPath = pro
         ['fnm', PATH.join(env['FNM_DIR'] || PATH.join(appData, 'fnm'), 'node-versions'), PATH.join('installation', 'node.exe')],
         ['volta', PATH.join(env['VOLTA_HOME'] || PATH.join(localAppData, 'Volta'), 'tools', 'image', 'node'), 'node.exe'],
         ['mise', PATH.join(env['MISE_DATA_DIR'] || PATH.join(localAppData, 'mise'), 'installs', 'node'), 'node.exe'],
+        // The nodes bundle downloads itself (nodes.ts), one directory per version.
+        ['bundle', env['BUNDLE_NODE_DIR'] ? PATH.resolve(env['BUNDLE_NODE_DIR']) : PATH.join(localAppData, 'bundle', 'node'), 'node.exe'],
     ];
     let best: { path: string; version: string; from: string } | undefined;
     for (const [from, root, tail] of managers) {

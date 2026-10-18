@@ -43,6 +43,7 @@ commands:
   installed list what is installed, and re-check each against its record
   validate  re-check installs, and say what has been attested since — at startup
   uninstall remove an installed archive, and forget where it came from
+  node      say which node runs bundles here, or install one
   sea       build a node runtime that verifies an archive before running it
   trust     refresh the sigstore trust root and the cached attestations
   policy    show the rules this machine installs by, and where they come from
@@ -79,8 +80,9 @@ export const HELP: Record<string, string> = {
 
   the launcher runs the node on PATH when that meets the app's engines.node
   (from package.json in --base, never below 26.11.1), else the newest one
-  nvm, fnm, volta, asdf, mise or n has installed, and otherwise exits 69
-  saying which node to install. Only the lower bound is checked.
+  nvm, fnm, volta, asdf, mise or n has installed or bundle downloaded ('bundle
+  node install'), and otherwise exits 69 saying which node to install. Only
+  the lower bound is checked.
 
   every member records its own digest, and the
   archive records its whole-file hash, so even unsigned it says what its
@@ -319,6 +321,8 @@ export const HELP: Record<string, string> = {
                         is kept as <name>.nzip in bundle's data directory
                         (BUNDLE_APPS overrides), so it can be renamed freely
       --no-shell        installing itself, do not offer to set up the shell
+      --no-menu         give the app no entry in the desktop's applications,
+                        even though it asks for one — nor on its updates
 
   everything that vouches for the archive is found and shown: its signature,
   and every attestation of it — from attesters this machine knows, and from
@@ -342,6 +346,12 @@ export const HELP: Record<string, string> = {
   'bundle install npm.npmjs.org' fetch https://npm.npmjs.org/app/npm.nzip
   and install it as 'npm'. The record only says where; the archive is
   verified exactly as a url's would be.
+
+  an app whose package.json asks for it ("bundle": { "app": { "title": … } })
+  also gets an entry in the desktop's applications, for you only: a desktop
+  entry on Linux, an app in ~/Applications on macOS, a Start menu shortcut on
+  Windows, with its own name and icon. Its name and icon come from inside the
+  signed archive; what the entry runs is the installed archive itself.
 
   '@<handle or did>/<name>' installs a listing (see 'publish' and 'search'):
   the record is fetched from the publisher's own PDS and verified, the archive
@@ -451,6 +461,25 @@ export const HELP: Record<string, string> = {
   package's own install — what 'bundle install' left behind. An app's plugins
   go with it, unless another install of the same app still loads them. The
   .nzip association on Windows is left alone: other archives may need it.`,
+    node: `node options:                       usage: node [install] [options]
+      --minimum <version>  the oldest node that will do (default: 26.11.1,
+                        what running a bundle needs)
+      --via <how>       install: auto, download, or a version manager by name
+                        — mise, fnm, nvm, asdf; nvm-windows on Windows
+                        (default: auto)
+
+  with no subcommand, says which node a bundle runs with here — the one the
+  launcher picks on macOS and Linux, the one the .nzip association names on
+  Windows — and the nodes bundle has downloaded. Exits 1 when there is none.
+
+  'install' makes sure there is one: nothing happens when there already is.
+  Otherwise it installs the newest LTS release at or above the minimum (or
+  the newest release, when no LTS is new enough) through a version manager
+  that is here — one that leaves the node your shell runs alone — or else
+  downloads the official build from nodejs.org, checks it against the
+  release's SHASUMS256.txt, and keeps only its node binary, in bundle's own
+  directory. Nothing goes on your PATH; the launcher and the association
+  look there.`,
     sea: `sea options:                        usage: sea [options] [archive]
   -o, --output <file>   write the executable here (required)
       --hash <alg>      digest for the whole-file hash and member digests (default: sha256)
@@ -690,6 +719,20 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
   reads a policy file the way an install will, and says what is wrong with
   it if anything is.`,
     },
+    node: {
+        install: `node install options:               usage: node install [options]
+      --minimum <version>  the oldest node that will do (default: 26.11.1)
+      --via <how>       auto, download, or a version manager by name — mise,
+                        fnm, nvm, asdf; nvm-windows on Windows (default: auto)
+
+  does nothing when a node new enough is already here. Otherwise installs
+  the newest LTS release at or above the minimum, else the newest release:
+  through a version manager that is here, or as the official build from
+  nodejs.org, checked against its SHASUMS256.txt, of which only the node
+  binary is kept, in bundle's own directory (BUNDLE_NODE_DIR overrides it).
+  Volta and n are never asked: installing through either changes the node
+  your shell runs.`,
+    },
     lexicon: {
         check: `lexicon check:                      usage: lexicon check
 
@@ -816,7 +859,7 @@ export const UNDECIDED = 4;
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
     create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, update, installed, validate, uninstall,
-    sea, trust, policy: policyCommand, lexicon, skill, shell,
+    node: nodeCommand, sea, trust, policy: policyCommand, lexicon, skill, shell,
 };
 
 /**
@@ -947,6 +990,14 @@ async function create(args: string[], io: Console): Promise<number> {
             : `* unsigned archive (${files.length} members, ${values.hash} digests)`);
         if (prefix) io.err(`* prefix ${prefix} (${FS.statSync(prefix).size} bytes)`);
         if (date) io.err(`* every member dated ${date.round({ smallestUnit: 'second', roundingMode: 'floor' }).toString()}`);
+    }
+
+    // An app that asks for an entry in the desktop's applications is told now
+    // whether it will get one, rather than by somebody installing it.
+    if (files.includes('package.json')) {
+        const entry = (await import('./app-entry.ts')).checkSource(values.base, files);
+        if (entry.app) io.err(e.note(`applications entry: ${entry.app.title}${entry.formats.length ? ` (icons: ${entry.formats.join(', ')})` : ', with no icon'}`));
+        for (const problem of entry.problems) io.err(e.warn(`applications entry: ${problem}`));
     }
 
     const res = await createBundle({
@@ -1346,6 +1397,7 @@ async function install(args: string[], io: Console): Promise<number> {
             identity: values.identity, issuer: values.issuer,
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
             discover: values.discover,
+            menu: values.menu === false ? false : undefined,
             onReview: (review, about) => showReview(review, about, io),
             decide: decider(Boolean(values.yes), io),
             log: logger(io),
@@ -1376,7 +1428,7 @@ async function install(args: string[], io: Console): Promise<number> {
             if (values.name !== undefined || values.for !== undefined) throw new Error(`install: ${target} is a suite — its members say where each goes, so --name and --for do not apply`);
             const SUITES = await import('./suite-install.ts');
             try {
-                const result = await SUITES.installSuite(target, { ...suiteOptions(values, demands, io), dir: values.dir, suite });
+                const result = await SUITES.installSuite(target, { ...suiteOptions(values, demands, io), dir: values.dir, suite, menu: values.menu === false ? false : undefined });
                 return reportSuites([result], io);
             } catch (refusedSuite) {
                 return refused(refusedSuite, io);
@@ -2231,6 +2283,40 @@ async function lexicon(args: string[], io: Console): Promise<number> {
     } finally {
         await session.end?.();
     }
+    return 0;
+}
+
+// Which node runs bundles here, and getting one where there is none.
+async function nodeCommand(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.node });
+    const NODES = await import('./nodes.ts');
+    const { FLOOR, atLeast } = await import('./runtime.ts');
+    const minimum = values.minimum ?? FLOOR;
+    if (!atLeast(minimum, '0.0.0')) throw new Error(`node: --minimum '${minimum}' is not a node version`);
+    if (!atLeast(minimum, FLOOR)) throw new Error(`node: --minimum ${minimum} is below ${FLOOR}, which running a bundle needs`);
+    const [sub] = positionals;
+    const { o } = styles(io);
+    const said = (node: import('./runtime.ts').FoundNode) => o.people
+        ? `${o.green('✔')} ${o.bold(`node ${node.version}`)}  ${o.dim(`${node.path} — from ${node.from}`)}`
+        : `node ${node.version} at ${node.path} (from ${node.from})`;
+
+    if (sub === undefined) {
+        if (values.via !== undefined) throw new Error('node: --via is for \'node install\'');
+        const found = NODES.findNode({ minimum });
+        io.out(found ? said(found) : o.people
+            ? `${o.red('✖')} ${o.bold(`no node ${minimum} or newer`)}  ${o.dim("— 'bundle node install' gets one")}`
+            : `no node ${minimum} or newer ('bundle node install' gets one)`);
+        const own = NODES.ownNodes();
+        if (own.length) {
+            io.out(o.people ? o.dim(`  downloaded by bundle, in ${NODES.nodesDir()}:`) : `  downloaded by bundle, in ${NODES.nodesDir()}:`);
+            for (const each of own) io.out(`    ${each.version}`);
+        }
+        return found ? 0 : 1;
+    }
+    if (sub !== 'install') throw new Error(`node: unknown subcommand '${sub}' (install)`);
+    const { node, how } = await NODES.ensureNode({ minimum, via: values.via, log: logger(io) });
+    io.out(how === 'found' ? `${said(node)}${o.people ? o.dim('  — already here') : ' — already here'}`
+        : `${said(node)}${o.people ? o.dim(`  — installed by ${how === 'download' ? 'bundle' : how}`) : ` — installed by ${how === 'download' ? 'bundle' : how}`}`);
     return 0;
 }
 
@@ -3414,6 +3500,7 @@ export const OPTIONS = {
         dir:       { type: 'string', short: 'd' },
         for:       { type: 'string' },
         shell:     { type: 'boolean', default: true },
+        menu:      { type: 'boolean', default: true },
     },
     update: INSTALL_OPTIONS,
     installed: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
@@ -3448,6 +3535,10 @@ export const OPTIONS = {
         system: { type: 'boolean' },
         user:   { type: 'boolean' },
         force:  { type: 'boolean', short: 'f' },
+    },
+    node: {
+        minimum: { type: 'string' },
+        via:     { type: 'string' },
     },
     lexicon: {
         as:              { type: 'string' },

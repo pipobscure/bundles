@@ -12,6 +12,7 @@ import { UNDECIDED, main } from '../src/cli.ts';
 import { APP, ROOT_PEM, WINDOWS, collector, scratch, testSigner, tree } from './helpers.ts';
 import { scopeDir, labelFile } from '../src/scopes.ts';
 import { list } from '../src/plugins.ts';
+import { execArg } from '../src/app-entry.ts';
 
 // Installing from a URL, and keeping it current.
 //
@@ -797,4 +798,55 @@ test('a shared scope belongs to no single app, and stays until its plugins are r
     assert.ok(FS.existsSync(PATH.join(scopeDir('@acme/suite'), '@acme', 'suite-core.nzip')));
     uninstall(core.name);
     assert.equal(FS.existsSync(scopeDir('@acme/suite')), false);
+});
+
+test('an app that asks for an applications entry gets one; updates keep it current, and uninstall takes it away', { skip: process.platform !== 'linux' && 'the macOS and Windows entries run lsregister and PowerShell; their plans are tested in app-entry.test.ts' }, async () => {
+    const appWith = async (tag: string, entry: Record<string, unknown>) => {
+        const files = {
+            ...APP,
+            'package.json': JSON.stringify({ name: 'shown', type: 'module', main: 'index.js', bundle: { app: entry } }),
+            'icon.svg': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+        };
+        const dir = tree(PATH.join(tmp, tag), files, 'app');
+        const unsigned = PATH.join(tmp, `${tag}.nzip`);
+        const signed = PATH.join(tmp, `${tag}.signed`);
+        await createBundle({ base: dir, files: Object.keys(files), output: unsigned });
+        await signBundle({ source: unsigned, output: signed, signer: testSigner() });
+        return FS.readFileSync(signed);
+    };
+    const applications = PATH.join(process.env['XDG_DATA_HOME']!, 'applications');
+    const entry = PATH.join(applications, 'bundle-shown.desktop');
+    const icon = PATH.join(process.env['XDG_DATA_HOME']!, 'bundle', 'icons', 'shown.svg');
+
+    served.bytes = await appWith('shown-1', { title: 'Shown', args: ['--window'], icons: { svg: 'icon.svg' } });
+    served.etag = '"shown-1"';
+    const lines: string[] = [];
+    const record = await install(URL_, { ...options, name: 'shown', menu: true, log: (line) => lines.push(line) });
+    assert.deepEqual(record.menu, [entry, icon]);
+    assert.match(FS.readFileSync(entry, 'utf-8'), new RegExp(`^Exec=${quoted(execArg(storedPath('shown')))} "--window"$`, 'm'));
+    assert.match(FS.readFileSync(entry, 'utf-8'), /^Name=Shown$/m);
+    assert.ok(FS.existsSync(icon));
+    assert.ok(lines.some((line) => line.includes(`added Shown to the applications: ${entry}`)));
+
+    // A new version renames it: the same entry, now saying so.
+    served.bytes = await appWith('shown-2', { title: 'Shown Two' });
+    served.etag = '"shown-2"';
+    const [updated] = await update('shown', options);
+    assert.equal(updated!.state, 'updated');
+    assert.match(FS.readFileSync(entry, 'utf-8'), /^Name=Shown Two$/m);
+    assert.equal(FS.existsSync(icon), false, 'it declares no icon any more');
+    assert.deepEqual(records()['shown']!.menu, [entry]);
+
+    uninstall('shown');
+    assert.equal(FS.existsSync(entry), false);
+
+    // Declined, it gets none — and neither do its updates.
+    const declined = await install(URL_, { ...options, name: 'shown', menu: false });
+    assert.equal(declined.menu, undefined);
+    assert.equal(declined.menuDeclined, true);
+    served.bytes = await appWith('shown-3', { title: 'Shown Three' });
+    served.etag = '"shown-3"';
+    await update('shown', { ...options });
+    assert.equal(FS.existsSync(entry), false);
+    uninstall('shown');
 });

@@ -135,8 +135,8 @@ bundle audit --check app.unsigned.nzip && bundle sign app.unsigned.nzip     # ->
 - **The shape is decided when you create it, so it gets reviewed.** `--launcher` makes a file
   you run by name. The launcher is a little shell script that runs first, so the audit shows
   it, and signing keeps it exactly as reviewed. It runs your app with the `node` on `PATH` when
-  that meets your `engines.node`, else with one from nvm, fnm, volta, asdf, mise or n, and
-  otherwise says which node to install.
+  that meets your `engines.node`, else with one from nvm, fnm, volta, asdf, mise or n, or one
+  `bundle node install` downloaded, and otherwise says which node to install.
 - **Observing beats guessing.** Dynamic `require`, data files and conditional imports are
   exactly what static analysis misses, and exactly what a run reads.
 - **The audit is a gate you choose.** `bundle skill` installs a
@@ -165,6 +165,19 @@ bundle create … --launcher --output app.unsigned.nzip   # a file you run by na
 bundle create …            --output app.unsigned.nzip   # a plain archive, to mount
 bundle sea --output app.unsigned app.unsigned.nzip      # a standalone executable (see below)
 ```
+
+**Give it a place in the menu.** An app with a window, such as one that opens a Chromium app
+window onto a page it serves, can ask in its `package.json` for an entry in the desktop's
+applications, with its own name and icon:
+
+```json
+"bundle": { "app": { "title": "davsync", "icons": { "svg": "icon.svg", "icns": "icon.icns", "ico": "icon.ico" } } }
+```
+
+`bundle install` then adds it to the applications menu on Linux, to `~/Applications` on macOS,
+and to Start on Windows, for that user, and `bundle uninstall` takes it away. The name and icon
+are inside the signed archive like the rest of the app. See
+[`install`](docs/cli.md#install) for every field.
 
 **Publish it.** Put the `.nzip` somewhere stable, such as a GitHub release's
 `latest/download` URL, and give it a name others can find:

@@ -49,6 +49,7 @@ bundle --help                            bundle -v, --version
 
 | Setting up | |
 |---|---|
+| [`node`](#node) | say which node runs bundles here, or install one where there is none |
 | [`shell`](#shell) | print what to load at shell start: Tab completion, and a quiet re-check |
 | [`skill`](#skill) | install the bundle-auditing skill into a project |
 
@@ -136,15 +137,22 @@ does, so it is part of what [`audit`](#audit) reviews, and [`sign`](#sign) keeps
 that is new enough, so the node you chose always wins. Otherwise it runs the newest one a
 version manager has installed: nvm, fnm, volta, asdf, mise or n, each looked for where it keeps
 its versions (`NVM_DIR`, `FNM_DIR`, `VOLTA_HOME`, `ASDF_DATA_DIR`, `MISE_DATA_DIR`, `N_PREFIX`,
-or their defaults). It only reads their directories; nothing is installed or switched. With
-none to be found, it exits `69` and says what it found and what to install:
+or their defaults), and then the nodes bundle downloaded itself ([`node`](#node)). It only
+reads their directories; nothing is installed or switched. With none to be found, it exits
+`69` and says what it found and what to install:
 
 ```
 mdview: needs node 27.1.0 or newer, and none was found
   on PATH: node v26.11.1 at /usr/bin/node
-  version managers (nvm, fnm, volta, asdf, mise, n): none has one installed
-  install node 27 or newer — e.g. 'nvm install 27' or 'fnm install 27', or from https://nodejs.org — and run this again
+  version managers (nvm, fnm, volta, asdf, mise, n), and bundle's own: none has one installed
+  install node 27 or newer — 'bundle node install', or e.g. 'nvm install 27' or 'fnm install 27', or from https://nodejs.org — and run this again
 ```
+
+**An app that asks for an entry in the desktop's applications** (`bundle.app` in its
+`package.json`, see [`install`](#install)) is told here whether it will get one: the title,
+which icon formats it carries, and anything that will keep an install from making it, such as an
+unknown field, an icon missing from the file list or not in its format, or a platform with no
+icon.
 
 "New enough" is the app's `engines.node` in the `package.json` at `--base`, written into the
 launcher's `need=` line when the archive is created, and never below 26.11.1, the first node
@@ -914,6 +922,52 @@ opens files itself. Each part is checked before it is written, so installing twi
 nothing, and a part that fails is reported without failing the install. Plugins do none of
 this. `uninstall` leaves it in place, since other archives may rely on it.
 
+**An app can ask for its own entry in the desktop's applications**, with its own name and
+icon, so people open it from the menu, Launchpad or Start rather than typing a command. This
+suits an app with a window, such as one that opens a Chromium app window onto a page it
+serves. The request is in the app's `package.json`, inside the signed archive, so the name and
+icon a menu shows are covered by the same signature and the same decision as the code:
+
+```json
+"bundle": {
+  "app": {
+    "title": "davsync",
+    "description": "Two-way sync of folders with WebDAV",
+    "args": [],
+    "categories": ["Network", "FileTransfer"],
+    "icons": { "svg": "public/icon.svg", "icns": "public/icon.icns", "ico": "public/icon.ico" }
+  }
+}
+```
+
+Only `title` is required. `args` go after the command, `categories` are freedesktop category
+names, and each icon is a file in the archive in the format its key names (`svg`, `png`,
+`icns`, `ico`). Nothing is converted at install: Linux shows the SVG, else the PNG; macOS the
+`.icns`; Windows the `.ico`; a platform whose format is missing shows none. A field bundle does
+not know, or an icon that is not what it says, is reported rather than ignored, and
+[`create`](#create) reports it at packing time. What each platform gets, for the current user
+only:
+
+- **Linux** and the other freedesktop systems: `$XDG_DATA_HOME/applications/bundle-<name>.desktop`,
+  with its icon in `$XDG_DATA_HOME/bundle/icons/`, named by absolute path.
+- **macOS**: `~/Applications/<title>.app`, holding the `.icns`, an `Info.plist`, and a
+  two-line script that runs the installed archive. It is registered with Launch Services. It
+  stays out of the Dock (`LSUIElement`), because a script that becomes node never checks in
+  there and its icon would bounce for as long as the app runs; the window it opens has its
+  own icon.
+- **Windows**: a Start menu shortcut that starts a hidden PowerShell, which runs the node the
+  `.nzip` association names with the archive mounted. node is a console program, and an app
+  opened from Start should not bring a console window with it. The script is in
+  `%LOCALAPPDATA%\bundle\apps\`, the icon in `%LOCALAPPDATA%\bundle\icons\`.
+
+What an entry runs is always the installed archive with the declared `args`, quoted for
+where it goes, never a command line the app wrote. An entry is never made over anything bundle
+did not make: an app of the same title from elsewhere keeps its place, and this one gets none,
+with a note saying so. [`update`](#update) keeps the entry current, renaming it with its title,
+and [`uninstall`](#uninstall) takes it away. `--no-menu` declines it for this install and its
+updates, and `BUNDLE_NO_DESKTOP_SETUP` makes no new ones. A failure is a note, never a failed
+install. Plugins never get one.
+
 **A domain works in place of a URL.** `bundle install tool.example.com` looks for a TXT
 record on that domain of the form `nzip:<url>`. The URL is a full `https:` URL, or a
 reference resolved against `https://tool.example.com/`, and the install is named after the
@@ -992,6 +1046,7 @@ shells, `bundle install` is all it takes.
 | `--for <app>` | install a plugin for this app: an installed name, the listing it was installed from (`@<handle or did>/<name>`, or an `at://` address), or its package name |
 | `-d, --dir <dir>` | install here (default: `~/.local/bin`, or `%LOCALAPPDATA%\bundle\bin`) |
 | `--no-shell` | installing itself, do not offer to set up the shell |
+| `--no-menu` | give the app no entry in the desktop's applications, though it asks for one, nor on its updates |
 
 ### `update`
 
@@ -1256,6 +1311,44 @@ them, or use the quick fix instead.
 
 ## Setting up
 
+### `node`
+
+```
+bundle node [--minimum <version>]
+bundle node install [--minimum <version>] [--via <how>]
+```
+
+With no subcommand, says which node a bundle runs with here and where it came from. On macOS and
+Linux that is the node the [launcher](#create) picks; on Windows, the one the `.nzip`
+association names. It also lists the nodes bundle has downloaded itself. Exits 1 when there is
+no node new enough.
+
+`install` makes sure there is one, and does nothing when there already is. Otherwise:
+
+1. It chooses a release from nodejs.org's index: the newest LTS at or above the minimum, else
+   the newest release at or above it.
+2. It asks a version manager that is here for exactly that release: mise, fnm, nvm or asdf (with
+   its nodejs plugin); nvm-windows, fnm or mise on Windows. Volta and n are never asked, since
+   installing through either changes the node your shell runs.
+3. With no manager, or none that manages it, it downloads the official build, checks it against
+   the release's `SHASUMS256.txt`, and keeps only the `node` binary, in bundle's own directory
+   (see [Files and directories](#files-and-directories)). That node is a runtime for bundles,
+   not a development setup: it comes without npm, and nothing is put on your PATH, so it never
+   takes the place of a node you chose. The launcher and the Windows association look there.
+
+The checksum file comes from the same place as the download, so it shows the download arrived
+whole, not who made it. The release's OpenPGP signature is not checked, because node has no
+OpenPGP implementation. As with every other way of installing node, TLS to nodejs.org is what
+is trusted.
+
+Bundles built before 0.1.6 carry a launcher that does not look in bundle's directory. On a
+machine whose only node bundle downloaded, they say they found none.
+
+| Option | |
+|---|---|
+| `--minimum <version>` | the oldest node that will do (default: `26.11.1`, what running a bundle needs) |
+| `--via <how>` | `install` only: `auto`, `download`, or a manager by name: `mise`, `fnm`, `nvm`, `asdf`, `nvm-windows` (default: `auto`) |
+
 ### `shell`
 
 ```
@@ -1350,12 +1443,14 @@ a file that is already there unless forced, so local edits survive.
 | Attestation cache | `attestations/` in the state directory: each attester's DID document, and their verified proofs | `BUNDLE_ATTESTATIONS` |
 | App-password sessions | `sessions/` in the state directory: one per account, encrypted with its password, for five minutes — see [Signing in](#signing-in) | `BUNDLE_ATPROTO_SESSION_TTL` |
 | Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
+| Downloaded nodes | `$XDG_DATA_HOME/bundle/node/<version>/bin/node` (`~/.local/share/…`); `~/Library/Application Support/bundle/node/` on macOS; `%LOCALAPPDATA%\bundle\node\<version>\node.exe` on Windows — see [`node`](#node) | `BUNDLE_NODE_DIR` |
 | Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows | `BUNDLE_PLUGINS` |
 | The state directory | `$XDG_STATE_HOME/bundle` (`~/.local/state/bundle`); `~/Library/Application Support/bundle` on macOS; `%LOCALAPPDATA%\bundle\Data` on Windows | |
 | Policy | see [`policy`](#policy) | `BUNDLE_POLICY`, `BUNDLE_SYSTEM_POLICY` |
 | Sigstore trust root | `$XDG_DATA_HOME/sigstore-js` (`~/.local/share/sigstore-js`); `~/Library/Application Support/sigstore-js` on macOS; `%LOCALAPPDATA%\sigstore-js\Data` on Windows | `BUNDLE_SIGSTORE_ROOT`, `--sigstore-root` |
 | Shell setup | `~/.bashrc`, `${ZDOTDIR:-~}/.zshrc`, `~/.config/fish/config.fish`, PowerShell's `$PROFILE`, only with your yes | `BUNDLE_SHELL`, `BUNDLE_POWERSHELL_PROFILE` |
 | `.nzip` association | `HKCU\Software\Classes` and the user's `PATHEXT`, on Windows | `BUNDLE_NO_DESKTOP_SETUP` |
+| Applications entries | `$XDG_DATA_HOME/applications/bundle-<name>.desktop` and `$XDG_DATA_HOME/bundle/icons/` on Linux; `~/Applications/<title>.app` on macOS; the Start menu's `Programs`, `%LOCALAPPDATA%\bundle\apps\` and `%LOCALAPPDATA%\bundle\icons\` on Windows — see [`install`](#install) | `--no-menu`, `BUNDLE_NO_DESKTOP_SETUP` |
 | `.nzip` icon | `%LOCALAPPDATA%\bundle\icons` on Windows; `$XDG_DATA_HOME/mime` and `$XDG_DATA_HOME/icons/hicolor` (`~/.local/share`) on Linux; `~/Library/Application Support/bundle/NodeBundle.app` on macOS | `BUNDLE_NO_DESKTOP_SETUP` |
 
 The sigstore certificate's key and OAuth sessions are never stored. An app-password session
@@ -1385,6 +1480,8 @@ never kept: they are bound to a key that only ever exists in memory.
 | `BUNDLE_INSTALL_DIR` | where `install` puts programs |
 | `BUNDLE_APPS` | where `install` keeps the archives those programs link to, on macOS and Linux |
 | `BUNDLE_PLUGINS` | where plugin scopes are, for `install --for` and the plugin loader alike |
+| `BUNDLE_NODE_DIR` | where `node install` keeps the nodes it downloads, and where the launcher and the Windows association look for them |
+| `BUNDLE_NODE_MIRROR` | where `node install` downloads node from, instead of `https://nodejs.org/dist` |
 | `BUNDLE_SEA_THREAD` | set by an executable's main thread for its workers: what it verified and mounted. Not something to set yourself |
 | `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. |
 | `BUNDLE_NO_DESKTOP_SETUP` | do not register `.nzip` or its icon with the desktop, or touch `PATHEXT` on Windows. `BUNDLE_NO_WINDOWS_SETUP`, its old name, still works |
