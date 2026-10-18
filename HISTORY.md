@@ -1144,25 +1144,23 @@ yet, it runs:
 test  →  pack  →  fetch the published release  →  audit the diff  →  gate  →  sign  →  publish
 ```
 
-Step 3 is [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
-in automation mode — a `prompt` input rather than an `@claude` mention — invoking this
-repository's own skill:
+Step 3 is an agent built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview),
+`tools/audit.ts`, invoking this repository's own skill:
 
 ```yaml
 - name: Install the audit skill
-  run: node dist/main.js skill          # into .claude/skills/, where the action looks
+  run: node dist/main.js skill          # into .claude/skills/, where the agent looks
 
 - name: Audit — review the difference before signing
-  uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1
   env:
     BUNDLE_AUDIT_VERDICT: build/cli.audit.json
-  with:
-    anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-    anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-    prompt: "/audit-bundle build/cli.run against build/baseline.run …"
-    claude_args: |
-      --max-turns 120
-      --allowedTools "Bash,Read,Glob,Grep,Write"
+    ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+    ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+    ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+  run: |
+    export ANTHROPIC_IDENTITY_TOKEN_FILE=…   # the job's OIDC token, for the federation exchange
+    node --no-warnings tools/audit.ts       # /audit-bundle build/cli.unsigned.nzip against build/baseline.nzip
+```
 
 - name: Gate on the audit verdict
   run: node dist/main.js audit --check --baseline build/baseline.run build/cli.run
@@ -1969,17 +1967,25 @@ cleared it last time, which is worth stating in the report rather than leaving i
 
 #### Running the review in CI
 
-`anthropics/claude-code-action@v1` runs Claude Code in *automation mode* when the workflow
-supplies a `prompt` rather than waiting for an `@claude` mention, and a prompt can be a
-skill invocation. So the release workflow installs the skill with the tool's own
-`bundle skill` command — into `.claude/skills/`, where the action looks — and invokes
-`/audit-bundle` over the freshly packed archive.
+The release workflow installs the skill with the tool's own `bundle skill` command, into
+`.claude/skills/`, and `tools/audit.ts` runs an agent on the Claude Agent SDK that invokes
+`/audit-bundle` over the freshly packed archive. It is offered the five tools the review
+needs (`Bash`, `Read`, `Glob`, `Grep`, `Write`) and no MCP server, and anything else is
+refused rather than waited on. It authenticates by workload identity federation, as the
+signing and the publishing do: the job's OIDC token is exchanged for access, and there is no
+API key anywhere.
 
-The action reports into the workflow log; it does not hand the job a structured result. That
-is why the gate is a separate step reading a file rather than a condition on the action's
+It started out as `anthropics/claude-code-action`, which runs Claude Code itself. That was
+the wrong tool for a build step: the organization's included API credits cover the API and
+the Agent SDK but not Claude Code, so once the paid balance ran out, the release audit was
+refused with "Credit balance too low" while those credits sat unused. The agent and the
+skill are the same; what changed is what runs them.
+
+The agent reports into the workflow log; it does not hand the job a structured result. That
+is why the gate is a separate step reading a file rather than a condition on the agent's
 output, and why the verdict contract lives in the skill rather than in the workflow. The
-verdict is uploaded as a run artifact `if: always()`, so a refused release leaves its
-reasoning behind rather than only a red X.
+verdict and the agent's whole transcript are uploaded as run artifacts `if: always()`, so a
+refused release leaves its reasoning behind rather than only a red X.
 
 Step 4 then signs through sigstore with the workflow's ambient OIDC identity, so the
 release is signed *as the workflow* — which is the identity §3 says a consumer should pin,

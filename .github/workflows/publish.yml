@@ -5,10 +5,9 @@
 # releases is the one CI tested — and every push whose version is already
 # published stops after one `npm view`.
 #
-# Why after CI rather than on the push itself: the audit step's action accepts
-# `workflow_run` and `workflow_dispatch` but not `push`. Waiting for CI is the
-# better order anyway, and the job's OIDC identity is unchanged by it: still
-# this file, at refs/heads/main.
+# Why after CI rather than on the push itself: the commit released is then one
+# CI has passed, and the job's OIDC identity is unchanged by it: still this
+# file, at refs/heads/main.
 #
 # A release goes through the four steps this project says a bundle is built in,
 # with the audit as a real gate:
@@ -32,9 +31,12 @@
 # the bytes inside the package and the package itself are attested by one
 # identity. Provenance comes with trusted publishing.
 #
-# The audit authenticates to Anthropic the same way: workload identity
-# federation exchanges the job's GitHub OIDC token for API access, so there is
-# no API key either. It needs three repository variables, none of them secret:
+# The audit is an agent built on the Claude Agent SDK (tools/audit.ts), running
+# the audit-bundle skill. It authenticates to Anthropic the same way: workload
+# identity federation exchanges the job's GitHub OIDC token for API access, so
+# there is no API key either. It needs three repository variables, none of
+# them secret (and ANTHROPIC_WORKSPACE_ID, when the rule covers several
+# workspaces):
 #
 #   ANTHROPIC_ORGANIZATION_ID     the organization's UUID
 #   ANTHROPIC_FEDERATION_RULE_ID  the federation rule (fdrl_...) that trusts
@@ -187,38 +189,25 @@ jobs:
             const { iss, aud, sub, repository, repository_owner, ref, event_name, job_workflow_ref } = c;
             console.log(JSON.stringify({ iss, aud, sub, repository, repository_owner, ref, event_name, job_workflow_ref }, null, 2));'
 
+      # The SDK reads the job's OIDC token from a file, and exchanges it for
+      # access under the federation rule. The token is a credential: the file is
+      # readable by this user only, and never printed.
       - name: Audit — review the difference before signing
-        id: audit
-        uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1
         env:
           BUNDLE_AUDIT_VERDICT: build/cli.audit.json
-        with:
-          anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-          anthropic_federation_rule_id: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           # The non-human identity the rule lets this job act as.
-          anthropic_service_account_id: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          # Only needed when the rule covers more than one workspace.
-          anthropic_workspace_id: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          # The job's own read-only token: the audit writes nothing to GitHub,
-          # and this spares the action a token from the Claude GitHub App.
-          github_token: ${{ github.token }}
-          prompt: >-
-            /audit-bundle build/cli.unsigned.nzip against build/baseline.nzip
-
-            This is a pre-signing audit. build/cli.unsigned.nzip is the unsigned bundle this
-            workflow just built for ${{ github.repository }} and is about to sign;
-            build/baseline.nzip is the currently published release, already verified
-            as genuinely signed. If the baseline file is absent, review every member
-            instead and say so.
-
-            Use diff mode: review what changed, and call out every member added or
-            removed even when each individual diff looks harmless. Write the
-            machine-readable verdict to build/cli.audit.json, including baselineSha256
-            when you reviewed a diff. The build gates on that file and will not sign
-            without a pass pinned to this archive's sha256.
-          claude_args: |
-            --max-turns 120
-            --allowedTools "Bash,Read,Glob,Grep,Write"
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          WORKSPACE: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          umask 077
+          export ANTHROPIC_IDENTITY_TOKEN_FILE="$RUNNER_TEMP/anthropic-identity-token"
+          curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r .value > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          # Only when there is one: a variable set to nothing still takes its place.
+          if [ -n "$WORKSPACE" ]; then export ANTHROPIC_WORKSPACE_ID="$WORKSPACE"; fi
+          node --no-warnings tools/audit.ts
 
       # Kept whether the gate passes or not, so a refused release leaves its
       # reasoning behind rather than only a red X.
@@ -230,14 +219,14 @@ jobs:
           path: build/cli.audit.json
           if-no-files-found: warn
 
-      # The auditor's own transcript: what it read, what it concluded, and — when
-      # it fails — the error, which the step log reduces to "is_error:true".
+      # The auditor's own transcript, one message a line: what it read, what it
+      # concluded, and, when it fails, the error.
       - name: Keep the audit transcript with the run
-        if: always() && steps.audit.outputs.execution_file != ''
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: audit-transcript
-          path: ${{ steps.audit.outputs.execution_file }}
+          path: build/audit-transcript.jsonl
           if-no-files-found: warn
 
       # ---- 4. sign, and publish -----------------------------------------------

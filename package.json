@@ -95,6 +95,7 @@
     "@sigstore/verify": "^4.1.2"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.302",
     "@types/node": "^26.6.2",
     "typescript": "^7.0.2"
   }
