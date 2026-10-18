@@ -350,14 +350,17 @@ test('files are put in place whether or not something has them open, either way 
         const [one, two, gone] = ['one.nzip', 'two.nzip', 'gone.nzip'].map((name) => PATH.join(dir, name)) as [string, string, string];
         FS.writeFileSync(one, 'old one');
         FS.writeFileSync(gone, 'to go');
-        const held = FS.openSync(one, 'r');
+        // Renaming over an open file is what Windows refuses, and why it moves aside.
+        const held = aside || !WINDOWS ? FS.openSync(one, 'r') : undefined;
         try {
             commit([{ target: one, bytes: Buffer.from('new one'), mode: 0o644 }, { target: two, bytes: Buffer.from('new two'), mode: 0o644 }], [gone], { aside });
-            const read = Buffer.alloc(7);
-            FS.readSync(held, read, 0, 7, 0);
-            assert.equal(read.toString(), 'old one', 'whoever had it open still reads what they opened');
+            if (held !== undefined) {
+                const read = Buffer.alloc(7);
+                FS.readSync(held, read, 0, 7, 0);
+                assert.equal(read.toString(), 'old one', 'whoever had it open still reads what they opened');
+            }
         } finally {
-            FS.closeSync(held);
+            if (held !== undefined) FS.closeSync(held);
         }
         assert.deepEqual([FS.readFileSync(one, 'utf-8'), FS.readFileSync(two, 'utf-8'), FS.existsSync(gone)], ['new one', 'new two', false]);
         // Left behind, as one still open would be on Windows: the next commit takes it away.
