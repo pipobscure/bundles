@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.1.7
 
 - **Updating a running app works on Windows**, its parts included. Windows will not rename
   over a file a process has open, so an update of a running app, or of a part a service had
