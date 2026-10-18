@@ -1,6 +1,7 @@
 import * as FS from 'node:fs';
 import * as OS from 'node:os';
 import * as PATH from 'node:path';
+import { bundleRoot } from './scopes.ts';
 import { verifyRecordProof, signingKey, claimedHandle, type DidDocument, type Value } from './repo.ts';
 
 // Attestations: other people vouching for a bundle, as atproto records.
@@ -175,9 +176,12 @@ export function policyFromEnvironment(env: NodeJS.ProcessEnv = process.env): Omi
 
 /**
  * Where this tool keeps state: the install record, and the attestation cache
- * beside it. Per-user, and outside anything a bundle can write to.
+ * beside it. Per-user, and outside anything a bundle can write to — or
+ * `state` under `BUNDLE_ROOT`, for a layout of its own (see scopes.ts).
  */
 export function stateDir(): string {
+    const root = bundleRoot();
+    if (root) return PATH.join(root, 'state');
     const home = OS.homedir();
     return process.platform === 'win32'
         ? PATH.join(process.env['LOCALAPPDATA'] || PATH.join(home, 'AppData', 'Local'), 'bundle', 'Data')

@@ -3,6 +3,52 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **Apps made of parts.** An app can declare, in its `package.json` (`bundle.parts`), the
+  archives it ships beside it, each by package, `url` (resolved against the app's) and `hash`.
+  Installing the app installs every part as a plugin in its scope, trusted because the app is:
+  each must be the bytes the app pins and hold together, and needs no signature or attestation
+  of its own. Every part is fetched and checked before anything moves, and the app and its parts
+  are put in place together, so an install or update is all of them or none. `update` adds,
+  replaces and removes parts as the app says, `installed` and `validate` check each against the
+  app, and uninstalling the app removes them; a part is never installed, updated or removed by
+  itself. The policy's `apps` section applies to the app, and its `scopes` section does not
+  apply to the app's parts. See [proposals/parts.md](proposals/parts.md).
+- **`bundle parts`** prints the declaration for a set of archives, or writes it into a
+  `package.json` (`--write`). A part's `hash` is its whole-file hash, `sha256:<hex>`: what
+  attestations name and `verify` reports, not the sha256 of the file.
+- **`create` prints the hash as `sha256:<hex>`** (it printed the hex alone), the form a part is
+  pinned by and an attestation names.
+- **Installing from a file.** `bundle install ./app.nzip` installs a local archive without the
+  network, and `--source <url>` says what URL it stands for; updates read the file again, or
+  fetch that URL. From code, `install({ file | bytes, name, source })`.
+- **`--system`, and `BUNDLE_ROOT`.** `install`, `update`, `installed`, `validate`, `uninstall` and
+  `trust` take `--system`, which puts commands, apps, plugins, state and caches under one root
+  (`/var/lib/bundle` on Linux), beside the machine's policy file; `BUNDLE_ROOT=<dir>` puts the
+  same layout anywhere. The policy files read are the same. The plugin loader finds a scope there
+  when its user has none of their own, so a service running as a user of its own needs nothing
+  set.
+- **The installer is an API**: `@pipobscure/bundle/install` exports `install`, `update`,
+  `uninstall`, `installed`, `validate`, `records` and `partsOf`. `update` returns a result for
+  each part too, with the hash before and after.
+- **Plugins:** `list(scope)` returns `{ name, package, file, manifest }`, with the whole
+  `package.json`, custom fields and entry points included; it returned `[name, package]` pairs
+  with an allowlist of fields, and `PACKAGE_FIELDS` is gone. The layout is exported:
+  `pluginsDir`, `scopeDir`, `pluginFile`, `labelFile`.
+- **Pins.** `use(scope, { verify: { pins } })` holds plugins to their whole-file hash, and an app
+  using its own scope has its declared parts pinned with nothing passed. A pinned plugin is
+  mounted through the provider that checks every member as it is read, and loading one needs
+  nothing but node's own modules.
+- **`runPlugin(scope, package, argv, { bin })`** runs a plugin as the main program, with
+  `process.argv` as `--vfs-load` makes it.
+- **Workers started from a plugin have its plugins.** Inside a plugin, `worker_threads`'s `Worker`
+  starts a thread with the same scopes and the same plugins mounted at the same places, so
+  `new Worker(new URL('./worker.js', import.meta.url))` works. Hosts can import that `Worker`
+  from `@pipobscure/bundle/plugins`.
+- **`@pipobscure/bundle/integrity`** checks an archive's whole-file hash and member digests
+  without loading sigstore or the attestation code.
+
 ## 0.1.5
 
 - **Commands in a row sign in once.** An app-password session is kept for five minutes, so a

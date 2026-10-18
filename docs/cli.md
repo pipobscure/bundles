@@ -13,6 +13,7 @@ bundle --help                            bundle -v, --version
 | Building and signing | |
 |---|---|
 | [`create`](#create) | 🌳 build an archive from a list of files, behind a launcher or a binary if asked |
+| [`parts`](#parts) | print the parts an app declares: each archive's package, url and hash |
 | [`audit`](#audit) | report what is about to be reviewed, and gate signing on the verdict |
 | [`sign`](#sign) | 🔐 sign an archive as it is: `app.unsigned.nzip` into `app.nzip`, or in place |
 | [`sea`](#sea) | build a node runtime that verifies an archive before running it, unsigned until signed |
@@ -36,7 +37,7 @@ bundle --help                            bundle -v, --version
 
 | Installing and keeping current | |
 |---|---|
-| [`install`](#install) | fetch an archive from a URL, a domain or a listing, review it, and put it on your PATH |
+| [`install`](#install) | fetch an archive from a URL, a domain or a listing, or take a file, review it, and put it on your PATH, with its parts |
 | [`update`](#update) | refetch what was installed, and replace it if a new version is accepted |
 | [`installed`](#installed) | list what is installed, and re-check each against its record |
 | [`validate`](#validate) | re-check installs, and say what has been attested since |
@@ -195,6 +196,44 @@ and a signed copy are around, call the unsigned one `app.unsigned.nzip`: signing
 
 Signing at build time is for a certificate authority of your own, and skips the review in
 between. To review first, or to sign through sigstore, create unsigned and use [`sign`](#sign).
+
+### `parts`
+
+```
+bundle parts [options] <archive>...
+bundle parts auth.nzip mail.nzip                       # print what the app declares
+bundle parts --write suite/package.json dist/*.nzip    # or put it in the app's package.json
+```
+
+An app can be made of **parts**: archives that ship beside it, each holding a package, which
+installing the app installs as plugins in its scope (see [`install`](#install)). The app
+declares them in its `package.json`, and this prints that declaration for the archives given:
+
+```json
+"bundle": { "parts": [
+  { "package": "@acme/auth", "url": "auth.nzip", "hash": "sha256:3f1a…" },
+  { "package": "@acme/mail", "url": "mail.nzip", "hash": "sha256:9c04…" }
+] }
+```
+
+- **`hash` is the part's whole-file hash**, as `<alg>:<hex>`: the hash attestations name,
+  `verify --json` reports and `create` prints. It is not the sha256 of the file. That also
+  covers the archive's trailing comment, which is where a signature goes, and it is not what
+  anything else in bundle names an archive by.
+- **`url` is resolved against the app's own URL**, so a part beside the app is just its file
+  name: what this writes, unless `--base` says where the app will be, when it is the archive's
+  path from there.
+- Every archive must hold together (its hash and every member's digest), and carry a package
+  name, which is what the part is installed as and what the app imports.
+
+So the order of a build is: build the parts, write the list into the app's `package.json`, then
+create, audit and sign the app. Its signature, or an attestation of it, then covers the hash of
+every part, and that is what makes a part trusted.
+
+| Option | |
+|---|---|
+| `-b, --base <dir>` | where the app will be, so each `url` is the archive's path from there (default: the archive's own name) |
+| `-w, --write <file>` | put the list into this `package.json` as `bundle.parts`, rather than printing it |
 
 ### `audit`
 
@@ -839,8 +878,10 @@ Every listing in the index, by name, synced first exactly as for [`search`](#sea
 ### `install`
 
 ```
-bundle install [options] [url | domain | @account/name | nzip:link]
+bundle install [options] [url | domain | @account/name | nzip:link | ./file.nzip | ./folder]
 bundle install https://example.com/tool.nzip     # fetch, review, put on PATH
+bundle install ./tool.nzip                      # a file, without the network
+bundle install --system https://ordner.fyi/bundles/suite/suite.nzip   # for the machine, with its parts
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
 bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into bled's scope
@@ -1069,6 +1110,45 @@ member that does not carry what the suite requires is refused, and one that is r
 declined does not stop the others. A suite that an attester the policy blocks on has marked bad
 is refused as a whole. `--dir` applies to its apps; `--name` and `--for` do not apply.
 
+**A file is installed as it is**: `./tool.nzip`, an absolute path, `~/…` or a `file:` URL that
+names a file rather than a folder. Nothing is fetched; it is reviewed exactly as a download
+would be, and installs under its own name, or `--name`. For an install without the network, an
+image build or a test. An update reads the file again; with `--source <url>`, the URL it stands
+for, it fetches that instead, and its parts are found beside that URL. From code,
+`install({ file | bytes, name, source })` does the same, and takes bytes too.
+
+**An app can bring its parts.** When its `package.json` declares `bundle.parts` (see
+[`parts`](#parts)), each part is fetched from its `url`, resolved against the URL the app was
+fetched from, or its file, and only by the same means: an app from a server cannot name a file
+on this machine. Then:
+
+- **A part is trusted because the app is.** It must be the archive the app pins (its whole-file
+  hash), hold together, and carry the package it is declared as. It needs no signature and no
+  attestation of its own. The app's signature or attestations cover the pin, so whoever
+  vouches for the app vouches for exactly these bytes. Only a bad verdict from someone the
+  policy, or `--block`, blocks on refuses a part besides.
+- **The policy is the app's.** The app is reviewed under the global rules and its `apps`
+  section, as any app. A part is held to its pin instead; the `scopes` section for the app's
+  package, which is about plugins someone else wrote, does not apply to it.
+- **All of them, or nothing.** Every part is fetched and checked before anything moves; then
+  the app and its parts are put in place together. A part that cannot be had, or is not what
+  the app pins, refuses the app, and leaves everything as it was.
+- **Each part is a plugin in the app's scope**, recorded as `<scope>:<package>` and as a part
+  of the app. It is never installed, updated or uninstalled by itself: `update` and
+  `uninstall` of the app take care of it, and installing a plugin of the same name for that
+  scope is refused. An app with parts is installed once, under one name.
+
+**`--system` installs for the machine.** Everything goes under one root: commands in `bin/`,
+archives in `apps/`, plugins in `plugins/`, records and caches in `state/`, the sigstore trust
+root in `cache/`. The root is `/var/lib/bundle` on Linux, `/Library/Application Support/bundle`
+on macOS and `%ProgramData%\bundle` on Windows, beside the machine's policy file
+(`BUNDLE_SYSTEM_ROOT` overrides it); `BUNDLE_ROOT=<dir>` puts the same layout anywhere else.
+The policy files read are the same as always, the machine's and the user's. Nothing on a
+desktop is touched. `update`, `installed`, `validate`, `uninstall` and `trust` take `--system`
+too. A program loading plugins finds a scope the machine has when its user has none of its
+own (see [`@pipobscure/bundle/plugins`](api.md#plugins-pipobscurebundleplugins)), so a service
+running as a user of its own needs nothing set.
+
 **With neither, it installs this package itself**, from its own GitHub release, accepting
 the identity its [publish workflow](../.github/workflows/publish.yml) signs with. Downloading
 [`bundle.nzip`](https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip) and
@@ -1094,6 +1174,8 @@ shells, `bundle install` is all it takes.
 | `--no-shell` | installing itself, do not offer to set up the shell |
 | `--no-menu` | give the app no entry in the desktop's applications, though it asks for one, nor on its updates |
 | `--window` | ask in a window rather than at the terminal; what an `nzip:` link opens |
+| `--source <url>` | with a file: the URL it stands for, which updates fetch, and which its parts are found beside |
+| `--system` | install for the machine, under one root (see above) |
 
 ### `update`
 
@@ -1127,6 +1209,15 @@ against what has been accepted for it so far:
   others.** Each is reported, the installed copy stays as it was, and the exit code is the
   worst of them.
 
+**An app's parts follow it.** After the app, its parts are brought in step with what its
+`package.json` declares now: new ones added, changed ones replaced, those it no longer declares
+removed. Each that changed is reported under the app, with its hash. They are all fetched and
+checked first, and put in place with the app as one step, so if one cannot be had, or is not
+what the app pins, nothing changes, the app included. A part whose file is not what was
+installed is fetched again, even when the app itself is unchanged. Naming a part updates its
+app. From code, `update()` returns a result for each part (`unchanged`, `updated` with the hash
+before and after, `added`, `removed`), so a program can tell which of its services to restart.
+
 | Option | |
 |---|---|
 | `-y, --yes` | accept everything found for a new version, rather than asking |
@@ -1135,6 +1226,7 @@ against what has been accepted for it so far:
 | `--block <who>` | refuse a new version this DID or handle has marked bad; repeatable |
 | `--no-discover` | do not ask the backlink index who has attested it |
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
+| `--system` | the machine's installs (see [`install`](#install)) |
 
 ### `installed`
 
@@ -1160,10 +1252,16 @@ was changed by something else. A signature check alone would not notice that, be
 replacement may be perfectly well signed. That reports as `CHANGED`. The exit code is the worst
 found, so a script can gate on it.
 
+**A part is checked against its app**: its file is the one installed; the app still checks out
+as above, and still declares it, pinned to exactly these bytes; the bytes hold together; and
+nobody the policy blocks on has marked them bad. An app that is no longer vouched for makes its
+parts `VALID (UNTRUSTED)` too.
+
 | Option | |
 |---|---|
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
 | `--json` | print the results as JSON |
+| `--system` | the machine's installs (see [`install`](#install)) |
 
 ### `validate`
 
@@ -1197,6 +1295,7 @@ answers for every install: the cache already holds all they have attested.
 | `--timeout <time>` | one deadline for all of its network requests, after which the cache answers |
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
 | `--json` | print the results as JSON |
+| `--system` | the machine's installs (see [`install`](#install)) |
 
 | Exit | |
 |---|---|
@@ -1211,7 +1310,7 @@ run reports all their current attestations as new, once.
 ### `uninstall`
 
 ```
-bundle uninstall [name | url | domain | @did/name]
+bundle uninstall [--system] [name | url | domain | @did/name]
 bundle uninstall tool                              # by name
 bundle uninstall https://example.com/tool.nzip     # by where it came from
 bundle uninstall tool.example.com                  # by the domain it was installed by
@@ -1234,7 +1333,12 @@ left alone: other archives may need it.
 **An app's plugins go with it**, since nothing can load them any more. The exception is
 another install of the same app (the same package, under another name), which loads the same
 scope, so they stay for that one. A scope no app is installed as, such as a suite's shared one,
-belongs to no single app, and is only emptied plugin by plugin.
+belongs to no single app, and is only emptied plugin by plugin. **Its parts always go with
+it**, and a part is never uninstalled by itself.
+
+| Option | |
+|---|---|
+| `--system` | the machine's installs (see [`install`](#install)) |
 
 ## Trust and policy
 
@@ -1274,6 +1378,7 @@ that may be is the policy's `maxAge` (default seven days). Exit `1` if any refre
 | `--mirror <url>` | the TUF repository to refresh from (default: sigstore's) |
 | `--attester <who>` | also keep this DID's or handle's attestations; repeatable |
 | `--no-sigstore` | refresh only the attestations |
+| `--system` | the machine's trust root and cache (see [`install`](#install)) |
 
 ### `policy`
 
@@ -1505,6 +1610,11 @@ a file that is already there unless forced, so local edits survive.
 
 ## Files and directories
 
+Each of these is the user's, except under a root of its own: with `--system` or
+`BUNDLE_ROOT=<dir>`, programs are in `bin/`, archives in `apps/`, plugins in `plugins/`, the
+state directory is `state/` and the sigstore trust root is in `cache/`, all under that root.
+The policy files are where they always are.
+
 | What | Where | |
 |---|---|---|
 | Installed programs | `~/.local/bin`; `%LOCALAPPDATA%\bundle\bin` on Windows | `BUNDLE_INSTALL_DIR`, or `--dir` |
@@ -1515,7 +1625,8 @@ a file that is already there unless forced, so local edits survive.
 | App-password sessions | `sessions/` in the state directory: one per account, encrypted with its password, for five minutes — see [Signing in](#signing-in) | `BUNDLE_ATPROTO_SESSION_TTL` |
 | Listing index | `listings.sqlite` in the state directory: a cache, rebuilt from the network whenever it is missing or out of date | |
 | Downloaded nodes | `$XDG_DATA_HOME/bundle/node/<version>/bin/node` (`~/.local/share/…`); `~/Library/Application Support/bundle/node/` on macOS; `%LOCALAPPDATA%\bundle\node\<version>\node.exe` on Windows — see [`node`](#node) | `BUNDLE_NODE_DIR` |
-| Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows | `BUNDLE_PLUGINS` |
+| Plugins | `$XDG_DATA_HOME/bundle/plugins/<scope>/` (`~/.local/share/…`); `~/Library/Application Support/bundle/plugins/<scope>/` on macOS; `%LOCALAPPDATA%\bundle\plugins\<scope>\` on Windows. An app's parts are plugins in its scope | `BUNDLE_PLUGINS` |
+| The machine's root | `/var/lib/bundle`; `/Library/Application Support/bundle` on macOS; `%ProgramData%\bundle` on Windows — see [`install`](#install) | `BUNDLE_SYSTEM_ROOT` |
 | The state directory | `$XDG_STATE_HOME/bundle` (`~/.local/state/bundle`); `~/Library/Application Support/bundle` on macOS; `%LOCALAPPDATA%\bundle\Data` on Windows | |
 | Policy | see [`policy`](#policy) | `BUNDLE_POLICY`, `BUNDLE_SYSTEM_POLICY` |
 | Sigstore trust root | `$XDG_DATA_HOME/sigstore-js` (`~/.local/share/sigstore-js`); `~/Library/Application Support/sigstore-js` on macOS; `%LOCALAPPDATA%\sigstore-js\Data` on Windows | `BUNDLE_SIGSTORE_ROOT`, `--sigstore-root` |
@@ -1552,6 +1663,8 @@ never kept: they are bound to a key that only ever exists in memory.
 | `BUNDLE_INSTALL_DIR` | where `install` puts programs |
 | `BUNDLE_APPS` | where `install` keeps the archives those programs link to, on macOS and Linux |
 | `BUNDLE_PLUGINS` | where plugin scopes are, for `install --for` and the plugin loader alike |
+| `BUNDLE_ROOT` | put everything under this one directory: `bin/`, `apps/`, `plugins/`, `state/`, `cache/` (see [Files and directories](#files-and-directories)) |
+| `BUNDLE_SYSTEM_ROOT` | the machine's root, which `--system` puts everything under, and where the plugin loader finds a scope the user has none of |
 | `BUNDLE_NODE_DIR` | where `node install` keeps the nodes it downloads, and where the launcher and the Windows association look for them |
 | `BUNDLE_NODE_MIRROR` | where `node install` downloads node from, instead of `https://nodejs.org/dist` |
 | `BUNDLE_SEA_THREAD` | set by an executable's main thread for its workers: what it verified and mounted. Not something to set yourself |

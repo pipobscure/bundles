@@ -6,7 +6,8 @@ import * as PATH from 'node:path';
 import { AUTHORITY, parseManifest, verifySync } from './manifest.ts';
 import { attestersFrom, evaluate, type Attester } from './attestation.ts';
 import { loadPolicy } from './policy.ts';
-import { BundleProvider } from './provider.ts';
+import { BundleProvider } from './bundle-provider.ts';
+import { mountAt } from './mounts.ts';
 
 // The verifying half of plugins: checking a plugin before it is mounted, when
 // that has been asked for. The half every host imports — finding plugins,
@@ -43,6 +44,8 @@ export interface PluginRules {
     block?: string[] | undefined;
     /** A certificate (PEM text, or a path to one) every plugin's chain must lead to. */
     ca?: string | undefined;
+    /** Plugins pinned by package name to their whole-file hash; the loader hands each over as a `pin`. */
+    pins?: Record<string, string> | undefined;
 }
 
 /**
@@ -53,8 +56,23 @@ export interface PluginVerifier {
     readonly version: 1;
     /** True when a verifying runtime installed this: every plugin is verified, asked for or not. */
     readonly enforcing: boolean;
-    /** Verify a plugin and mount it, or throw an error whose `reasons` say every way it fell short. */
-    mountPlugin(file: string, request: { scope: string; rules?: PluginRules | undefined }): { root: string };
+    /**
+     * Verify a plugin and mount it — at `at`, the place another thread has it,
+     * when that is given — or throw an error whose `reasons` say every way it
+     * fell short. With `pin`, the plugin is held to that hash instead of to
+     * the signers and attesters required of plugins.
+     */
+    mountPlugin(file: string, request: PluginRequest): { root: string };
+}
+
+/** What the loader asks the verifier for. */
+export interface PluginRequest {
+    scope: string;
+    rules?: PluginRules | undefined;
+    /** Where to mount it. */
+    at?: string | undefined;
+    /** The whole-file hash the host pins it to, and who the refusal says pinned it. */
+    pin?: { hash: string; by: string } | undefined;
 }
 
 /** One group of attesters, all of which (or a quorum of which) must have vouched. */
@@ -92,7 +110,7 @@ export function verifier({ enforcing = false, carried = NOTHING_CARRIED }: {
         version: 1,
         enforcing,
         carried,
-        mountPlugin: (file, { scope, rules }) => mountPlugin(file, scope, rules ?? {}, carried),
+        mountPlugin: (file, { scope, rules, at, pin }) => mountPlugin(file, scope, rules ?? {}, carried, at, pin),
     };
 }
 
@@ -143,9 +161,10 @@ export const pluginVerifier = verifier();
 
 // ------------------------------------------------------------------ checking ---
 
-function mountPlugin(file: string, scope: string, rules: PluginRules, carried: Carried): { root: string } {
+function mountPlugin(file: string, scope: string, rules: PluginRules, carried: Carried, at?: string, pin?: PluginRequest['pin']): { root: string } {
     if (rules.quorum !== undefined && !rules.attesters?.length) throw new TypeError('verify.quorum needs verify.attesters');
     const path = PATH.resolve(file);
+    if (pin) return mountPinned(path, pin, rules, carried, at);
     const policy = loadPolicy(undefined, { scope, global: false });
     const ca = rules.ca ? new CRYPTO.X509Certificate(rules.ca.includes('-----BEGIN') ? rules.ca : FS.readFileSync(rules.ca, 'utf-8')) : undefined;
     const reasons: string[] = [];
@@ -201,7 +220,35 @@ function mountPlugin(file: string, scope: string, rules: PluginRules, carried: C
 
         if (reasons.length) throw refusal(path, reasons);
         const provider = new BundleProvider(archive, { hashAlg: res.hashAlg, digests: res.digests });
-        const root = VFS.create(provider, { emitExperimentalWarning: false }).mount();
+        const root = mountAt(VFS as never, () => VFS.create(provider, { emitExperimentalWarning: false }), at);
+        mounted = true;
+        return { root };
+    } finally {
+        if (!mounted) archive.closeSync();
+    }
+}
+
+// A plugin its host pins: those bytes, holding together, and nobody this
+// runtime blocks on — or the host — saying they are bad. The pin is what
+// vouches for it, so neither a signature nor attestations are asked of it,
+// and the scope's section of the policy, which is about plugins someone else
+// wrote, does not apply: a host's parts are judged as the host was.
+function mountPinned(path: string, pin: NonNullable<PluginRequest['pin']>, rules: PluginRules, carried: Carried, at: string | undefined): { root: string } {
+    const archive = ZLIB.ZipFile.openSync(path);
+    let mounted = false;
+    try {
+        const res = verifySync(path, { archive, deep: false, integrity: true, trustedRoot: carried.trustedRoot });
+        if (res.state === 'invalid' || !res.hash || !res.hashAlg) throw refusal(path, [res.reason]);
+        const reasons: string[] = [];
+        if (`${res.hashAlg}:${res.hash}` !== pin.hash.toLowerCase()) reasons.push(`its whole-file hash is ${res.hashAlg}:${res.hash}, and ${pin.by} pins ${pin.hash}`);
+        for (const [block, source] of [[carried.block, RUNTIME], [attestersFrom(rules.block), APP]] as [Attester[], string][]) {
+            if (!block.length) continue;
+            const outcome = evaluate({ attesters: [], block, maxAge: carried.maxAge }, res.hashAlg, res.hash);
+            if (outcome.blocked.length) reasons.push(`${outcome.reason} (${source})`);
+        }
+        if (reasons.length) throw refusal(path, reasons);
+        const provider = new BundleProvider(archive, { hashAlg: res.hashAlg, digests: res.digests });
+        const root = mountAt(VFS as never, () => VFS.create(provider, { emitExperimentalWarning: false }), at);
         mounted = true;
         return { root };
     } finally {

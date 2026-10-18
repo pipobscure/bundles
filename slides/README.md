@@ -7,7 +7,7 @@ the same controls (below).
 
 | Deck | For | Length |
 |---|---|---|
-| [`meetup.html`](meetup.html), *Your Node app, one file* | a JS meetup: developers who ship and install Node tools, and want to know whether it works and what it does for them | ~20 min, 20 slides, plus questions |
+| [`meetup.html`](meetup.html), *Your Node app, one file* | a JS meetup: developers who ship and install Node tools, and want to know whether it works and what it does for them | ~21 min, 21 slides, plus questions |
 | [`index.html`](index.html), *Ship the Tree* | a technical conference: file formats, signatures, and the Node changes behind them | ~26 min, 22 slides |
 
 ```sh

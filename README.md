@@ -37,12 +37,14 @@ Node runs the app straight out of the file.
   quiet check at shell start tells you when someone has flagged something you installed.
 - **Let your app take plugins** that are signed bundles too, installed per app, and checked as
   they load if you want.
+- **Ship an app made of parts.** One signed app names the hash of every part it ships beside
+  it, and installing the app installs them all, trusted because the app is.
 
 ## Contents
 
 - [Install bundle](#install-bundle) · [Installing apps](#installing-apps) · [Finding apps](#finding-apps)
 - [Shipping your own app](#shipping-your-own-app) · [Standalone executables](#standalone-executables)
-- [Deciding whom you trust](#deciding-whom-you-trust) · [Suites](#suites) · [Plugins](#plugins)
+- [Deciding whom you trust](#deciding-whom-you-trust) · [Suites](#suites) · [Plugins](#plugins) · [Apps made of parts](#apps-made-of-parts)
 - [Commands at a glance](#commands-at-a-glance) · [From code](#from-code) · [Learn more](#learn-more)
 
 ## Install bundle
@@ -287,19 +289,21 @@ import { use, list } from '@pipobscure/bundle/plugins';
 
 use('bled');                                          // this app's plugins
 const gpio = await import('@alice/bled-gpio');        // ordinary import from here on
-for (const [, pkg] of list('bled')) await import(pkg.name);  // or everything installed
+for (const plugin of list('bled')) await import(plugin.package);  // or everything installed
 
 use('bled', { verify: { attesters: ['audited@did:web:bled.dev'] } });   // and check them as they load
 ```
 
-`list()` gives `[name, package]` for each plugin. `name` is what was typed to install it
-(`@alice.example/bled-gpio`, a URL, a domain), and `package` is what its `package.json` says
-about it (name, version, description, license and the like, never its scripts, entry points or
-dependencies). That is enough to tell your users what is installed, and where it came from.
+`list()` gives `{ name, package, file, manifest }` for each plugin. `name` is what was typed to
+install it (`@alice.example/bled-gpio`, a URL, a domain), `package` is what to import, `file` its
+archive, and `manifest` its whole `package.json`, custom fields included. That is enough to tell
+your users what is installed and where it came from, and to read what your plugins say about
+themselves.
 
 A plugin can never replace something your app already has, and it gets your app's own
-modules when it imports them. Each worker thread calls `use()` itself. The full API is in
-[docs/api.md](docs/api.md#plugins-pipobscurebundleplugins).
+modules when it imports them. A worker a plugin starts has the same plugins, at the same
+places, so `new Worker(new URL('./scan.js', import.meta.url))` inside a plugin just works. The
+full API is in [docs/api.md](docs/api.md#plugins-pipobscurebundleplugins).
 
 **Writing a plugin:** it is a package, and its `package.json` `name` is what apps import.
 Build and sign it like an app, but as a plain archive, without `--launcher`, and publish it
@@ -321,6 +325,38 @@ purpose: a link is for development only. `bundle install --for bled <url>` repla
 with the released plugin, and `bundle uninstall bled:@alice/bled-gpio` removes the link,
 never the folder.
 
+## Apps made of parts
+
+An app can ship as one signed archive and the parts it is made of beside it: services, web
+apps, drivers, each its own archive holding a package. The app names each part's hash in its
+`package.json`, so its signature covers every part, and nothing else has to be signed:
+
+```sh
+bundle parts --write suite/package.json auth.nzip mail.nzip     # each part's package, url and hash
+bundle create --base suite --files suite.manifest --launcher --output suite.unsigned.nzip
+bundle sign suite.unsigned.nzip                                  # one signature, for all of it
+```
+
+```sh
+bundle install https://example.com/suite/suite.nzip      # the app, and every part beside it
+bundle install --system https://example.com/suite/suite.nzip   # for the machine: /var/lib/bundle
+```
+
+- **A part is trusted because the app is.** Each is fetched from beside the app, must be
+  exactly the bytes the app pins, and is installed as a plugin in the app's scope. It needs no
+  signature or attestation of its own.
+- **All of them, or none.** Every part is fetched and checked before anything moves, so an
+  install or update never leaves some parts old and some new. `bundle update` adds, replaces
+  and removes parts as the app says, `bundle installed` checks each against the app, and
+  uninstalling the app removes them.
+- **The app runs them**: `runPlugin()` runs a part as the main program (`suite run auth`), and
+  the loader holds every part to its pin as it loads, with nothing passed.
+
+`install --system` puts everything under one root for a server, and a service running as a
+user of its own finds its plugins there. A file installs as it is, with no network:
+`bundle install ./suite.nzip`. See [`install`](docs/cli.md#install) and
+[docs/api.md](docs/api.md#parts).
+
 ## Commands at a glance
 
 `bundle <command> --help` says what one command does and lists its options; `bundle --help`
@@ -329,6 +365,7 @@ lists the commands.
 | Building and signing | |
 |---|---|
 | [`create`](docs/cli.md#create) | 🌳 build an unsigned archive from a list of files |
+| [`parts`](docs/cli.md#parts) | print the parts an app declares: each archive's package, url and hash |
 | [`audit`](docs/cli.md#audit) | report what is about to be reviewed, and gate signing on the verdict |
 | [`sign`](docs/cli.md#sign) | 🔐 sign an archive as it is: `app.unsigned.nzip` into `app.nzip` |
 | [`sea`](docs/cli.md#sea) | build a node runtime that verifies an archive before running it |
@@ -353,7 +390,7 @@ lists the commands.
 
 | Installing and keeping current | |
 |---|---|
-| [`install`](docs/cli.md#install) | fetch an archive from a URL, a domain or a listing, review it, and put it on your PATH; or every archive in a suite |
+| [`install`](docs/cli.md#install) | fetch an archive from a URL, a domain or a listing, or take a file, review it, and put it on your PATH, with its parts; or every archive in a suite |
 | [`update`](docs/cli.md#update) | refetch what was installed, and replace it if a new version is accepted |
 | [`installed`](docs/cli.md#installed) | list what is installed, and re-check each against its record |
 | [`validate`](docs/cli.md#validate) | re-check installs, and say what has been attested since |
@@ -374,7 +411,8 @@ Every command and every option is in the [command reference](docs/cli.md).
 ## From code
 
 Everything the CLI does is an API: `createBundle`, `signBundle`, `verifyBundle`,
-`runBundle` and more, plus the plugin loader. See [docs/api.md](docs/api.md).
+`runBundle` and more, `install`, `update` and `uninstall` (`@pipobscure/bundle/install`), plus
+the plugin loader. See [docs/api.md](docs/api.md).
 
 ```sh
 npm install @pipobscure/bundle

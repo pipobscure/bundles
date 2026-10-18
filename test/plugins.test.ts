@@ -85,9 +85,9 @@ test('use() makes a scope resolvable: import and require, subpaths, a plugin\'s 
     place('bled', '@alice/gpio', await plugin(ESM));
     place('bled', 'cjs-thing', await plugin(CJS));
     assert.deepEqual(list('bled'), [
-        ['@alice/gpio', { name: '@alice/gpio' }],
-        ['cjs-thing', { name: 'cjs-thing', version: '1.2.0', description: 'a thing', license: 'MIT' }],
-    ], 'the installed name, and what describes the package: never its scripts, entry points or dependencies');
+        { name: '@alice/gpio', package: '@alice/gpio', file: PATH.join(scopeDir('bled'), '@alice', 'gpio.nzip'), manifest: JSON.parse(ESM['package.json']) },
+        { name: 'cjs-thing', package: 'cjs-thing', file: PATH.join(scopeDir('bled'), 'cjs-thing.nzip'), manifest: JSON.parse(CJS['package.json']) },
+    ], 'the installed name, the package, the archive, and the whole package.json, custom fields and entry points included');
 
     use('bled');
     const main = host('bled', `
@@ -149,7 +149,7 @@ test('a folder linked for development is loaded from where it is, and refused by
     };
     const dir = PATH.join(tmp, 'linked');
     linkIn(dir);
-    assert.deepEqual(list(dir), [['./live-folder', { name: '@dev/live', version: '0.0.1' }]]);
+    assert.deepEqual(list(dir).map(({ name, package: pkg, link }) => [name, pkg, link]), [['./live-folder', '@dev/live', folder]]);
 
     use(dir);
     const main = host('linked', `
@@ -216,7 +216,7 @@ test('the loader needs no --experimental-vfs to load, and loads the verifier onl
         const seen = [];
         registerHooks({ resolve: (specifier, context, next) => { const found = next(specifier, context); seen.push(found.url); return found; } });
         const { use, list } = await import(${JSON.stringify(pathToFileURL(LOADER).href)});
-        const names = list(${JSON.stringify(dir)}).map(([name]) => name);
+        const names = list(${JSON.stringify(dir)}).map(({ name }) => name);
         const before = seen.some((url) => url.includes('plugin-verifier'));
         let refused = false;
         if (${verify}) try { use(${JSON.stringify(dir)}, { verify: true }); } catch (err) { refused = err.code === 'ERR_BUNDLE_UNTRUSTED'; }

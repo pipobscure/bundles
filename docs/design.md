@@ -12,7 +12,7 @@ argument, why this exists at all and what it took in Node, see [HISTORY.md](../H
 - [The verifying mount](#the-verifying-mount) · [Executables](#executables)
 - [The tool as a bundle of itself](#the-tool-as-a-bundle-of-itself)
 - [Installing: who decides](#installing-who-decides) · [Attestations](#attestations) · [Listings](#listings)
-- [Plugins](#plugins) · [What it does and does not prove](#what-it-does-and-does-not-prove)
+- [Plugins](#plugins) · [Apps made of parts](#apps-made-of-parts) · [What it does and does not prove](#what-it-does-and-does-not-prove)
 - [What it needs from Node](#what-it-needs-from-node) · [Working on this repository](#working-on-this-repository)
 
 ## The idea
@@ -372,9 +372,61 @@ A plugin is a bundle an app loads by package name. The decisions that shape it:
 - **One version per name per scope**, with no dependency resolution. Shared code for a suite
   of apps goes in a shared scope. This is deliberately not a way to bundle npm packages one at
   a time.
+- **A pin is enough.** A plugin the host pins by hash, from its own archive or code, is held to
+  that hash and needs nothing else, at install or at load. That is not the rejected
+  `verify: 'hash'` (a hash from this machine's install records): a pin is the host's own
+  statement, covered by whatever vouches for the host. Pinned plugins are mounted through the
+  provider that checks each member as it is read, with nothing but node's own modules.
+- **Workers have their plugins.** Mounts are per thread, and node numbers mount points per
+  thread, so a plugin's `worker_threads` is node's with a `Worker` that starts a thread with
+  the same scopes and mounts the same plugins at the same places, in the order they were made,
+  before the worker's script. URLs mean the same file in both threads.
 
 The API is in [api.md](api.md#plugins-pipobscurebundleplugins), and the reasoning in full in
 [proposals/plugins.md](../proposals/plugins.md).
+
+## Apps made of parts
+
+A suite of services is one product, but not one archive: each service is its own package,
+built and reviewed on its own, and an update usually changes a few of them. Parts let it ship as
+one signed app and the archives it is made of, beside it:
+
+- **The app pins each part by hash** in its `package.json` (`bundle.parts`). The pin is inside
+  the app's archive, so the app's signature, and every attestation of the app, covers exactly
+  these parts. A part needs no signature or attestation of its own; it is trusted because it is
+  the bytes the app names, and because it holds together. That is a new kind of evidence,
+  "pinned by the app", and it is re-checked as any other: `installed` and `validate` ask that the
+  app still checks out, still declares the part, and pins the bytes that are there.
+- **The pin is the whole-file hash.** That is the hash bundle names an archive by everywhere
+  else, in attestations, in `verify`, in install records; and the region it covers is fixed,
+  so a pin can be written before anyone signs the part. The sha256 of the file would also cover
+  the trailing comment, which is where a signature goes after the hash exists.
+- **Parts sit beside the app.** Each `url` is resolved against the URL the app was fetched from,
+  and only by the same means, so a release is a directory a CI publishes whole, and an app from
+  a server cannot have this machine read its own files.
+- **All of them, or none.** An install or update fetches and checks every new part before
+  anything moves, then renames the app and its parts into place together, keeping a second
+  name for each file replaced until all are in place. A failure before then changes nothing,
+  and one during it puts back what was renamed. So no run leaves a mix of old and new parts.
+- **A part is the app's, not a plugin someone else wrote.** It is installed as a plugin in the
+  app's scope, so the app loads it by package name like any other, but only with the app: it is
+  updated, checked and removed with it, never by itself. The app is reviewed under the policy's
+  `apps` section; the `scopes` section, written about third-party plugins, does not apply to
+  parts. Blocks still do.
+
+**Beside suites, not part of them.** A suite is a set of listings on atproto, each member
+reviewed as if installed by itself, with its own signer and attesters; the suite asks once and
+vouches for nothing. Parts are the opposite: one review, of the app, and the parts follow from
+its pin. They share what a set of installs needs either way: good attestations of the whole
+count for what it holds, it takes away what it brought, and an update adds and removes as the
+whole says.
+
+**One root for a machine.** A server installs for everyone: `install --system` (or
+`BUNDLE_ROOT`) puts commands, apps, plugins, state and caches under one directory, beside the
+machine's policy file, and reads the same policy files as ever. The plugin loader finds a scope
+there when the user it runs as has none of their own, and never merges the two, so a service
+running as a user of its own needs nothing set, and a person who installs plugins of their own
+gets their scope, not a mix.
 
 ## What it does and does not prove
 
@@ -398,7 +450,11 @@ Other limits, stated plainly:
 - **A plugin runs with the full authority of its host.** Loading it is no more contained than
   any other `import`. What vouches for it is the review at install and, when asked for, the
   check at load. Without that check, a plugin is what `bundle install` accepted, and
-  `installed` and `validate` are what notice it changed since.
+  `installed` and `validate` are what notice it changed since. A part, or any pinned plugin,
+  is checked at every load.
+- **Parts are replaced one rename at a time.** A machine that stops between two of them can
+  come back with a mix; the next `update` puts every part right, and `installed` says so in the
+  meantime.
 - **A shebang archive does not self-verify.** The kernel gives it no preload flag to carry a
   provider. Mount it with the preload, or use a SEA.
 - **A sigstore signature is public.** Signing puts your identity, the archive's hash and the

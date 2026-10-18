@@ -6,6 +6,7 @@ import { members, parseDate } from './archive.ts';
 import { packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
+import { systemRoot } from './scopes.ts';
 import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
 
 // Re-exported because this is where a CLI consumer looks for it; it is defined
@@ -39,6 +40,7 @@ commands:
   search    search the listed archives by name, description and publisher
   listings  every listed archive, from a local index kept in step with the network
   install   fetch a signed archive — or a suite of them — from a URL, domain or listing
+  parts     print the parts an app declares: each archive's package, url and hash
   update    refetch what was installed, and replace it if it changed
   installed list what is installed, and re-check each against its record
   validate  re-check installs, and say what has been attested since — at startup
@@ -57,7 +59,10 @@ commands:
 
 options:
   -h, --help            show this help; after a command, that command's
-  -v, --version         print the version`;
+  -v, --version         print the version
+
+  install, update, installed, validate, uninstall and trust take --system:
+  the machine's layout, under one root, instead of the user's (see 'install').`;
 
 /** What `bundle <command> --help` prints: one command, what it does, and its options. */
 export const HELP: Record<string, string> = {
@@ -300,7 +305,7 @@ export const HELP: Record<string, string> = {
       --json            print the listings as JSON
 
   every listing in the index, synced first as for 'search'.`,
-    install: `install options:                    usage: install [options] [url | domain | @account/name | nzip:link | ./folder]
+    install: `install options:                    usage: install [options] [url | domain | @account/name | nzip:link | ./file.nzip | ./folder]
   -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -326,6 +331,10 @@ export const HELP: Record<string, string> = {
                         even though it asks for one — nor on its updates
       --window          ask in a window rather than at the terminal: what an
                         nzip: link opens
+      --source <url>    with a file: the URL it stands for, which updates
+                        fetch and its parts are found beside
+      --system          install for the machine, under one root
+                        (/var/lib/bundle; BUNDLE_ROOT for any other)
 
   everything that vouches for the archive is found and shown: its signature,
   and every attestation of it — from attesters this machine knows, and from
@@ -398,6 +407,32 @@ export const HELP: Record<string, string> = {
   use it. Installing the plugin again replaces the link, and the other way
   round; uninstall removes the link and never the folder.
 
+  a file (./app.nzip, an absolute path, a file: URL) is installed as it is,
+  without the network: reviewed like a download, under its own name or
+  --name. Updates read the file again — or, with --source, fetch that URL.
+
+  an app can declare parts, in its package.json:
+    "bundle": { "parts": [ { "package": "@acme/auth", "url": "auth.nzip",
+                             "hash": "sha256:<hex>" }, … ] }
+  each url resolved against the app's own (or its file's). Installing the app
+  installs every part as a plugin in its scope — fetched, held to the hash the
+  app names ('bundle parts' prints it), checked to hold together — and the app
+  with them: all of them, or nothing. A part is trusted because the app is: it
+  needs no signature or attestation of its own, and neither the policy's
+  'scopes' section nor its signer rules apply to it; a bad verdict from
+  someone the policy blocks on still refuses it. 'update' brings the parts in
+  step with the app, 'installed' and 'validate' check each against the app's
+  pin, and uninstalling the app removes them. A part is never installed,
+  updated or uninstalled by itself.
+
+  --system (or BUNDLE_ROOT=<dir>) puts everything under one root: commands in
+  bin/, apps/, plugins/, state/ and cache/ — /var/lib/bundle on Linux,
+  /Library/Application Support/bundle on macOS, %ProgramData%\\bundle on
+  Windows, beside the machine's policy file (BUNDLE_SYSTEM_ROOT overrides).
+  The same policy files are read. Nothing on the desktop is touched. A
+  program that loads plugins finds a scope there when its user has none of
+  their own.
+
   with neither, this package installs itself from its own published release,
   whose publish workflow's signature is accepted without asking — so running
   'install' from a downloaded bundle.nzip (node --experimental-vfs --vfs-load
@@ -409,6 +444,18 @@ export const HELP: Record<string, string> = {
   installs (see 'shell'); 'bundle uninstall' takes that out again. Run again
   once installed, it fetches nothing and only sets up the current shell — so
   after switching shells, 'bundle install' is all it takes.`,
+    parts: `parts options:                      usage: parts [options] <archive>...
+  -b, --base <dir>      where the app will be, so each url is the archive's
+                        path from there (default: each archive's own name)
+  -w, --write <file>    put the list in this package.json, as bundle.parts,
+                        rather than printing it
+
+  prints what an app's package.json declares as its parts, for these
+  archives: each one's package name, its url, and its hash — the whole-file
+  hash, sha256:<hex>, which attestations name and 'verify' reports, not the
+  sha256 of the file. Each archive must hold together and carry a package
+  name. Build the parts first, write the list into the app's package.json,
+  then create the app: its signature then covers every part's hash.`,
     update: `update options:                     usage: update [options] [name]
   -y, --yes             accept everything found for a new version, rather than asking
       --identity <san>  require this sigstore signing identity of every new version
@@ -430,22 +477,35 @@ export const HELP: Record<string, string> = {
   like an install, against what has been accepted for it so far: a new signer,
   or different attestations, is a question rather than a failure — publishers
   move, and auditors do not review every release. Only flags and the policy
-  make anything mandatory.`,
+  make anything mandatory.
+      --system          the machine's installs (see 'install')
+
+  an app with parts is followed by a line for each part that changed: added,
+  updated or removed, as its package.json says now. They are fetched and
+  checked before anything moves, and put in place with the app as one step:
+  if one cannot be had, or is not what the app pins, nothing changes. A part
+  whose file is not what was installed is fetched again, even when the app is
+  unchanged. Naming a part updates its app.`,
     installed: `installed options:                  usage: installed [options]
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --json            print the results as JSON
+      --system          the machine's installs (see 'install')
 
   says what is installed, where it came from and who vouched for it — and
   checks each one: the file is there, its bytes are still the bytes that were
   installed, someone accepted for it still vouches for it, the policy still
   holds, and nobody it blocks on has marked it bad since. Attestations are
-  fetched fresh first. Exits non-zero if any of that is no longer true.`,
+  fetched fresh first. Exits non-zero if any of that is no longer true.
+
+  a part of an app is checked against its app instead: the app still checks
+  out, still declares it, and pins exactly these bytes, which hold together.`,
     validate: `validate options:                   usage: validate [options] [name | url | domain]...
   -q, --quiet           say nothing unless something needs attention
       --every <time>    leave alone anything validated more recently (30m, 1d)
       --timeout <time>  give up on the network after this, and answer from the cache
   -r, --root <file>     extra trusted root certificate (PEM); repeatable
       --json            print the results as JSON
+      --system          the machine's installs (see 'install')
 
   re-checks installs — the named ones, or all — exactly as 'installed' does,
   attestations fetched afresh and discovery asked again, and says what is new
@@ -456,7 +516,8 @@ export const HELP: Record<string, string> = {
   vouches for any more, 2 for one that is changed, missing, invalid or
   blocked. Made for startup — e.g. 'bundle validate --quiet --every 1d' in a
   shell profile; offline, it answers from the cache.`,
-    uninstall: `uninstall options:                  usage: uninstall [name | url | domain | @did/name]
+    uninstall: `uninstall options:                  usage: uninstall [options] [name | url | domain | @did/name]
+      --system          the machine's installs (see 'install')
 
   a suite (by its name, how it was installed, or @did/name) is removed with
   what it brought: what was installed before it, or that another suite has
@@ -467,7 +528,8 @@ export const HELP: Record<string, string> = {
   directory, whatever it is called now — and forgets the record. With no
   argument it removes this
   package's own install — what 'bundle install' left behind. An app's plugins
-  go with it, unless another install of the same app still loads them. The
+  go with it, unless another install of the same app still loads them; its
+  parts always do, and a part is never uninstalled by itself. The
   .nzip association on Windows is left alone: other archives may need it.`,
     node: `node options:                       usage: node [install] [options]
       --minimum <version>  the oldest node that will do (default: 26.11.1,
@@ -526,6 +588,7 @@ export const HELP: Record<string, string> = {
       --mirror <url>    TUF repository to refresh from (default: sigstore's)
       --attester <who>  also keep this DID's or handle's attestations; repeatable
       --no-sigstore     refresh only the attestations
+      --system          the machine's caches (see 'install')
 
   attestations are kept for every attester named here, in BUNDLE_ATTESTERS,
   in an install record, or already in the cache: each one's attestations are
@@ -876,7 +939,7 @@ export const UNDECIDED = 4;
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, update, installed, validate, uninstall,
+    create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, parts, update, installed, validate, uninstall,
     node: nodeCommand, sea, trust, policy: policyCommand, lexicon, skill, shell, links,
 };
 
@@ -927,11 +990,29 @@ export async function main(argv: string[], io: Console = CONSOLE): Promise<numbe
             io.out(helpFor(cmd, asked.subcommand)!);
             return 0;
         }
-        return await command(rest, io);
+        // --system is the machine's layout: one root for the whole command.
+        if (!SYSTEM_COMMANDS.has(cmd) || !ownArgs(rest).includes('--system')) return await command(rest, io);
+        const before = process.env['BUNDLE_ROOT'];
+        process.env['BUNDLE_ROOT'] = systemRoot();
+        try {
+            return await command(rest, io);
+        } finally {
+            if (before === undefined) delete process.env['BUNDLE_ROOT'];
+            else process.env['BUNDLE_ROOT'] = before;
+        }
     } catch (err) {
         io.err(styles(io).e.error(message(err)));
         return 70;
     }
+}
+
+/** The commands `--system` applies to: those that install, or read and keep what was installed. */
+const SYSTEM_COMMANDS = new Set(['install', 'update', 'installed', 'validate', 'uninstall', 'trust']);
+
+// A command's own arguments: those before a '--'.
+function ownArgs(args: string[]): string[] {
+    const end = args.indexOf('--');
+    return end < 0 ? args : args.slice(0, end);
 }
 
 // Whether `--help` (or `-h`) is among a command's own arguments, and for a
@@ -1024,9 +1105,11 @@ async function create(args: string[], io: Console): Promise<number> {
         key: values.key ? FS.readFileSync(values.key) : undefined,
         chain: values.chain ? FS.readFileSync(values.chain, 'utf-8') : undefined,
     }).finally(() => { if (launcher) FS.rmSync(launcher.dir, { recursive: true, force: true }); });
-    io.err(!e.people ? `* ${values.key ? 'signed' : 'hash'}: ${res.hash}`
-        : values.key ? e.signature(`signed  ${e.dim(String(res.hash))}`)
-        : `   ${e.dim('hash')}    ${e.dim(String(res.hash))}`);
+    // As `<alg>:<hex>`: what an attestation names, and what an app pins a part by.
+    const hash = `${values.hash}:${res.hash}`;
+    io.err(!e.people ? `* ${values.key ? 'signed' : 'hash'}: ${hash}`
+        : values.key ? e.signature(`signed  ${e.dim(hash)}`)
+        : `   ${e.dim('hash')}    ${e.dim(hash)}`);
     return 0;
 }
 
@@ -1427,6 +1510,9 @@ async function installWith(values: ReturnType<typeof parseInstall>['values'], po
     // by the workflow that publishes it. Running `install` from a downloaded bundle.nzip is
     // then the whole bootstrap — npm fetches it once, and what stays behind is
     // a signed archive that updates itself from its own releases.
+    if (values.source !== undefined && (positionals[0] === undefined || !FS.existsSync(positionals[0]) || !FS.statSync(positionals[0]).isFile())) {
+        throw new Error('install: --source is the URL a file stands for — give the file too');
+    }
     const target = positionals[0] ?? INSTALL.self().url;
     if (!positionals[0]) {
         // Already here: nothing to fetch — 'update' is what brings a newer one
@@ -1445,7 +1531,7 @@ async function installWith(values: ReturnType<typeof parseInstall>['values'], po
     }
 
     try {
-        const record = await INSTALL.install(target, {
+        const record = await INSTALL.install(values.source !== undefined ? { file: target, source: values.source } : target, {
             roots: values.root ?? [], name: values.name, dir: values.dir, scope,
             identity: values.identity, issuer: values.issuer,
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
@@ -1799,6 +1885,51 @@ function decider(yes: boolean, io: Console) {
 
 // Re-ask the URL an install came from, and replace what is there if the answer
 // changed and is accepted — by what was accepted before, or by the person.
+// What an app's package.json declares as its parts, for archives built to be
+// them: so the app's build can write the list, and its signature cover it.
+async function parts(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.parts });
+    if (!positionals.length) throw new Error('parts: name the archives the app is made of');
+    const { checkIntegrity } = await import('./integrity.ts');
+    const ZLIB = await import('node:zlib');
+    const found: { package: string; url: string; hash: string }[] = [];
+    for (const archive of positionals) {
+        const checked = checkIntegrity(archive, { deep: true });
+        if (!checked.ok) throw new Error(`parts: ${archive} does not hold together: ${checked.reason}`);
+        let pkg: unknown;
+        try {
+            const zip = ZLIB.ZipFile.openSync(archive);
+            try {
+                pkg = zip.has('package.json') ? (JSON.parse(zip.getSync('package.json').contentSync().toString('utf-8')) as { name?: unknown }).name : undefined;
+            } finally {
+                zip.closeSync();
+            }
+        } catch (err) {
+            throw new Error(`parts: ${archive}: ${message(err)}`);
+        }
+        const { isScope } = await import('./scopes.ts');
+        if (typeof pkg !== 'string' || !isScope(pkg)) throw new Error(`parts: ${archive} carries no package name, which is what a part is installed as`);
+        if (found.some((each) => each.package === pkg)) throw new Error(`parts: ${pkg} is in two of these archives`);
+        const url = values.base !== undefined
+            ? PATH.relative(PATH.resolve(values.base), PATH.resolve(archive)).split(PATH.sep).join('/')
+            : PATH.basename(archive);
+        found.push({ package: pkg, url, hash: checked.pin! });
+    }
+    if (values.write === undefined) {
+        io.out(JSON.stringify(found, null, 2));
+        return 0;
+    }
+    const text = FS.readFileSync(values.write, 'utf-8');
+    const manifest = JSON.parse(text) as Record<string, unknown>;
+    const bundle = manifest['bundle'] && typeof manifest['bundle'] === 'object' ? manifest['bundle'] as Record<string, unknown> : {};
+    manifest['bundle'] = { ...bundle, parts: found };
+    const indent = /^[ \t]+(?=")/m.exec(text)?.[0] ?? '  ';
+    FS.writeFileSync(values.write, `${JSON.stringify(manifest, null, indent)}\n`);
+    const { e } = styles(io);
+    io.err(e.note(`wrote ${found.length} part${found.length === 1 ? '' : 's'} into ${values.write}`, 'bundle'));
+    return 0;
+}
+
 async function update(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({
         args,
@@ -1834,22 +1965,30 @@ async function update(args: string[], io: Console): Promise<number> {
         log: logger(io),
     });
 
-    const changed = results.filter((result) => result.state === 'updated');
-    const stuck = results.filter((result) => result.state !== 'updated' && result.state !== 'unchanged');
+    // An app's parts are reported under it, and only as far as they changed.
+    const own = results.filter((result) => result.partOf === undefined);
+    const changed = own.filter((result) => result.state === 'updated');
+    const moved = results.filter((result) => result.partOf !== undefined && ['updated', 'added', 'removed'].includes(result.state));
+    const stuck = results.filter((result) => !['updated', 'unchanged', 'added', 'removed'].includes(result.state));
     const { o, e } = styles(io);
     if (o.people) {
         io.out('');
         io.out(changed.length
-            ? o.bundle(`${o.green(`${changed.length} of ${plural(results.length, 'bundle')} updated`)}: ${changed.map((result) => o.bold(result.record.name)).join(', ')}`)
-            : o.bundle(`${plural(results.length, 'bundle')} checked, ${o.green('nothing changed')}`));
+            ? o.bundle(`${o.green(`${changed.length} of ${plural(own.length, 'bundle')} updated`)}: ${changed.map((result) => o.bold(result.record.name)).join(', ')}`)
+            : o.bundle(`${plural(own.length, 'bundle')} checked, ${o.green(moved.length ? 'no app changed' : 'nothing changed')}`));
+        for (const result of moved) {
+            const mark = result.state === 'added' ? o.green('+') : result.state === 'removed' ? o.red('-') : o.green('~');
+            io.out(`   ${mark} ${o.bold(result.record.package ?? result.record.name)}  ${o.dim(`${result.state}, a part of ${result.partOf}${result.hash ? ` — ${result.hash}` : ''}`)}`);
+        }
         for (const result of stuck) {
             const bad = result.state === 'refused' || result.state === 'failed';
             io.out(`   ${bad ? o.red('✖') : o.yellow('⚠')} ${o.bold(result.record.name)}  ${bad ? o.red(result.state) : o.yellow(result.state)}${result.reason ? o.dim(` — ${result.reason}`) : ''}`);
         }
     } else {
         io.out(changed.length
-            ? `${changed.length} of ${results.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
-            : `${results.length} checked, nothing changed`);
+            ? `${changed.length} of ${own.length} updated: ${changed.map((result) => result.record.name).join(', ')}`
+            : `${own.length} checked, nothing changed`);
+        for (const result of moved) io.out(`  ${result.record.name}: ${result.state}, a part of ${result.partOf}${result.hash ? ` (${result.hash})` : ''}`);
         for (const result of stuck) io.out(`  ${result.record.name}: ${result.state} — ${result.reason ?? ''}`);
     }
     if (stuck.some((result) => result.state === 'unconfirmed')) {
@@ -1882,7 +2021,7 @@ async function installed(args: string[], io: Console): Promise<number> {
 
     if (values.json) {
         io.out(JSON.stringify(checks.map(({ record, path, state, sha256, reason, review }) => ({
-            name: record.name, scope: record.scope, package: record.package, label: INSTALL.labelOf(record), path,
+            name: record.name, scope: record.scope, package: record.package, label: INSTALL.labelOf(record), partOf: record.partOf, path,
             commands: record.scope === undefined ? INSTALL.commandsOf(record) : undefined, state, sha256, reason,
             source: INSTALL.sourceOf(record), url: record.url, identity: record.identity, issuer: record.issuer,
             attestedBy: record.attestedBy, accepted: INSTALL.acceptedOf(record), suites: SUITES.suitesOf(record.name),
@@ -1895,7 +2034,8 @@ async function installed(args: string[], io: Console): Promise<number> {
     } else {
         for (const { record, path, state, reason, review } of checks) {
             io.out(`${record.name}  ${state === 'ok' ? 'OK' : state.toUpperCase()}`);
-            if (record.scope !== undefined) io.out(`  plugin: ${INSTALL.labelOf(record)} (${record.package}), for ${record.scope}`);
+            if (record.partOf !== undefined) io.out(`  part:   ${record.package}, of ${record.partOf}, pinned to ${record.hash}`);
+            else if (record.scope !== undefined) io.out(`  plugin: ${INSTALL.labelOf(record)} (${record.package}), for ${record.scope}`);
             const suites = SUITES.suitesOf(record.name);
             if (suites.length) io.out(`  suite:  ${suites.join(', ')}`);
             io.out(`  at:     ${path}`);
@@ -1948,7 +2088,8 @@ function showInstalled(checks: import('./install.ts').InstalledCheck[], io: Cons
         io.out(`${o.bundle(o.bold(record.name))}  ${status}`);
         if (state !== 'ok') io.out(`   ${state === 'missing' || state === 'changed' || state === 'invalid' ? o.red(reason ?? '') : o.yellow(reason ?? '')}`);
         for (const warning of review ? INSTALL.warningsOf(review) : []) io.out(`   ${o.attestation(o.red(warning))}`);
-        if (record.scope !== undefined) field('plugin', `${INSTALL.labelOf(record)} ${o.dim(`(${record.package})`)}, for ${o.bold(record.scope)}`);
+        if (record.partOf !== undefined) field('part', `${record.package}, of ${o.bold(record.partOf)} ${o.dim(`— pinned to ${record.hash}`)}`);
+        else if (record.scope !== undefined) field('plugin', `${INSTALL.labelOf(record)} ${o.dim(`(${record.package})`)}, for ${o.bold(record.scope)}`);
         const suites = SUITES.suitesOf(record.name);
         if (suites.length) field('suite', suites.join(', '));
         field('at', path);
@@ -3592,17 +3733,24 @@ export const OPTIONS = {
         shell:     { type: 'boolean', default: true },
         menu:      { type: 'boolean', default: true },
         window:    { type: 'boolean' },
+        source:    { type: 'string' },
+        system:    { type: 'boolean' },
     },
-    update: INSTALL_OPTIONS,
-    installed: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
+    parts: {
+        base:  { type: 'string', short: 'b' },
+        write: { type: 'string', short: 'w' },
+    },
+    update: { ...INSTALL_OPTIONS, system: { type: 'boolean' } },
+    installed: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' }, system: { type: 'boolean' } },
     validate: {
         quiet:   { type: 'boolean', short: 'q' },
         every:   { type: 'string' },
         timeout: { type: 'string' },
         root:    { type: 'string', short: 'r', multiple: true },
         json:    { type: 'boolean' },
+        system:  { type: 'boolean' },
     },
-    uninstall: {},
+    uninstall: { system: { type: 'boolean' } },
     sea: {
         output:    { type: 'string',  short: 'o' },
         node:      { type: 'string' },
@@ -3619,6 +3767,7 @@ export const OPTIONS = {
         mirror:   { type: 'string' },
         attester: { type: 'string', multiple: true },
         sigstore: { type: 'boolean', default: true },
+        system:   { type: 'boolean' },
     },
     policy: {
         app:    { type: 'string', short: 'a' },

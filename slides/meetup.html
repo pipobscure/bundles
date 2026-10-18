@@ -670,6 +670,38 @@ at://it.acme.com/<span class="y">com.pipobscure.bundle.attestation</span>/3f1a�
   </div>
 </section>
 
+<!-- ═══ parts ═══ -->
+<section class="slide" data-act="III · what's in it for you" data-t="60">
+  <div class="gutter"><span class="off"></span><span class="act"></span></div>
+  <div class="eyebrow">Apps made of parts</div>
+  <h2>Thirty archives, one signature.</h2>
+  <div class="cols" style="margin-top:22px">
+    <div class="stack">
+      <div class="cmd sm"><span class="c"># the app's package.json, written by CI:</span>
+"bundle": { "parts": [
+  { "package": "@ordner.fyi/auth", "url": "auth.nzip",
+    "hash": "<span class="y">sha256:3f1a…</span>" }, … ] }</div>
+      <div class="cmd sm"><span class="p">$</span> bundle install --system https://ordner.fyi/bundles/suite/suite.nzip
+<span class="g">suite installed</span><span class="o">  with 29 parts</span>
+<span class="p">$</span> bundle update
+<span class="o">   ~ @ordner.fyi/auth  updated, a part of suite</span></div>
+    </div>
+    <ul class="bullets">
+      <li><b>The app pins every part by hash.</b> Sign the app, and you've signed exactly those bytes.</li>
+      <li><b>Parts ship beside it.</b> Installed as its plugins, with no signature of their own.</li>
+      <li><b>All of them or none.</b> An update never leaves half the services on the old release.</li>
+      <li><b>It runs them:</b> <span class="mono">runPlugin()</span>, and workers just work.</li>
+    </ul>
+  </div>
+  <div class="kicker"><span class="mono">bundle parts · install --system · runPlugin</span><span></span></div>
+  <div class="notes" hidden>
+    <p class="say">"Sometimes one product is thirty archives: services, web apps, drivers. You don't want thirty signatures, and you really don't want half of them updated. So the app lists each part's hash, you sign the app, and that covers all of them."</p>
+    <p><b>60 seconds.</b> This is how ordner.fyi ships: one suite app, every service a part. Each systemd unit runs <span class="mono">ordner-suite run &lt;service&gt;</span>, which runs that part as the program.</p>
+    <p><b>If asked "how is that different from a suite?":</b> a suite is separately published things that go together, each reviewed on its own. Parts are one release of one product: one review, of the app, and its parts follow from its pins.</p>
+    <p><b>If asked "why not the sha256 of the file?":</b> that also covers where a signature goes. The pin is the hash attestations name, so a part signed later still matches.</p>
+  </div>
+</section>
+
 <!-- ═══ CI ═══ -->
 <section class="slide" data-act="III · what's in it for you" data-t="60">
   <div class="gutter"><span class="off"></span><span class="act"></span></div>

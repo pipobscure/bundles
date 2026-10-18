@@ -42,7 +42,7 @@ type Hint = 'files' | 'installed' | 'skills' | 'listed' | readonly string[];
 
 // What a command's positional arguments are.
 const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null)> = {
-    sign: 'files', verify: 'files', audit: 'files', attest: 'files', sea: 'files',
+    sign: 'files', verify: 'files', audit: 'files', attest: 'files', sea: 'files', parts: 'files',
     // Everything after the archive belongs to the program being run.
     run: (positionals) => (positionals.length === 0 ? 'files' : null),
     update: 'installed', uninstall: 'installed', validate: 'installed',
@@ -67,6 +67,7 @@ const VALUES: Record<string, Hint> = {
     'audit.verdict': 'files',
     'audit.baseline': 'files',
     'create.base': 'files',
+    'parts.write': 'files',
     'policy.app': 'installed',
     'install.for': 'installed',
     'search.for': 'installed',

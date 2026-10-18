@@ -5,6 +5,7 @@ import * as FS from 'node:fs';
 import { createRequire } from 'node:module';
 import { identityToken, FULCIO_AUDIENCE } from './oidc.ts';
 import { patientFetch } from './ratelimit.ts';
+import { bundleRoot } from './scopes.ts';
 import type { Signer } from './archive.ts';
 
 import type * as SigstoreBundle from '@sigstore/bundle';
@@ -427,7 +428,7 @@ export async function refreshTrustedRoot({ mirror = DEFAULT_TUF_MIRROR, force = 
     force?: boolean | undefined;
 } = {}): Promise<string> {
     const { getTrustedRoot } = load<typeof SigstoreTuf>('@sigstore/tuf');
-    await getTrustedRoot({ mirrorURL: mirror, force });
+    await getTrustedRoot({ mirrorURL: mirror, force, ...(bundleRoot() ? { cachePath: tufCacheDir() } : {}) });
     return cachedRootPath(mirror);
 }
 
@@ -436,11 +437,18 @@ export async function refreshTrustedRoot({ mirror = DEFAULT_TUF_MIRROR, force = 
  * `appDataPath()` so the two agree without depending on a private export.
  */
 export function cachedRootPath(mirror: string = DEFAULT_TUF_MIRROR): string {
+    return PATH.join(tufCacheDir(), new URL(mirror).host, 'targets', 'trusted_root.json');
+}
+
+// The TUF cache: `@sigstore/tuf`'s own place, or `cache/sigstore-js` under
+// `BUNDLE_ROOT`, which it is then told to use.
+function tufCacheDir(): string {
+    const root = bundleRoot();
+    if (root) return PATH.join(root, 'cache', 'sigstore-js');
     const home = OS.homedir();
-    const base = process.platform === 'darwin' ? PATH.join(home, 'Library', 'Application Support', 'sigstore-js')
+    return process.platform === 'darwin' ? PATH.join(home, 'Library', 'Application Support', 'sigstore-js')
         : process.platform === 'win32' ? PATH.join(process.env['LOCALAPPDATA'] || PATH.join(home, 'AppData', 'Local'), 'sigstore-js', 'Data')
         : PATH.join(process.env['XDG_DATA_HOME'] || PATH.join(home, '.local', 'share'), 'sigstore-js');
-    return PATH.join(base, new URL(mirror).host, 'targets', 'trusted_root.json');
 }
 
 // The trust root `@sigstore/tuf` ships alongside its own TUF root, so a machine

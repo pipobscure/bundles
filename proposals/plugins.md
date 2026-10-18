@@ -106,12 +106,21 @@ split:
 again for the same scope does nothing. A host can use several scopes: its own, and a suite's
 shared one (see [Shared libraries](#shared-libraries)).
 
-`list(scope)` returns `[name, package]` for each plugin in a scope. `name` is what
-`bundle install --for` was given, as typed, kept beside the archive; it tells a person which
-install it was, and two plugins may share one. `package` is its `package.json` reduced to what
-describes it (name, version, description, license and the like, without scripts, entry points
-or dependencies). A host that loads everything installed imports each `package.name`. One that
-shows its users what is installed has what it needs to say so.
+`list(scope)` returns `{ name, package, file, manifest }` for each plugin in a scope. `name` is
+what `bundle install --for` was given, as typed, kept beside the archive; it tells a person which
+install it was, and two plugins may share one. `package` is the package name, what to import,
+`file` its archive, and `manifest` its whole `package.json`. A host that loads everything
+installed imports each `package`. One that shows its users what is installed has what it needs
+to say so, and one that defines fields of its own for its plugins (a section to show it in, a
+kind) reads them there.
+
+*First cut:* `list()` gave `[name, package]` pairs, with `package` reduced to an allowlist of
+describing fields, so that nothing new would leak out as packages grew fields. In practice the
+host is exactly who needs the rest: its own fields, and `main`, `exports` and `bin` to decide
+how to run a plugin. A plugin's `package.json` is not a secret from the host that loads it.
+
+The layout is exported with it (`pluginsDir()`, `scopeDir()`, `pluginFile()`, `labelFile()`),
+so that no host works out where plugins are on its own.
 
 ### Resolution order
 
@@ -149,7 +158,27 @@ not verify carries only the loader.
 ### Workers
 
 Mounts and module hooks are per thread: a worker does not see the main thread's mounts
-(also tried). A worker therefore calls the same `use()` itself, with the same options:
+(also tried). So a worker a plugin starts from its own archive,
+`new Worker(new URL('./scan.js', import.meta.url))`, found nothing at that URL, and a plugin
+with a worker pool (a virus scanner, a mail filter) could not have one.
+
+The loader closes that for plugins. The resolve hook answers `worker_threads`, imported from
+inside a plugin, with node's module and one difference: its `Worker`, which starts a thread with
+every scope the current one has used, with the same options, and every plugin it has mounted,
+mounted at the same place, before the worker's script runs. node numbers mount points per
+thread as file systems are created (`/dev/null/vfs/<n>`), and takes no say in where one goes, so
+the worker creates them in the same order, filling the gaps, and checks it got the same place.
+A pinned or verified plugin is checked again there. The worker starts from a small `data:`
+module that imports the loader, sets the thread up, and imports the worker's script, so nothing
+is added to its environment, its `workerData` or its argv.
+
+- An app that wants its own workers to have its plugins imports the same `Worker` from
+  `@pipobscure/bundle/plugins`.
+- A worker that has mounted something of its own first cannot have the same places, and its
+  setup says so.
+- `new Worker(code, { eval: true })` is left alone: node runs it without the module loader.
+
+A worker can still set itself up instead, with the same `use()`:
 
 ```js
 // worker.js
@@ -348,12 +377,50 @@ time:
 - **`bundle install --for`** and the per-scope policy sections belong to this package's
   install and policy code.
 
+## Pins
+
+A plugin the host pins by hash is held to that hash, at every load, whether or not the host
+asked to verify: it must be installed, be the bytes the hash names (the whole-file hash,
+`sha256:<hex>`), and hold together; it is then mounted through the verifying provider, which
+checks each member as it is read. It needs no signature and no attestation.
+
+```js
+use('@ordner.fyi/suite');                                         // its parts, from its package.json
+use('bled', { verify: { pins: { '@alice/bled-gpio': 'sha256:…' } } });   // or named in code
+```
+
+The host's own parts ([parts.md](parts.md)) are pinned with nothing passed: when the package
+that calls `use()` is the scope and declares parts, they are read from its `package.json`.
+
+Pins are not the `verify: 'hash'` rejected below. That was a hash from this machine's install
+records, which the loader would have had to trust, and which anything that can write them can
+move. A pin is the host's own statement, from its own archive or its own code, covered by
+whatever vouched for the host. It is also why a pin is enough under a verifying runtime that
+requires attestations: the host it comes from was verified under them, and says these exact
+bytes. Blocks still apply, the runtime's and the host's: a block is a claim that bytes are
+harmful, which no pin answers. A plugin pinned twice, to two hashes, loads under neither. The
+host's other rules apply to the plugins it does not pin.
+
+Without a verifying runtime, pins are checked by `plugin-pinned.ts`, which needs nothing but
+node's own modules, so a host that pins its parts carries no sigstore and no atproto code.
+
+## System-wide scopes
+
+A server installs for everyone, and its services run as users of their own: `bundle install
+--system` (or `BUNDLE_ROOT=<dir>`) puts apps, plugins, state and caches under one root, beside
+the machine's policy file, and reads the same policy files as always.
+
+The loader finds a scope in one place, never two: where this process installs plugins
+(`BUNDLE_PLUGINS`, `BUNDLE_ROOT`, or the user's own directory) when the scope is there, or when
+either variable says where to look; otherwise the machine's, when the scope is there. The
+question this section's earlier "not doing" raised, which comes first, has that answer: the
+user's whole scope, or the machine's whole scope, never a mix. Who updates it: whoever installed
+it, with the same flag.
+
 ## Not doing
 
-- **Verification by default.** As for apps, it is opted into.
-- **System-wide scopes.** Plugins are installed by a user, for that user, like everything
-  else `bundle install` does. A machine directory would raise questions about which comes
-  first and who updates it, and nothing needs it.
+- **Verification by default.** As for apps, it is opted into. Pins are checked always, since
+  they are the host's own.
 - **Applying the app's signer, roots or `apps` section to its plugins.** They describe the
   app's author.
 - **A host's minimum policy in its own `package.json`.** It would let `install --for`

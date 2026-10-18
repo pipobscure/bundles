@@ -7,11 +7,13 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { patientFetch } from './ratelimit.ts';
-import { STATES, message, type VerificationState } from './manifest.ts';
-import { formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
+import { STATES, message, wholeFileHash, type VerificationState } from './manifest.ts';
+import { checkIntegrity } from './integrity.ts';
+import { readParts, type Part } from './parts.ts';
+import { cached, formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
 import * as ZLIB from 'node:zlib';
 import { loadPolicy, type Policy, type Signer } from './policy.ts';
-import { isScope, scopeDir, pluginFile, linkFile, pluginsDir, labelFile } from './scopes.ts';
+import { isScope, scopeDir, pluginFile, linkFile, pluginsDir, labelFile, bundleRoot } from './scopes.ts';
 import {
     gather, gatherSync, judge, accept, noneAccepted, refusal,
     type Accepted, type Demands, type Inherited, type Minimum, type Review, type ReviewItem, type Gathered,
@@ -173,6 +175,12 @@ export interface InstallRecord {
     menu?: string[] | undefined;
     /** Installed with `--no-menu`: its updates add no entry either. */
     menuDeclined?: boolean | undefined;
+    /**
+     * For a part of an app (see parts.ts): the app's install, which pins it.
+     * It is trusted because that app is, and is installed, updated and
+     * removed with it; `hash` is the pin it was held to.
+     */
+    partOf?: string | undefined;
 }
 
 /** One attestation, as an install remembers having seen it. */
@@ -272,11 +280,19 @@ export interface UpdateResult {
     /**
      * What happened: nothing new; a new archive in place; a new archive the
      * person declined, or that needed a decision nobody was there to make; one
-     * that was refused outright; or a fetch that failed.
+     * that was refused outright; or a fetch that failed. For a part of an app,
+     * also: `added` — the app has it now — and `removed` — the app no longer
+     * has it, and it is gone.
      */
-    state: 'unchanged' | 'updated' | 'declined' | 'unconfirmed' | 'refused' | 'failed';
-    /** The sha256 that was replaced, when something was. */
+    state: 'unchanged' | 'updated' | 'added' | 'removed' | 'declined' | 'unconfirmed' | 'refused' | 'failed';
+    /** The sha256 of the file that was replaced, when something was. */
     previous?: string | undefined;
+    /** The whole-file hash that was replaced, `<alg>:<hex>`, when something was. */
+    previousHash?: string | undefined;
+    /** The whole-file hash installed now. */
+    hash?: string | undefined;
+    /** For a part: the app it is a part of — whose update this result came with. */
+    partOf?: string | undefined;
     /** Why, for anything but `unchanged` and `updated`. */
     reason?: string | undefined;
     review?: Review | undefined;
@@ -293,6 +309,8 @@ export interface UpdateResult {
 export function installDir(): string {
     const configured = process.env['BUNDLE_INSTALL_DIR'];
     if (configured) return PATH.resolve(configured);
+    const root = bundleRoot();
+    if (root) return PATH.join(root, 'bin');
     const home = OS.homedir();
     if (process.platform === 'win32') {
         const base = process.env['LOCALAPPDATA'] || PATH.join(home, 'AppData', 'Local');
@@ -316,6 +334,8 @@ export function installDir(): string {
 export function appsDir(): string {
     const configured = process.env['BUNDLE_APPS'];
     if (configured) return PATH.resolve(configured);
+    const root = bundleRoot();
+    if (root) return PATH.join(root, 'apps');
     return PATH.join(PATH.dirname(pluginsDir()), 'apps');
 }
 
@@ -345,35 +365,69 @@ export function records(): Record<string, InstallRecord> {
 }
 
 /**
+ * An archive already here, to install without fetching it: for an install
+ * with no network, an image build, or a test. `file` is read, or `bytes` are
+ * taken as they are. `source` is the URL it stands for, if any: an update
+ * fetches that, and the parts the archive declares are resolved against it —
+ * else against the file, so parts sitting beside it are found, and an update
+ * reads the file again.
+ */
+export interface LocalArchive {
+    file?: string | undefined;
+    bytes?: Buffer | undefined;
+    /** What to install it as (an app's command name); `options.name` does the same. Default: the file's name. */
+    name?: string | undefined;
+    source?: string | undefined;
+}
+
+/**
  * Fetch `target`, verify what comes back, and put it on the PATH under the name
  * the server suggests — `Content-Disposition`, or the last segment of the URL.
  *
  * `target` is a URL; a bare domain whose `nzip:` TXT record names one — see
- * `resolveAlias()`; or a listing, `@<handle or did>/<name>` — see listing.ts.
- * The alias's or the listing's name is used then, rather than the server's.
- * Which of these it was is remembered, and an update asks it again, so a
- * publisher who moves their releases moves every install with them.
+ * `resolveAlias()`; a listing, `@<handle or did>/<name>` — see listing.ts; a
+ * local archive (`./app.nzip`), or one given as a `LocalArchive`. The alias's
+ * or the listing's name is used then, rather than the server's. Which of these
+ * it was is remembered, and an update asks it again, so a publisher who moves
+ * their releases moves every install with them.
+ *
+ * An app that declares parts (`bundle.parts`, see parts.ts) brings them: each
+ * is fetched from beside it, held to the hash the app names, and installed as
+ * a plugin in the app's scope — all of them, or none, and the app with them.
  *
  * Nothing is written outside a temporary file until the signature checks out,
  * and the temporary file is removed if it does not.
  */
-export async function install(target: string, options: InstallOptions = {}): Promise<InstallRecord> {
+export async function install(target: string | LocalArchive, options: InstallOptions = {}): Promise<InstallRecord> {
     const log = options.log ?? (() => {});
     const { scope } = options;
     if (scope !== undefined) {
         if (!isScope(scope)) throw new Error(`'${scope}' is not a scope: plugins are installed for an app by its package name`);
         if (options.name || options.dir) throw new Error('a plugin goes where its scope says, under its own package name: --name and --dir do not apply');
     }
-    const dir = scope !== undefined ? scopeDir(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
-    if (isFolder(target)) {
+    const dir = scope !== undefined ? scopeHome(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
+    if (typeof target === 'string' && isFolder(target) && !isFile(target)) {
         if (scope === undefined) throw new Error(`${target} is a folder: a folder is only ever linked as a plugin, for development — with --for <app>`);
         return link(target, scope, log);
+    }
+    if (typeof target !== 'string' || isFolder(target)) {
+        const local: LocalArchive = typeof target === 'string' ? { file: localPath(target) } : target;
+        if (!local.bytes && !local.file) throw new Error('install: a local archive is a file or bytes');
+        const bytes = local.bytes ?? FS.readFileSync(local.file!);
+        const url = local.source ?? (local.file ? pathToFileURL(PATH.resolve(local.file)).href : '');
+        if (local.source !== undefined && !hasScheme(local.source)) throw new Error(`install: the source ${local.source} is not a URL`);
+        const named = options.name ?? local.name ?? (local.file ? commandName(PATH.basename(local.file)) : undefined);
+        if (scope === undefined && !named) throw new Error('install: bytes on their own come with no name — give one');
+        log(`* installing ${local.file ?? 'an archive given as bytes'}${local.source ? `, as ${local.source}` : ''}`);
+        return await admit(bytes, {
+            target: local.source ?? local.file ?? named ?? '', source: url, url, named, response: new Response(null, { status: 200 }), dir, scope, options, log,
+        });
     }
 
     const { source, url, name: named, app } = await locate(target, options, log);
     if (app !== undefined) forApp(target, app, scope);
     log(`* fetching ${url}`);
-    const response = await patientFetch()(url, { redirect: 'follow' });
+    const response = await fetchFrom(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     // A URL that serves JSON rather than an archive serves a suite: installed
@@ -383,17 +437,37 @@ export async function install(target: string, options: InstallOptions = {}): Pro
         throw Object.assign(new Error(`${url} is a suite, of ${found.record.members.length} listings: it installs as a suite, not as one bundle`),
             { code: 'ERR_BUNDLE_SUITE', suite: found });
     }
+    return await admit(bytes, { target, source, url, named: options.name ?? named, response, dir, scope, options, log });
+}
 
+// What `install()` does with the bytes, wherever they came from.
+async function admit(bytes: Buffer, { target, source, url, named, response, dir, scope, options, log }: {
+    target: string;
+    source: string;
+    url: string;
+    named?: string | undefined;
+    response: Response;
+    dir: string;
+    scope?: string | undefined;
+    options: InstallOptions;
+    log: (line: string) => void;
+}): Promise<InstallRecord> {
     // A plugin is found by the package name inside it, so that is what it is
     // installed as. The name is read before the review only to say what is
     // being reviewed; nothing in the archive runs, and the review decides.
     const pkg = packageName(bytes);
     if (scope !== undefined && !pkg) throw new Error(`${url} is not a plugin: it carries no package.json with a name`);
-    const name = scope !== undefined ? `${scope}:${pkg}` : options.name ?? named ?? fileName(response, url);
+    const name = scope !== undefined ? `${scope}:${pkg}` : named ?? fileName(response, url);
     const file = scope !== undefined ? pluginFile(pkg!) : undefined;
     const label = scope !== undefined ? target : undefined;
     const before = records()[name];
-    const record = await place(bytes, { name, dir, file, scope, pkg, label, source, url, response, options, log });
+    if (before?.partOf !== undefined) throw new Error(`${pkg} in ${scope} is a part of ${before.partOf}, which says what it is — 'bundle update ${before.partOf}'`);
+    const parts = declaredParts(bytes, url, scope);
+    if (parts) hostable(name, pkg, url);
+
+    const judged = await judgeArchive(bytes, { name, scope, url, options });
+    const staged = parts ? await stageParts(parts, { host: name, scope: pkg!, base: url, policy: judged.policy, options, log }) : undefined;
+    const record = put(bytes, judged, { name, dir, file, scope, pkg, label, source, url, response, options, log, staged });
     // Installed over the same plugin linked for development: the link goes.
     if (before && before.scope !== undefined && pathOf(before) !== pathOf(record)) remove(before);
     // Installed again somewhere else: the commands that were there go, and
@@ -403,10 +477,44 @@ export async function install(target: string, options: InstallOptions = {}): Pro
     }
 
     log(record.stored !== undefined ? `* installed ${PATH.join(dir, name)}, which runs ${record.stored}` : `* installed ${pathOf(record)}`);
+    if (staged?.results.length) log(`  with ${staged.results.length} part${staged.results.length === 1 ? '' : 's'}, in ${scopeHome(pkg!)}`);
     if (scope === undefined && !onPath(dir)) {
         log(`! ${dir} is not on your PATH — add it, or set BUNDLE_INSTALL_DIR to somewhere that is`);
     }
     return record;
+}
+
+// Where a plugin goes when this process installs it: its own place, never
+// the machine's it might be loading from (see `scopeDir()`).
+function scopeHome(scope: string): string {
+    return scopeDir(scope, { fallback: false });
+}
+
+function localPath(target: string): string {
+    return PATH.resolve(target.startsWith('file:') ? fileURLToPath(target) : target.replace(/^~(?=$|[\\/])/, OS.homedir()));
+}
+
+function isFile(target: string): boolean {
+    try {
+        return FS.statSync(localPath(target)).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Fetch `url` — over the network, or a `file:` URL from the disk, answered
+ * as a server with no caching headers would — so an install from a file and
+ * its updates go the same way as one from a server.
+ */
+async function fetchFrom(url: string, init: RequestInit = {}): Promise<Response> {
+    if (!url.startsWith('file:')) return await patientFetch()(url, init);
+    try {
+        return new Response(FS.readFileSync(fileURLToPath(url)), { status: 200 });
+    } catch (err) {
+        if ((err as { code?: string }).code === 'ENOENT') return new Response(null, { status: 404, statusText: 'Not Found' });
+        throw err;
+    }
 }
 
 // A local folder: `./`, `../`, an absolute path, `~`, or a `file:` URL. Only
@@ -432,7 +540,8 @@ function link(target: string, scope: string, log: (line: string) => void): Insta
 
     const name = `${scope}:${pkg}`;
     const before = records()[name];
-    const dir = scopeDir(scope);
+    if (before?.partOf !== undefined) throw new Error(`${pkg} in ${scope} is a part of ${before.partOf}, pinned by its hash: a folder cannot stand in for it`);
+    const dir = scopeHome(scope);
     const file = linkFile(pkg);
     const noted = PATH.join(dir, file);
     FS.mkdirSync(PATH.dirname(noted), { recursive: true });
@@ -536,9 +645,12 @@ function isPlainFile(path: string): boolean {
 /**
  * The policy an install answers to: an app's, with its `apps` section; a
  * plugin's, with its scope's section and never the app's — the app's rules
- * are about the app's author.
+ * are about the app's author. A part of an app answers to the app's: the app
+ * is what vouches for it, and the scope's section is about plugins someone
+ * else wrote.
  */
-export function policyOf(record: Pick<InstallRecord, 'name' | 'scope'>): Policy {
+export function policyOf(record: Pick<InstallRecord, 'name' | 'scope' | 'partOf'>): Policy {
+    if (record.partOf !== undefined) return loadPolicy(record.partOf);
     return record.scope !== undefined ? loadPolicy(undefined, { scope: record.scope }) : loadPolicy(record.name);
 }
 
@@ -562,19 +674,31 @@ export function packageName(bytes: Buffer): string | undefined {
  * been accepted for this one so far. One install that is refused, declined or
  * waiting on a decision does not stop the rest; each has its own result, and
  * the installed copy stays as it was.
+ *
+ * An app's parts come with it: after its own result, one for each part —
+ * `unchanged`, `updated` (with the hash before and after), `added` or
+ * `removed` — so a caller can tell what to restart. They are put in place
+ * with the app, all of them or none. Naming a part updates its app.
  */
 export async function update(name: string | string[] | undefined, options: InstallOptions = {}): Promise<UpdateResult[]> {
     const log = options.log ?? (() => {});
     const all = records();
-    const names = name === undefined ? Object.keys(all).sort() : typeof name === 'string' ? [name] : name;
-    for (const each of names) if (!all[each]) throw new Error(`nothing installed as '${each}' — 'bundle install <url>' first`);
+    const asked = name === undefined ? Object.keys(all).sort() : typeof name === 'string' ? [name] : name;
+    for (const each of asked) if (!all[each]) throw new Error(`nothing installed as '${each}' — 'bundle install <url>' first`);
+    // A part is updated with its app, never by itself.
+    const names = [...new Set(asked.map((each) => all[each]!.partOf ?? each))];
     if (!names.length) log('* nothing installed');
 
     const results: UpdateResult[] = [];
     for (const each of names) {
-        const previous = all[each]!;
+        const previous = all[each];
+        if (!previous) {
+            const orphans = asked.filter((part) => all[part]?.partOf === each);
+            for (const part of orphans) results.push({ record: all[part]!, state: 'failed', partOf: each, reason: `a part of ${each}, which is not installed` });
+            continue;
+        }
         try {
-            results.push(await updateOne(previous, options, log));
+            results.push(...await updateOne(previous, options, log));
         } catch (err) {
             const code = (err as { code?: string }).code;
             const state = code === 'ERR_BUNDLE_UNCONFIRMED' ? 'unconfirmed'
@@ -588,17 +712,31 @@ export async function update(name: string | string[] | undefined, options: Insta
     return results;
 }
 
+// What an app's parts came to, as update results.
+function partResults(staged: StagedParts | undefined, host: string): UpdateResult[] {
+    return (staged?.results ?? []).map(({ record, state, previous }) => ({
+        record, state, partOf: host, hash: state === 'removed' ? undefined : record.hash,
+        previous: previous?.sha256, previousHash: state === 'removed' ? record.hash : previous?.hash,
+    }));
+}
+
 // One install's update: ask the source where it is now, make a conditional
 // fetch, and — if something new came back — give it the same review an install
-// gets, against what this install has accepted.
-async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult> {
+// gets, against what this install has accepted. An app with parts then brings
+// them in step with what it declares now, whether it changed or not: a part
+// whose file is not what was installed is fetched again.
+async function updateOne(previous: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<UpdateResult[]> {
     previous = intoStore(previous, log);
     if (previous.link !== undefined) {
         log(`* ${previous.name}: linked to ${previous.link}, which is always as it is`);
-        return { record: previous, state: 'unchanged' };
+        return [{ record: previous, state: 'unchanged' }];
     }
     const source = sourceOf(previous);
     let url = previous.url;
+    if (!url) {
+        log(`* ${previous.name}: installed from bytes, with no source to ask again`);
+        return [{ record: previous, state: 'unchanged', hash: previous.hash }];
+    }
     if (source !== previous.url) {
         // A source that cannot be asked, or a listing taken down, is not the
         // end of the install: the URL it last named is checked instead. The
@@ -618,19 +756,28 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
     if (url === previous.url && previous.etag) headers['if-none-match'] = previous.etag;
     else if (url === previous.url && previous.lastModified) headers['if-modified-since'] = previous.lastModified;
 
-    const response = await patientFetch()(url, { headers, redirect: 'follow' });
-    if (response.status === 304) {
+    const response = await fetchFrom(url, { headers, redirect: 'follow' });
+    const unchanged = async (record: InstallRecord): Promise<UpdateResult[]> => {
+        // The app is as it was; its parts are put right where they are not.
+        const staged = await restage(record, options, log);
+        if (staged && (staged.placements.length || staged.removals.length)) {
+            commit(staged.placements, staged.removals);
+            const all = records();
+            for (const part of staged.records) all[part.name] = part;
+            for (const gone of staged.removed) delete all[gone.name];
+            write(all);
+        }
         log(`  unchanged`);
-        return { record: previous, state: 'unchanged' };
-    }
+        return [{ record, state: 'unchanged', hash: record.hash }, ...partResults(staged, record.name)];
+    };
+    if (response.status === 304) return await unchanged(previous);
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
 
     const bytes = Buffer.from(await response.arrayBuffer());
     // A server with no caching headers answers 200 to everything; compare
     // the bytes rather than reinstalling an identical archive.
     if (digest(bytes) === previous.sha256) {
-        log(`  unchanged`);
-        return { record: remember({ ...previous, source, url, ...validators(response), at: previous.at }), state: 'unchanged' };
+        return await unchanged(remember({ ...previous, source, url, ...validators(response), at: previous.at }));
     }
 
     // A plugin is found by its package name: one that now calls itself
@@ -638,12 +785,22 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
     if (previous.scope !== undefined && packageName(bytes) !== previous.package) {
         throw new Error(`${url} now carries ${packageName(bytes) ?? 'no package name'}, not ${previous.package} — install it as a plugin of its own`);
     }
-    const record = await place(bytes, {
+    const pkg = previous.scope !== undefined ? previous.package : packageName(bytes);
+    const parts = declaredParts(bytes, url, previous.scope);
+    if (parts) hostable(previous.name, pkg, url);
+    if (previous.scope === undefined && previous.package !== undefined && pkg !== previous.package && partsOf(previous.name).length) {
+        throw new Error(`${url} now carries ${pkg ?? 'no package name'}, not ${previous.package}, whose scope its parts are in — uninstall it and install it again`);
+    }
+    const judged = await judgeArchive(bytes, { name: previous.name, scope: previous.scope, url, options, previous });
+    const staged = pkg !== undefined && (parts || partsOf(previous.name).length)
+        ? await stageParts(parts ?? [], { host: previous.name, scope: pkg, base: url, policy: judged.policy, options, log })
+        : undefined;
+    const record = put(bytes, judged, {
         name: previous.name,
         dir: previous.dir,
         file: previous.file,
         scope: previous.scope,
-        pkg: previous.scope !== undefined ? previous.package : packageName(bytes),
+        pkg,
         label: labelOf(previous),
         source,
         url,
@@ -651,9 +808,29 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
         log,
         options,
         previous,
+        staged,
     });
     log(`  updated`);
-    return { record, state: 'updated', previous: previous.sha256 };
+    return [
+        { record, state: 'updated', previous: previous.sha256, previousHash: previous.hash, hash: record.hash },
+        ...partResults(staged, record.name),
+    ];
+}
+
+// An app's parts, against what its installed archive declares: those not in
+// place fetched again, those it no longer declares to go. Undefined for an
+// app with no parts.
+async function restage(record: InstallRecord, options: InstallOptions, log: (line: string) => void): Promise<StagedParts | undefined> {
+    if (record.scope !== undefined || record.package === undefined) return undefined;
+    let bytes: Buffer;
+    try {
+        bytes = FS.readFileSync(pathOf(record));
+    } catch {
+        return undefined;
+    }
+    const parts = readParts(manifestOf(bytes), pathOf(record)) ?? [];
+    if (!parts.length && !partsOf(record.name).length) return undefined;
+    return await stageParts(parts, { host: record.name, scope: record.package, base: record.url, policy: policyOf(record), options, log });
 }
 
 // An app installed before the store, moved into it: its archive copied to
@@ -852,9 +1029,10 @@ export interface InstalledCheck {
  * perfectly well signed.
  */
 export function installed({ roots = [] }: { roots?: string[] | undefined } = {}): InstalledCheck[] {
+    const checked = new Map<string, InstalledCheck>();
     return Object.values(records())
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map((record) => check(record, roots));
+        .map((record) => check(record, roots, checked));
 }
 
 /**
@@ -966,6 +1144,7 @@ export async function validate(which: string[] = [], { roots = [], network = {},
     };
     // Everything that is due, fetched together, before any of it is judged.
     const fetched = await refreshRecords(names.map((name) => all[name]!).filter((record) => !recent(record)), network);
+    const checked = new Map<string, InstalledCheck>();
     for (const name of names) {
         const record = all[name]!;
         if (recent(record)) {
@@ -973,7 +1152,7 @@ export async function validate(which: string[] = [], { roots = [], network = {},
             continue;
         }
         const problems = fetched.get(name) ?? [];
-        const result = check(record, roots);
+        const result = check(record, roots, checked);
         // Only a check that got as far as a review knows who has attested; a
         // file that is missing or changed keeps its previous picture.
         const now = result.review ? seenIn(result.review) : record.seen ?? [];
@@ -1008,9 +1187,16 @@ function seenIn(review: Review): Seen[] {
         : []);
 }
 
-function check(record: InstallRecord, roots: string[]): InstalledCheck {
+function check(record: InstallRecord, roots: string[], checked = new Map<string, InstalledCheck>()): InstalledCheck {
+    const known = checked.get(record.name);
+    if (known) return known;
     const path = pathOf(record);
     if (record.link !== undefined) return checkLink(record, path);
+    if (record.partOf !== undefined) {
+        const result = checkPartOf(record, path, roots, checked);
+        checked.set(record.name, result);
+        return result;
+    }
 
     let bytes: Buffer;
     try {
@@ -1043,12 +1229,45 @@ function check(record: InstallRecord, roots: string[]): InstalledCheck {
     }
     const review = judge(gathered, { policy, minimum, accepted: acceptedOf(record), trust: selfTrust(record.url) });
     const warnings = warningsOf(review);
-    if (review.decision === 'refuse') return { record, path, sha256, state: review.state, reason: review.reason, review };
-    if (review.decision === 'ask') {
-        const reason = review.alarms.length ? review.reason : 'nothing that was accepted for it vouches for it any more';
-        return { record, path, sha256, state: 'valid-untrusted', reason, review };
+    const result: InstalledCheck = review.decision === 'refuse' ? { record, path, sha256, state: review.state, reason: review.reason, review }
+        : review.decision === 'ask' ? { record, path, sha256, state: 'valid-untrusted', reason: review.alarms.length ? review.reason : 'nothing that was accepted for it vouches for it any more', review }
+        : { record, path, sha256, state: 'ok', reason: [review.reason, ...warnings].join('; '), review };
+    checked.set(record.name, result);
+    return result;
+}
+
+// A part: the file that was installed, and the bytes its app pins — the app
+// still vouched for, and still declaring it with that hash — holding
+// together, with nobody this machine blocks on saying they are bad.
+function checkPartOf(record: InstallRecord, path: string, roots: string[], checked: Map<string, InstalledCheck>): InstalledCheck {
+    let bytes: Buffer;
+    try {
+        bytes = FS.readFileSync(path);
+    } catch (err) {
+        return { record, path, state: 'missing', reason: `not there any more (${message(err)}) — 'bundle update ${record.partOf}' puts it back` };
     }
-    return { record, path, sha256, state: 'ok', reason: [review.reason, ...warnings].join('; '), review };
+    const sha256 = digest(bytes);
+    if (sha256 !== record.sha256) {
+        return { record, path, sha256, state: 'changed', reason: `the file is not the bytes that were installed — expected ${record.sha256.slice(0, 12)}…, found ${sha256.slice(0, 12)}…` };
+    }
+    const host = records()[record.partOf!];
+    if (!host) return { record, path, sha256, state: 'valid-untrusted', reason: `pinned by ${record.partOf}, which is not installed any more` };
+    const vouched = check(host, roots, checked);
+    if (vouched.state !== 'ok') return { record, path, sha256, state: 'valid-untrusted', reason: `pinned by ${host.name}, which is not vouched for: ${vouched.reason}` };
+    let declared: Part | undefined;
+    try {
+        declared = readParts(manifestOf(FS.readFileSync(pathOf(host))), host.name)?.find((part) => part.package === record.package);
+    } catch (err) {
+        return { record, path, sha256, state: 'valid-untrusted', reason: `pinned by ${host.name}, whose parts cannot be read: ${message(err)}` };
+    }
+    if (!declared) return { record, path, sha256, state: 'valid-untrusted', reason: `${host.name} no longer declares it — 'bundle update ${host.name}' removes it` };
+    const found = checkIntegrity(bytes, { deep: true });
+    if (!found.ok) return { record, path, sha256, state: 'invalid', reason: found.reason };
+    if (found.pin !== declared.hash.toLowerCase()) return { record, path, sha256, state: 'valid-untrusted', reason: `${host.name} pins ${declared.hash}, and this is ${found.pin}` };
+    const policy = policyOf(record);
+    const bad = blockedInCache({ hashAlg: found.hashAlg!, hash: found.hash! }, policy.block, policy);
+    if (bad) return { record, path, sha256, state: 'invalid', reason: `marked bad by ${bad}, which this machine blocks on` };
+    return { record, path, sha256, state: 'ok', reason: `pinned by ${host.name}: ${found.pin}` };
 }
 
 /** The bad verdicts in a review that did not decide anything, as lines to show. */
@@ -1112,7 +1331,7 @@ function selfTrust(url: string): Signer[] {
 
 /** What `uninstall` removed: the install, and its plugins when nothing else can load them. */
 export type Uninstalled = InstallRecord & {
-    /** The app's plugins, removed with it. */
+    /** The app's plugins, removed with it: its parts, always; the rest when no other install loads them. */
     plugins: InstallRecord[];
     /** Other installs of the same app, for whom its plugins were left where they are. */
     sharedWith: string[];
@@ -1130,7 +1349,8 @@ export type Uninstalled = InstallRecord & {
  *
  * An app's plugins go with it: nothing can load them any more. The exception
  * is another install of the same app — the same package, under another name —
- * which loads the same scope, so they stay for that. A scope no app is
+ * which loads the same scope, so they stay for that; its parts go whatever
+ * else loads the scope, and a part is never uninstalled by itself. A scope no app is
  * installed as, such as a suite's shared one, belongs to no single app and is
  * only ever emptied plugin by plugin.
  */
@@ -1138,6 +1358,9 @@ export function uninstall(which?: string): Uninstalled {
     const all = records();
     const name = resolve(all, which);
     const record = all[name]!;
+    if (record.partOf !== undefined) {
+        throw new Error(`${record.package} is a part of ${record.partOf}, and goes when it does — 'bundle uninstall ${record.partOf}'`);
+    }
     remove(record);
     delete all[name];
     // The links it opened have nothing to open them with now.
@@ -1148,14 +1371,13 @@ export function uninstall(which?: string): Uninstalled {
     if (record.scope === undefined && record.package) {
         const scope = record.package;
         sharedWith = Object.values(all).filter((each) => each.scope === undefined && each.package === scope).map((each) => each.name).sort();
-        if (!sharedWith.length) {
-            for (const plugin of Object.values(all).filter((each) => each.scope === scope)) {
-                remove(plugin);
-                delete all[plugin.name];
-                plugins.push(plugin);
-            }
-            if (plugins.length) prune(scopeDir(scope));
+        // Its parts are its own, whoever else loads the scope.
+        for (const plugin of Object.values(all).filter((each) => each.scope === scope && (!sharedWith.length || each.partOf === name))) {
+            remove(plugin);
+            delete all[plugin.name];
+            plugins.push(plugin);
         }
+        for (const plugin of plugins) prune(PATH.dirname(pathOf(plugin)));
     } else if (record.scope !== undefined) {
         prune(PATH.dirname(pathOf(record)));
     }
@@ -1227,20 +1449,25 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
 
 // Review, decide, then move into place. The order is the whole point: an
 // archive nobody accepted never exists at its destination, not even briefly.
-async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source, url, response, options, log, previous }: {
+// An app's parts are fetched and checked between the two, so that one that
+// does not hold refuses the app too, before anything has moved.
+
+/** What reviewing an archive decided. */
+interface Judged {
+    policy: Policy;
+    gathered: Gathered;
+    review: Review;
+    accepted: Accepted;
+    chosen: ReviewItem[];
+}
+
+async function judgeArchive(bytes: Buffer, { name, scope, url, options, previous }: {
     name: string;
-    dir: string;
-    file?: string | undefined;
     scope?: string | undefined;
-    pkg?: string | undefined;
-    label?: string | undefined;
-    source: string;
     url: string;
-    response: Response;
     options: InstallOptions;
-    log: (line: string) => void;
     previous?: InstallRecord | undefined;
-}): Promise<InstallRecord> {
+}): Promise<Judged> {
     const policy = options.policy ?? policyOf({ name, scope });
     const demands: Demands = {
         identity: options.identity || undefined,
@@ -1281,8 +1508,106 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         chosen = await options.decide(review, about);
         if (!chosen.length) throw Object.assign(new Error(`declined ${url}`), { code: 'ERR_BUNDLE_DECLINED', review });
     }
-    log(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
+    (options.log ?? (() => {}))(`  accepted: ${chosen.length} of ${review.items.length} — ${review.decision === 'proceed' ? review.reason : 'by your decision'}`);
+    return { policy, gathered, review, accepted, chosen };
+}
 
+/** One file to put in place, and how. */
+interface Placement {
+    target: string;
+    bytes: Buffer;
+    mode: number;
+}
+
+// Move everything into place as one step: every file written beside its
+// target first, then each renamed over it, and only then the old ones and
+// those to go removed. A failure while writing changes nothing; one while
+// renaming puts back what had been renamed. So no run ends with some of the
+// new files and some of the old — short of the machine stopping between two
+// renames, which a set of files spread over several directories cannot be
+// guarded against.
+function commit(placements: Placement[], removals: string[] = []): void {
+    const incoming = (target: string) => `${target}.incoming-${process.pid}`;
+    const previous = (target: string) => `${target}.previous-${process.pid}`;
+    const written: string[] = [];
+    try {
+        for (const { target, bytes, mode } of placements) {
+            FS.mkdirSync(PATH.dirname(target), { recursive: true });
+            FS.writeFileSync(incoming(target), bytes, { mode });
+            written.push(incoming(target));
+            // Windows has no executable bit; what makes the file runnable there is
+            // the .nzip association, which `ensureWindowsAssociation()` sets up.
+            if (process.platform !== 'win32') FS.chmodSync(incoming(target), mode);
+        }
+    } catch (err) {
+        for (const path of written) FS.rmSync(path, { force: true });
+        throw err;
+    }
+
+    // What was there is kept, as a second name for the same file, until
+    // everything is in place: renaming over a file replaces it in one step,
+    // and the second name is what puts it back.
+    const done: { target: string; kept: boolean; removal: boolean }[] = [];
+    try {
+        for (const { target } of placements) {
+            const kept = keep(target, previous(target));
+            FS.renameSync(incoming(target), target);
+            done.push({ target, kept, removal: false });
+        }
+        for (const target of removals) {
+            if (!exists(target)) continue;
+            FS.renameSync(target, previous(target));
+            done.push({ target, kept: true, removal: true });
+        }
+    } catch (err) {
+        for (const { target, kept, removal } of done.reverse()) {
+            if (kept) FS.renameSync(previous(target), target);
+            else if (!removal) FS.rmSync(target, { force: true });
+        }
+        for (const path of written) FS.rmSync(path, { force: true });
+        throw err;
+    }
+    for (const { target, kept } of done) if (kept) FS.rmSync(previous(target), { force: true });
+}
+
+// Give `target`, if it is there, a second name; whether it was.
+function keep(target: string, as: string): boolean {
+    if (!exists(target)) return false;
+    FS.rmSync(as, { force: true });
+    try {
+        FS.linkSync(target, as);
+    } catch {
+        FS.copyFileSync(target, as);
+    }
+    return true;
+}
+
+function exists(path: string): boolean {
+    try {
+        FS.lstatSync(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// Put a reviewed archive in place, with its parts when it has them, and
+// remember all of it.
+function put(bytes: Buffer, judged: Judged, { name, dir, file, scope, pkg, label, source, url, response, options, log, previous, staged }: {
+    name: string;
+    dir: string;
+    file?: string | undefined;
+    scope?: string | undefined;
+    pkg?: string | undefined;
+    label?: string | undefined;
+    source: string;
+    url: string;
+    response: Response;
+    options: InstallOptions;
+    log: (line: string) => void;
+    previous?: InstallRecord | undefined;
+    staged?: StagedParts | undefined;
+}): InstallRecord {
     // A plugin is the app's data, not a command: it is not made executable,
     // and the desktop is not told about it. An app is kept in the store and
     // linked onto the PATH, where there is a store.
@@ -1290,22 +1615,11 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     const stored = !plugin && storesApps() ? storedPath(name) : undefined;
     const command = PATH.join(dir, file ?? name);
     const target = stored ?? command;
-    FS.mkdirSync(PATH.dirname(target), { recursive: true });
-    const temporary = `${target}.incoming-${process.pid}`;
-    try {
-        FS.writeFileSync(temporary, bytes, { mode: plugin ? 0o644 : 0o755 });
-        // Windows has no executable bit; what makes the file runnable there is
-        // the .nzip association, which `ensureWindowsAssociation()` sets up.
-        if (process.platform !== 'win32' && !plugin) FS.chmodSync(temporary, 0o755);
-        FS.renameSync(temporary, target);
-    } catch (err) {
-        FS.rmSync(temporary, { force: true });
-        throw err;
-    }
-    if (label !== undefined) {
-        FS.writeFileSync(temporary, `${label}\n`);
-        FS.renameSync(temporary, labelFile(target));
-    }
+    commit([
+        { target, bytes, mode: plugin ? 0o644 : 0o755 },
+        ...(label !== undefined ? [{ target: labelFile(target), bytes: Buffer.from(`${label}\n`), mode: 0o644 }] : []),
+        ...(staged?.placements ?? []),
+    ], staged?.removals ?? []);
     if (stored !== undefined) {
         // A new install gets its command. An update leaves the commands as
         // they are — renamed, or removed on purpose — since they point at the
@@ -1325,11 +1639,12 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
     const wanted = !menuDeclined && (options.menu ?? (previous?.menu?.length ? true : desktopSetupWanted()));
     const menu = plugin ? undefined : appEntry(bytes, { name, archive: target, previous, wanted, log });
 
+    const { gathered, accepted, chosen } = judged;
     const { result } = gathered;
     const attestedBy = gathered.evidence
         .filter((each) => each.type === 'attestation' && each.verdict === 'good')
         .map((each) => { const e = each as { did: string; kind?: string | undefined }; return formatAttester({ did: e.did, kind: e.kind }); });
-    return remember({
+    const record: InstallRecord = {
         name,
         scope,
         package: pkg,
@@ -1353,7 +1668,188 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
         stored,
         menu,
         menuDeclined,
-    });
+    };
+    const all = records();
+    all[name] = record;
+    for (const part of staged?.records ?? []) all[part.name] = part;
+    for (const gone of staged?.removed ?? []) delete all[gone.name];
+    write(all);
+    for (const gone of staged?.removed ?? []) prune(PATH.dirname(pathOf(gone)));
+    return record;
+}
+
+// ------------------------------------------------------------------- parts ---
+
+/** An app's parts, fetched and checked, ready to be put in place with it. */
+interface StagedParts {
+    placements: Placement[];
+    removals: string[];
+    records: InstallRecord[];
+    removed: InstallRecord[];
+    results: PartResult[];
+}
+
+/** What became of one part, as `update()` reports it. */
+interface PartResult {
+    record: InstallRecord;
+    state: 'unchanged' | 'updated' | 'added' | 'removed';
+    previous?: InstallRecord | undefined;
+}
+
+/** The parts an installed app has, by record. */
+export function partsOf(name: string): InstallRecord[] {
+    return Object.values(records()).filter((record) => record.partOf === name).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The parts an archive declares, or undefined. Only an app has parts, and
+// they need somewhere to be fetched from.
+function declaredParts(bytes: Buffer, url: string, scope: string | undefined): Part[] | undefined {
+    let parts: Part[] | undefined;
+    try {
+        parts = readParts(manifestOf(bytes), 'its package.json');
+    } catch (err) {
+        throw refusal('invalid', `refusing to install ${url || 'it'}: ${message(err)}`);
+    }
+    if (!parts?.length) return undefined;
+    if (scope !== undefined) throw refusal('invalid', `refusing to install ${url || 'it'} as a plugin: it declares parts, and only an app has parts`);
+    if (!url) throw new Error('it declares parts, which are found beside it — give the URL it stands for (source) to find them at');
+    return parts;
+}
+
+// An app with parts owns its scope: it is installed once, and its parts are
+// its own.
+function hostable(name: string, pkg: string | undefined, url: string): void {
+    if (!pkg) throw refusal('invalid', `refusing to install ${url}: it declares parts, which go in its scope, and it gives no package name for one`);
+    const other = Object.values(records()).find((record) => record.scope === undefined && record.package === pkg && record.name !== name);
+    if (other) throw new Error(`${pkg} is installed already, as ${other.name}, and its parts are that install's — uninstall it first`);
+}
+
+function manifestOf(bytes: Buffer): unknown {
+    try {
+        const zip = new ZLIB.ZipBuffer(bytes);
+        return zip.has('package.json') ? JSON.parse(zip.get('package.json').contentSync().toString('utf-8')) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Fetch and check every part that is new or changed, and say what goes: all
+ * before anything is moved, so that a part that cannot be had, or is not what
+ * its app pins, refuses the app with it and leaves everything as it was.
+ *
+ * A part must be the archive the app pins — its whole-file hash — and hold
+ * together, and carry the package it is declared as; it needs no signature
+ * and no attestation of its own. Only a bad verdict from someone this machine
+ * blocks on refuses it besides, as it would anything.
+ */
+async function stageParts(parts: Part[], { host, scope, base, policy, options, log, repair = true }: {
+    host: string;
+    scope: string;
+    base: string;
+    policy: Policy;
+    options: InstallOptions;
+    log: (line: string) => void;
+    /** Fetch again a part whose file is not what was installed. */
+    repair?: boolean | undefined;
+}): Promise<StagedParts> {
+    const all = records();
+    const dir = scopeHome(scope);
+    const staged: StagedParts = { placements: [], removals: [], records: [], removed: [], results: [] };
+    const blocking = [...policy.block, ...(options.block ?? [])];
+    const declared = new Set(parts.map((part) => part.package));
+
+    for (const part of parts) {
+        const name = `${scope}:${part.package}`;
+        const before = all[name];
+        if (before?.partOf === host && before.hash === part.hash && (!repair || intact(before))) {
+            staged.results.push({ record: before, state: 'unchanged' });
+            continue;
+        }
+        const url = partUrl(part, base, host);
+        log(`* ${host}: fetching its part ${part.package} from ${url}`);
+        const response = await fetchFrom(url, { redirect: 'follow' });
+        if (!response.ok) throw new Error(`refusing ${host}: its part ${part.package}, at ${url}: ${response.status} ${response.statusText}`);
+        const bytes = Buffer.from(await response.arrayBuffer());
+        const problem = checkPart(bytes, part, host);
+        if (problem) throw refusal('invalid', `refusing ${host}: its part ${part.package}, from ${url}, ${problem}`);
+        const bad = await blockedBy(bytes, blocking, policy, options.network);
+        if (bad) throw refusal('invalid', `refusing ${host}: its part ${part.package} is marked bad by ${bad}, which this machine blocks on`);
+
+        const file = pluginFile(part.package);
+        const target = PATH.join(dir, file);
+        staged.placements.push({ target, bytes, mode: 0o644 });
+        // A plugin installed by itself under this name is the app's part now;
+        // what it was installed as goes.
+        if (before && before.partOf === undefined) {
+            log(`  ${part.package} was installed by itself, from ${sourceOf(before)}: it is ${host}'s part now`);
+            staged.removals.push(labelFile(pathOf(before)));
+            if (pathOf(before) !== target) staged.removals.push(pathOf(before));
+        }
+        const record: InstallRecord = {
+            name, scope, package: part.package, file, partOf: host, source: url, url,
+            hash: part.hash, sha256: digest(bytes), at: new Date().toISOString(), dir,
+        };
+        staged.records.push(record);
+        staged.results.push({ record, state: before?.partOf === host ? 'updated' : 'added', previous: before?.partOf === host ? before : undefined });
+    }
+    for (const gone of Object.values(all).filter((record) => record.partOf === host && !declared.has(record.package!))) {
+        staged.removals.push(pathOf(gone));
+        staged.removed.push(gone);
+        staged.results.push({ record: gone, state: 'removed' });
+    }
+    return staged;
+}
+
+// Where a part is: its URL, resolved against the app's. Only by the means
+// the app itself was fetched by — an app from a server does not get to name
+// a file on this machine.
+function partUrl(part: Part, base: string, host: string): string {
+    let url: URL;
+    try {
+        url = new URL(part.url, base);
+    } catch {
+        throw refusal('invalid', `refusing ${host}: its part ${part.package} is at '${part.url}', which is not a URL`);
+    }
+    if (url.protocol !== new URL(base).protocol) {
+        throw refusal('invalid', `refusing ${host}: its part ${part.package} is at ${url.href}, and parts are fetched as their app is, over ${new URL(base).protocol.replace(/:$/, '')}`);
+    }
+    return url.href;
+}
+
+// Why `bytes` are not the part declared, or undefined when they are.
+function checkPart(bytes: Buffer, part: Part, host: string): string | undefined {
+    const found = checkIntegrity(bytes, { deep: true });
+    if (!found.ok) return `does not hold together: ${found.reason}`;
+    if (found.pin !== part.hash.toLowerCase()) return `has the whole-file hash ${found.pin}, and ${host} pins ${part.hash}`;
+    const pkg = packageName(bytes);
+    if (pkg !== part.package) return `carries ${pkg ?? 'no package name'}, not ${part.package}`;
+    if (readParts(manifestOf(bytes), part.package)?.length) return 'declares parts of its own, and only an app has parts';
+    return undefined;
+}
+
+// Whether a part is the file that was installed.
+function intact(record: InstallRecord): boolean {
+    try {
+        return digest(FS.readFileSync(pathOf(record))) === record.sha256;
+    } catch {
+        return false;
+    }
+}
+
+// Who, of those this machine blocks on, has marked these bytes bad: asked
+// afresh when there is a network to ask, else from the cache.
+async function blockedBy(bytes: Buffer, blocking: Attester[], policy: Policy, network: NetworkOptions | undefined): Promise<string | undefined> {
+    if (!blocking.length) return undefined;
+    const hashed = wholeFileHash(bytes);
+    if (!hashed) return undefined;
+    await (await import('./atproto.ts')).refreshFor(blocking, hashed.hashAlg, hashed.hash, network);
+    return blockedInCache(hashed, blocking, policy);
+}
+
+function blockedInCache(hashed: { hashAlg: string; hash: string }, blocking: Attester[], policy: Policy): string | undefined {
+    const bad = blocking.filter(({ did }) => (cached(did, hashed.hashAlg, hashed.hash, { maxAge: policy.maxAge })?.verdict ?? 'good') === 'bad');
+    return bad.length ? bad.map(({ did }) => did).join(', ') : undefined;
 }
 
 /**
@@ -1489,12 +1985,14 @@ function onPath(dir: string): boolean {
 // ------------------------------------------------------------- the desktop ---
 
 /**
- * Whether installs set the desktop up for `.nzip` files: yes, unless
- * `BUNDLE_NO_DESKTOP_SETUP` is set — or `BUNDLE_NO_WINDOWS_SETUP`, its name
+ * Whether installs set the desktop up for `.nzip` files: yes, unless they go
+ * under a `BUNDLE_ROOT`, or `BUNDLE_NO_DESKTOP_SETUP` is set — or `BUNDLE_NO_WINDOWS_SETUP`, its name
  * from when the only setup there was happened on Windows, honoured still so
  * that nothing which set it starts rewriting a desktop now.
  */
 export function desktopSetupWanted(): boolean {
+    // A layout of its own — a server's, an image's — has no desktop to set up.
+    if (bundleRoot()) return false;
     return !process.env['BUNDLE_NO_DESKTOP_SETUP'] && !process.env['BUNDLE_NO_WINDOWS_SETUP'];
 }
 

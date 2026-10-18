@@ -633,7 +633,8 @@ test('install --for puts a plugin in its app\'s scope, under its package name, a
     assert.deepEqual(FS.readFileSync(file), served.bytes, 'where the plugin loader looks for it');
     assert.equal(record.label, URL_, 'what was typed, to know it by');
     assert.equal(FS.readFileSync(labelFile(file), 'utf-8'), `${URL_}\n`, 'beside it, for the loader');
-    assert.deepEqual(list('bled'), [[URL_, { name: '@alice/gpio' }]]);
+    assert.deepEqual(list('bled').map(({ name, package: pkg, file: at }) => [name, pkg, at]), [[URL_, '@alice/gpio', file]]);
+    assert.equal(list('bled')[0]!.manifest['main'], 'index.js', 'the whole package.json, entry points included');
     if (!WINDOWS) assert.equal(FS.statSync(file).mode & 0o111, 0, 'data, not a command');
     assert.equal(FS.existsSync(PATH.join(BIN, 'gpio')) || FS.existsSync(PATH.join(BIN, 'gpio.nzip')), false, 'never on the PATH');
     assert.equal(installedChecks().find((each) => each.record.name === record.name)?.state, 'ok');
@@ -672,7 +673,7 @@ test('two plugins may share a name: it identifies, the package name is what is u
     served.bytes = await archive('same-two', '@bob/two');
     served.etag = '"same-two"';
     await install(URL_, { ...options, scope: 'twins' });
-    assert.deepEqual(list('twins'), [[URL_, { name: '@alice/one' }], [URL_, { name: '@bob/two' }]]);
+    assert.deepEqual(list('twins').map(({ name, package: pkg }) => [name, pkg]), [[URL_, '@alice/one'], [URL_, '@bob/two']]);
     uninstall('twins:@alice/one');
     uninstall('twins:@bob/two');
 });
@@ -688,7 +689,7 @@ test('install --for a folder links it for development: loaded as it is, and swap
     const linked = await install(folder, { ...options, scope: 'devscope' });
     assert.deepEqual({ name: linked.name, link: linked.link, label: linked.label }, { name: 'devscope:@alice/gpio', link: folder, label: folder });
     assert.equal(FS.readFileSync(linkAt, 'utf-8'), `${folder}\n`);
-    assert.deepEqual(list('devscope'), [[folder, { name: '@alice/gpio', version: '9.9.9-dev' }]]);
+    assert.deepEqual(list('devscope'), [{ name: folder, package: '@alice/gpio', file: linkAt, link: folder, manifest: { name: '@alice/gpio', version: '9.9.9-dev' } }]);
     assert.equal(installedChecks().find((each) => each.record.name === linked.name)?.state, 'ok');
     const [updated] = await update(linked.name, options);
     assert.equal(updated!.state, 'unchanged', 'a folder is always as it is');

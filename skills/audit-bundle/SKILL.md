@@ -1,6 +1,6 @@
 ---
 name: audit-bundle
-description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle) — or a suite of them. Use before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — before RUNNING or shipping one you received, and before PUBLISHING or PERMITTING a suite (`bundle suite publish`, `bundle suite attest --kind permitted`). Triggers on "audit/review/vet/inspect/check this bundle/suite", "is this safe to sign", "is this safe to run", "should we permit this suite", "what is in this bundle", or diffing one against a previously approved version.
+description: Verify, extract, and security-review a bundle archive (.nzip, app.nzip, a SEA, or any archive built by @pipobscure/bundle) — or a suite of them, or an app and the parts it pins. Use before SIGNING a bundle you just built — the step between `bundle create` and `bundle sign` — before RUNNING or shipping one you received, and before PUBLISHING or PERMITTING a suite (`bundle suite publish`, `bundle suite attest --kind permitted`). Triggers on "audit/review/vet/inspect/check this bundle/suite", "is this safe to sign", "is this safe to run", "should we permit this suite", "what is in this bundle", or diffing one against a previously approved version.
 ---
 
 # 🌳 Auditing a bundle
@@ -343,3 +343,27 @@ suite as named, `sha256` is the suite's hash from `bundle suite show`, and `memb
 per member: `{ "listing", "url", "sha256", "verdict", "requires" }`. The top-level `verdict` is
 `"fail"` if any member fails, or if any requirement is weaker than what the verdict is being used
 for.
+
+## Auditing an app with parts
+
+An app whose `package.json` declares `bundle.parts` is made of more archives than the one being
+signed. Each entry names a part's package, where it is (`url`, beside the app), and its
+whole-file hash. **Signing the app vouches for every part it pins**: installing the app installs
+those exact bytes, and nothing else checks them, since a part needs no signature or attestation
+of its own. So the review of the app is not complete until every part has been reviewed too.
+
+1. **Read the declaration.** List `bundle.parts` from the extracted `package.json`. Flag a `url`
+   that is not beside the app (absolute, or climbing out with `../`), an unexpected package
+   name, and anything in the list nobody can explain.
+2. **Get each part, and check it is what is pinned.** `bundle parts <archive>...` over the part
+   files prints each one's package and hash; every one must equal its entry, byte for byte.
+   A part whose hash differs is not the part that would be installed, and the review stops
+   there.
+3. **Review every part as a bundle of its own**, phases 1 to 3, with one difference: a part is
+   unsigned by design, so `UNSIGNED` in phase 1 is expected, and `INVALID` is still a hard stop.
+   With a previous release, review each part in diff mode against the part it replaces, and
+   say which parts are unchanged (same hash) and need no new review.
+4. **Report the app and its parts together.** The verdict covers the app's archive; add
+   `parts`, one entry per part: `{ "package", "url", "sha256", "verdict" }`, where `sha256` is
+   the part's whole-file hash. The top-level `verdict` is `"fail"` if any part fails, is missing,
+   or does not match its pin.

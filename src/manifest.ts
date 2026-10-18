@@ -1,9 +1,20 @@
 import * as ZLIB from 'node:zlib';
 import * as CRYPTO from 'node:crypto';
 import * as TLS from 'node:tls';
-import * as FS from 'node:fs';
 import * as SIGSTORE from './sigstore.ts';
 import * as ATTEST from './attestation.ts';
+import {
+    AUTHORITY, isStructuralError, readerFor, sourceOf, locateEocd, regionHash, memberDigests, parseSignature, parseUnsigned, message,
+    type ArchiveSource, type ArchiveReader, type Source, type SignatureMarker,
+} from './integrity.ts';
+
+// The integrity layer — the whole-file hash, the recorded markers, member
+// digests — is integrity.ts, which needs nothing but node's own modules.
+// Re-exported, since this has always been where the format is.
+export {
+    AUTHORITY, parseSignature, parseUnsigned, signatureOf, endsInArchive, wholeFileHash, pinOf, checkIntegrity, message,
+    type ArchiveSource, type SignatureMarker, type IntegrityResult,
+} from './integrity.ts';
 
 // The signature is staged so a verifier can gate cheaply before doing more:
 //
@@ -63,9 +74,6 @@ import * as ATTEST from './attestation.ts';
 
 const MAGIC = 'manifest';
 const VERSION = '2';
-export const AUTHORITY = 'AUTHORITY.PEM';
-const SIG_EOCD = 0x06054b50;
-const CHUNK = 1 << 20;
 
 /** What a verification concluded, in increasing order of confidence. */
 export type VerificationState = 'unsigned' | 'invalid' | 'valid-untrusted' | 'valid';
@@ -80,14 +88,6 @@ export interface ManifestFields {
     signAlg?: string | undefined;
     /** The certificate chain, leaf first; empty when unsigned. */
     chain: CRYPTO.X509Certificate[];
-}
-
-/** A parsed `SIGNED:<hash>:<sig>[:<NAME>=<value>]*` marker. */
-export interface SignatureMarker {
-    hash: string;
-    sig: string;
-    /** The trailing unsigned attributes, keyed by upper-case name. */
-    fields: Map<string, string>;
 }
 
 export interface VerificationResult {
@@ -175,9 +175,6 @@ export interface VerifyOptions {
     integrity?: boolean | undefined;
 }
 
-/** An archive to be built or verified: a path on disk, or the bytes themselves. */
-export type ArchiveSource = string | Buffer;
-
 /**
  * How each state is reported, and the exit code that goes with it.
  *
@@ -238,9 +235,9 @@ export function parseManifest(content: Buffer | string): ManifestFields {
  * signature covered.
  */
 export function verifySync(source: ArchiveSource, options: VerifyOptions = {}): VerificationResult {
-    const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
     let reader: ArchiveReader | undefined;
     try {
+        const io = sourceOf(source);
         reader = readerFor(options.archive ?? io.open());
         return inspect(reader, io, options);
     } catch (err) {
@@ -260,14 +257,6 @@ export function verifySync(source: ArchiveSource, options: VerifyOptions = {}): 
     }
 }
 
-// Damage to the *structure* rather than to the contents: a file that no longer
-// parses as a ZIP, or one with bytes after the end of the archive. Both mean
-// the same thing to a caller — this is not the archive that was signed.
-function isStructuralError(err: unknown): boolean {
-    const code = (err as { code?: unknown } | null)?.code;
-    return typeof code === 'string' && (code.startsWith('ERR_ZIP_') || code === 'ERR_BUNDLE_TRAILING_BYTES');
-}
-
 /**
  * Promise-returning wrapper around `verifySync`, for callers that treat
  * verification as an asynchronous step. Hashing is CPU-bound either way, so the
@@ -275,21 +264,6 @@ function isStructuralError(err: unknown): boolean {
  */
 export async function verify(source: ArchiveSource, options?: VerifyOptions): Promise<VerificationResult> {
     return verifySync(source, options);
-}
-
-// A reader over either archive flavour. `ZipFile` and `ZipBuffer` expose the
-// same information under different names — `entriesSync()` against `entries()`,
-// `getSync()` against `get()` — and only one of them can be closed.
-interface ArchiveReader {
-    entries(): Iterable<[string, ZLIB.ZipEntry]>;
-    close(): void;
-}
-
-function readerFor(archive: ZLIB.ZipFile | ZLIB.ZipBuffer): ArchiveReader {
-    if (archive instanceof ZLIB.ZipBuffer) {
-        return { entries: () => archive.entries(), close: () => {} };
-    }
-    return { entries: () => archive.entriesSync(), close: () => archive.closeSync() };
 }
 
 // The staged check itself. Split out so `verifySync` owns only the lifetime of
@@ -325,9 +299,7 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     //    and confirm it matches the hash recorded in the comment. No certs yet.
     let digest: string | null;
     try {
-        const hash = CRYPTO.createHash(hashAlg);
-        io.feed(hash, regionEnd);
-        digest = hash.digest('hex');
+        digest = regionHash(io, hashAlg, regionEnd);
     } catch {
         digest = null;
     }
@@ -351,21 +323,8 @@ function inspect(reader: ArchiveReader, io: Source, options: VerifyOptions): Ver
     //    content, and — when `deep` — that digest must match what the member
     //    actually decompresses to. (The whole-file hash already fixes every
     //    member; this checks each file on its own terms, as a member fetch will.)
-    const digests = new Map<string, string>();
-    for (const [name, entry] of present) {
-        if (name === AUTHORITY || entry.isDirectory) continue;
-        const recorded = entry.comment || '';
-        if (!/^[0-9a-f]+$/i.test(recorded)) return result('invalid', `member carries no digest: ${name}`, chain, { hashAlg });
-        digests.set(name, recorded.toLowerCase());
-        if (!deep) continue;
-        let memberDigest: string;
-        try {
-            memberDigest = CRYPTO.createHash(hashAlg).update(entry.contentSync()).digest('hex');
-        } catch {
-            return result('invalid', `member could not be read: ${name}`, chain, { hashAlg, digests });
-        }
-        if (memberDigest !== recorded.toLowerCase()) return result('invalid', `digest mismatch: ${name}`, chain, { hashAlg, digests });
-    }
+    const digests = memberDigests(present, hashAlg, deep);
+    if (typeof digests === 'string') return result('invalid', digests, chain, { hashAlg });
 
     // 4. Signature and digests are sound; what remains is trust — whether this
     //    certificate means anything to us, and whether the attesters the policy
@@ -537,35 +496,6 @@ function sigstoreTrust(
 }
 
 /**
- * Parse an EOCD comment of the form
- * `SIGNED:<hash-hex>:<signature-hex>[:<NAME>=<value>]*`, or null when the
- * archive is unsigned (no such marker). Field values never contain a `:`, which
- * is what keeps splitting on it unambiguous (base64 does not use one).
- */
-/**
- * The whole-file hash an unsigned archive records — `UNSIGNED:<hash>`, which
- * `bundle create` writes — or null. It says what the bytes should hash to,
- * not who made them: anyone can recompute it, so it catches damage and
- * accidents, and only a signature speaks to authorship.
- */
-export function parseUnsigned(comment: string): string | null {
-    const m = /^UNSIGNED:([0-9a-f]+)$/.exec(String(comment).trim());
-    return m ? m[1]!.toLowerCase() : null;
-}
-
-export function parseSignature(comment: string): SignatureMarker | null {
-    const m = /^SIGNED:([0-9a-f]+):([0-9a-f]+)((?::[A-Za-z0-9_]+=[^:]*)*)$/.exec(String(comment).trim());
-    if (!m) return null;
-    const fields = new Map<string, string>();
-    for (const part of m[3]!.split(':')) {
-        if (!part) continue;
-        const eq = part.indexOf('=');
-        fields.set(part.slice(0, eq).toUpperCase(), part.slice(eq + 1));
-    }
-    return { hash: m[1]!.toLowerCase(), sig: m[2]!.toLowerCase(), fields };
-}
-
-/**
  * The inverse: render a marker for the EOCD comment. Field order is fixed by
  * insertion, and a field whose value is empty or absent is left out entirely.
  */
@@ -582,163 +512,6 @@ export function formatSignature({ hash, sig, fields }: {
         parts.push(`${name.toUpperCase()}=${value}`);
     }
     return parts.join(':');
-}
-
-/**
- * The whole-file hash of `source` — what a signature covers and what an
- * attestation names — without verifying anything. Null when `source` is not an
- * archive with a manifest. This is the "which proofs do I need?" question asked
- * before a verification that will need them; the verification recomputes it.
- */
-export function wholeFileHash(source: ArchiveSource): { hashAlg: string; hash: string } | null {
-    const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
-    let reader: ArchiveReader | undefined;
-    try {
-        reader = readerFor(io.open());
-        let authority: ZLIB.ZipEntry | undefined;
-        for (const [name, entry] of reader.entries()) if (name === AUTHORITY) authority = entry;
-        if (!authority) return null;
-        const { hashAlg } = parseManifest(authority.contentSync());
-        const eocd = locateEocd(io.tail(), io.size);
-        const hash = CRYPTO.createHash(hashAlg);
-        io.feed(hash, eocd.start + 20);
-        return { hashAlg, hash: hash.digest('hex') };
-    } catch {
-        return null;
-    } finally {
-        reader?.close();
-    }
-}
-
-/**
- * The signature marker carried by `source`, or null when it carries none —
- * including when it is not a ZIP at all. Reads only the tail of the file, so it
- * is cheap enough to use as a "does this claim to be one of ours?" test before
- * committing to a full verification.
- */
-export function signatureOf(source: ArchiveSource): SignatureMarker | null {
-    try {
-        const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
-        return parseSignature(locateEocd(io.tail(), io.size).comment.toString('ascii'));
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Whether `source` ends in a ZIP archive: one whose end-of-central-directory
- * record, comment included, runs exactly to the end of the file. A file can
- * contain an archive without ending in one — a SEA's own embedded file system
- * sits inside its blob, with more of the executable after it — and only an
- * archive at the very end is one that was appended.
- */
-export function endsInArchive(source: ArchiveSource): boolean {
-    try {
-        const io = Buffer.isBuffer(source) ? bufferSource(source) : pathSource(source);
-        locateEocd(io.tail(), io.size);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-// Where the bytes come from, abstracted over "a path" and "a Buffer": a
-// statable size, a tail read for the EOCD, a chunked hash feed for the signed
-// region, and an archive opener.
-interface Source {
-    size: number;
-    tail(): Buffer;
-    feed(sink: CRYPTO.Hash, end: number): void;
-    open(): ZLIB.ZipFile | ZLIB.ZipBuffer;
-}
-
-function pathSource(path: string): Source {
-    const size = FS.statSync(path).size;
-    return {
-        size,
-        tail() {
-            const len = Math.min(size, 22 + 0xffff);
-            const buf = Buffer.alloc(len);
-            const fd = FS.openSync(path, 'r');
-            try { FS.readSync(fd, buf, 0, len, size - len); } finally { FS.closeSync(fd); }
-            return buf;
-        },
-        feed(sink, end) {
-            const fd = FS.openSync(path, 'r');
-            try {
-                const buf = Buffer.allocUnsafe(Math.min(CHUNK, end));
-                let pos = 0;
-                while (pos < end) {
-                    const read = FS.readSync(fd, buf, 0, Math.min(buf.length, end - pos), pos);
-                    if (read <= 0) throw new Error('unexpected end of file');
-                    sink.update(buf.subarray(0, read));
-                    pos += read;
-                }
-            } finally {
-                FS.closeSync(fd);
-            }
-        },
-        open: () => openArchive(path),
-    };
-}
-
-function bufferSource(buf: Buffer): Source {
-    return {
-        size: buf.length,
-        tail: () => buf.subarray(Math.max(0, buf.length - (22 + 0xffff))),
-        feed: (sink, end) => { sink.update(buf.subarray(0, end)); },
-        open: () => new ZLIB.ZipBuffer(buf),
-    };
-}
-
-// Find the end-of-central-directory record in `tail` (the last bytes of a file
-// of total length `size`) and return { start, comment } with `start` absolute.
-// The EOCD must be the last structure in the file, so its comment runs to EOF.
-function locateEocd(tail: Buffer, size: number): { start: number; comment: Buffer } {
-    const floor = Math.max(0, tail.length - (22 + 0xffff));
-    // The EOCD's comment must end at the end of the file, and that is not a
-    // nicety: the hash covers everything up to the comment, so anything *after*
-    // it would be bytes nobody signed. Accepting an EOCD that ends early — as
-    // this used to, as a fallback — let a signed archive be given a tail of
-    // arbitrary data while still verifying. A ZIP reader ignores that tail; a
-    // reader of some other format may not.
-    for (let pos = tail.length - 22; pos >= floor; pos--) {
-        if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
-        const clen = tail.readUInt16LE(pos + 20);
-        if (pos + 22 + clen !== tail.length) continue;
-        return { start: size - tail.length + pos, comment: tail.subarray(pos + 22, pos + 22 + clen) };
-    }
-    // Say which of the two it is, because they mean different things: a file
-    // that is not a ZIP at all, or one with something appended to it.
-    for (let pos = tail.length - 22; pos >= floor; pos--) {
-        if (tail.readUInt32LE(pos) !== SIG_EOCD) continue;
-        const end = pos + 22 + tail.readUInt16LE(pos + 20);
-        throw Object.assign(
-            new Error(`${tail.length - end} bytes follow the end of the archive, and nothing signs them`),
-            { code: 'ERR_BUNDLE_TRAILING_BYTES' });
-    }
-    throw new Error('no end of central directory record found');
-}
-
-function openArchive(path: string): ZLIB.ZipFile {
-    try {
-        return ZLIB.ZipFile.openSync(path);
-    } catch (err) {
-        // A path that is itself a mount point resolves to the mounted tree
-        // rather than to bytes, and opening a directory as a ZIP fails deep
-        // inside with a confusing message. (A container's *own* path is not one
-        // of these: `--vfs-load` leaves it readable, which is what lets a
-        // launcher verify itself. This is for a directory mount, or a mount
-        // deliberately placed over an archive.)
-        let isDir = false;
-        try { isDir = FS.statSync(path).isDirectory(); } catch { /* fall through */ }
-        if (isDir) {
-            throw new Error(`cannot verify '${path}': it is mounted as a live filesystem ` +
-                `(the running container cannot read its own container bytes by path — ` +
-                `verify it under a different name)`);
-        }
-        throw err;
-    }
 }
 
 function result(
@@ -805,7 +578,3 @@ function anchored(chain: CRYPTO.X509Certificate[], roots: CRYPTO.X509Certificate
     return false;
 }
 
-/** An error's message, for errors that arrive as `unknown`. */
-export function message(err: unknown): string {
-    return err instanceof Error ? err.message : String(err);
-}

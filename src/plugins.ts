@@ -1,13 +1,18 @@
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as ZLIB from 'node:zlib';
+import * as UTIL from 'node:util';
+import * as THREADS from 'node:worker_threads';
 import { createRequire, registerHooks } from 'node:module';
-import { pathToFileURL } from 'node:url';
-import { scopeDir, labelFile } from './scopes.ts';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { scopeDir, pluginsDir, pluginFile, labelFile } from './scopes.ts';
+import { readParts, pinsOf } from './parts.ts';
+import { mountAt, mountNumber } from './mounts.ts';
 import { sibling } from './preload.ts';
 import type * as VerifierModule from './plugin-verifier.ts';
+import type * as PinnedModule from './plugin-pinned.ts';
 
-export { scopeDir };
+export { scopeDir, pluginsDir, pluginFile, labelFile };
 
 // Plugins for bundled apps: signed bundles an app finds by package name.
 //
@@ -28,12 +33,20 @@ export { scopeDir };
 // runtime — `bundle run`, the `register` preload, a SEA — which asked for
 // everything it mounts to be checked.
 //
+// The exception is a plugin the host pins by hash: one of the parts its
+// package.json declares (see parts.ts), or one it names in `verify.pins`. A
+// pin comes from the host's own archive, not from anyone's configuration, so
+// it is always held to — the file must be those bytes, and is mounted through
+// the provider that re-checks every member as it is read.
+//
 // This module ends up inside every host app's bundle, so it imports nothing
 // heavy, and nothing that needs --experimental-vfs to load. The checking is
 // `plugin-verifier.ts`: a verifying runtime's own, found on the global object,
 // so the code and policy that checked the app check its plugins too; or, when
 // there is none and the host asked, this package's, loaded only then — so
 // `bundle create`'s observation records it only for a host that verifies.
+// Pinned plugins need less, `plugin-pinned.ts`, loaded the first time one is
+// mounted.
 //
 // See proposals/plugins.md.
 
@@ -51,13 +64,22 @@ export interface PluginRules {
     block?: string[] | undefined;
     /** A certificate (PEM text, or a path to one) every plugin's chain must lead to. */
     ca?: string | undefined;
+    /**
+     * Plugins this host pins, by package name, to their whole-file hash
+     * (`sha256:<hex>`): each must be installed and be exactly those bytes,
+     * and needs no signature or attestation besides. On top of the parts the
+     * host's package.json declares, which are pinned whether this says so or
+     * not. The other rules here are for the plugins it does not name.
+     */
+    pins?: Record<string, string> | undefined;
 }
 
 export interface UseOptions {
     /**
      * Verify every plugin in the scope before `use()` returns: `true` under
      * what the runtime and the policy require, or rules of the host's own on
-     * top of those. A verifying runtime verifies whether this is set or not.
+     * top of those. A verifying runtime verifies whether this is set or not,
+     * and pinned plugins are checked against their pins either way.
      */
     verify?: boolean | PluginRules | undefined;
 }
@@ -72,50 +94,51 @@ export interface Refused {
     reasons: string[];
 }
 
+/** A plugin in a scope, as `list()` tells a host about it. */
+export interface PluginInfo {
+    /**
+     * What it was installed as — what `bundle install --for` was given, as
+     * typed — or, for a part of the host or a plugin copied in by hand, its
+     * package name. Only identifies: two plugins can share one.
+     */
+    name: string;
+    /** The package name inside it: what to import. */
+    package: string;
+    /** Its archive; for a folder linked for development, the note naming the folder. */
+    file: string;
+    /** The folder it is loaded from, when it is linked for development. */
+    link?: string | undefined;
+    /** Its whole package.json, custom fields and entry points included. */
+    manifest: PackageJson;
+}
+
 // The contract with plugin-verifier.ts, which a verifying runtime leaves on
 // the global object for this module to find — perhaps a different release of
-// this package than the copy inside the app's bundle, hence the version.
+// this package than the copy inside the app's bundle, hence the version. `at`
+// and `pin` came later: a verifier that does not know them mounts where it
+// likes, which is caught, and judges a pinned plugin by its ordinary rules,
+// which is stricter.
 const VERIFIER = Symbol.for('@pipobscure/bundle.plugins.verifier');
 
 interface Verifier {
     readonly version: 1;
     readonly enforcing: boolean;
-    mountPlugin(file: string, request: { scope: string; rules?: PluginRules | undefined }): { root: string };
+    mountPlugin(file: string, request: {
+        scope: string;
+        rules?: PluginRules | undefined;
+        at?: string | undefined;
+        pin?: { hash: string; by: string } | undefined;
+    }): { root: string };
 }
 
-interface PackageJson {
+export interface PackageJson {
     name?: unknown;
     main?: unknown;
     exports?: unknown;
+    bin?: unknown;
+    type?: unknown;
     [field: string]: unknown;
 }
-
-/**
- * What `list()` says about a plugin: its `package.json`, reduced to what
- * describes it. `name` is what to import. What only matters for running it —
- * scripts, entry points, dependencies — is left out.
- */
-export interface PluginPackage {
-    name: string;
-    version?: string | undefined;
-    description?: string | undefined;
-    keywords?: string[] | undefined;
-    license?: string | undefined;
-    author?: unknown;
-    contributors?: unknown;
-    maintainers?: unknown;
-    homepage?: string | undefined;
-    repository?: unknown;
-    bugs?: unknown;
-    funding?: unknown;
-    engines?: Record<string, string> | undefined;
-}
-
-/** The `package.json` fields `list()` passes on: an allowlist, so nothing new leaks out when packages grow fields. */
-export const PACKAGE_FIELDS = [
-    'name', 'version', 'description', 'keywords', 'license', 'author', 'contributors', 'maintainers',
-    'homepage', 'repository', 'bugs', 'funding', 'engines',
-] as const;
 
 interface Plugin {
     /** The package name inside it: what apps import. */
@@ -138,9 +161,14 @@ interface Scope {
     plugins: Map<string, Plugin>;
     /** The options it was used with, to tell a second `use()` apart. */
     options: string;
+    /** What it was used with, for a worker to use it with too. */
+    verify: boolean | PluginRules | undefined;
+    /** The pins in force, the host's parts included, and who set each. */
+    pins: Record<string, { hash: string; by: string }>;
 }
 
-// Per thread, as module hooks and mounts are: each worker calls `use()` itself.
+// Per thread, as module hooks and mounts are; a worker started through
+// `Worker` is set up with the same (see `enterWorker()`).
 const scopes: Scope[] = [];
 let hooked = false;
 
@@ -151,8 +179,12 @@ let hooked = false;
  *
  * Calling it again for a scope already in use does nothing — unless the
  * options differ, which is an error rather than a quiet choice between them.
- * With verification, every plugin is checked before this returns, and if any
- * is refused none of them is loaded and this throws, saying why for each.
+ * With verification, or pins, every plugin that needs checking is checked
+ * before this returns, and if any is refused none of them is loaded and this
+ * throws, saying why for each.
+ *
+ * When the package that calls this is itself called `scope` and declares parts
+ * in its package.json (`bundle.parts`), they are pinned: see parts.ts.
  */
 export function use(scope: string, options: UseOptions = {}): void {
     const key = JSON.stringify(options.verify ?? false);
@@ -161,73 +193,286 @@ export function use(scope: string, options: UseOptions = {}): void {
         if (existing.options !== key) throw new Error(`use('${scope}') was already called in this thread, with other options`);
         return;
     }
+    const prepared = prepare(scope, scopeDir(scope), options.verify, declaredPins(scope));
+    settle([prepared], prepared.mounts);
+}
 
-    const dir = scopeDir(scope);
+// What `use()` decides before anything is mounted: the scope, indexed; how
+// each plugin that is checked now is to be mounted; and what is refused
+// already, without mounting anything.
+interface Prepared {
+    entry: Scope;
+    mounts: { plugin: Plugin; mount: (at?: string) => string }[];
+    refused: Refused[];
+}
+
+function prepare(scope: string, dir: string, verify: boolean | PluginRules | undefined, declared: Scope['pins']): Prepared {
     const plugins = index(dir);
     const runtime = verifierOnGlobal();
-    const verify = options.verify || (runtime?.enforcing ? true : false);
-    if (verify) {
-        const verifier = runtime ?? peer();
-        const rules = typeof verify === 'object' ? verify : undefined;
-        const refused: Refused[] = [];
-        for (const plugin of plugins.values()) {
-            if (plugin.link !== undefined) {
-                refused.push({
-                    name: plugin.installed, package: plugin.name, file: plugin.file,
-                    reasons: [`linked for development, from ${plugin.link}: a folder has no signature to check — run the app with plain node to load it`],
-                });
-                continue;
-            }
-            try {
-                plugin.root = verifier.mountPlugin(plugin.file, { scope, rules }).root;
-            } catch (err) {
-                const reasons = (err as { reasons?: unknown }).reasons;
-                refused.push({
-                    name: plugin.installed, package: plugin.name, file: plugin.file,
-                    reasons: Array.isArray(reasons) ? reasons.map(String) : [message(err)],
-                });
-            }
+    const asked = verify || (runtime?.enforcing ? true : false);
+    const rules = typeof verify === 'object' ? withoutPins(verify) : undefined;
+    const pins: Scope['pins'] = { ...declared };
+    const refused: Refused[] = [];
+    const refuse = (plugin: Plugin | undefined, name: string, reason: string) => refused.push({
+        name: plugin?.installed ?? name, package: name, file: plugin?.file ?? PATH.join(dir, pluginFile(name)), reasons: [reason],
+    });
+    for (const [name, hash] of Object.entries(typeof verify === 'object' ? verify.pins ?? {} : {})) {
+        const other = pins[name];
+        if (other && other.hash.toLowerCase() !== hash.toLowerCase()) {
+            refuse(plugins.get(name), name, `pinned to ${hash} by this app's code, and to ${other.hash} by ${other.by}: both cannot hold`);
         }
-        if (refused.length) {
-            const lines = refused.flatMap(({ name, package: pkg, file, reasons }) => [
-                `  ${name}${pkg === name ? '' : `, ${pkg},`} (${file}):`, ...reasons.map((reason) => `    ${reason}`),
-            ]);
-            throw Object.assign(new Error(
-                `${refused.length} of ${plugins.size} plugin${plugins.size === 1 ? '' : 's'} for '${scope}' ${refused.length === 1 ? 'was' : 'were'} refused, so none are loaded:\n${lines.join('\n')}`),
-            { code: 'ERR_BUNDLE_UNTRUSTED', refused });
-        }
+        pins[name] = { hash, by: 'this app' };
+    }
+    for (const [name, { by }] of Object.entries(pins)) {
+        if (!plugins.has(name)) refuse(undefined, name, `pinned by ${by}, and not installed in ${dir} — 'bundle update' the app that declares it`);
     }
 
-    scopes.push({ scope, dir, plugins, options: key });
+    const mounts: Prepared['mounts'] = [];
+    for (const plugin of plugins.values()) {
+        const pin = pins[plugin.name];
+        if (plugin.link !== undefined) {
+            if (asked || pin) {
+                refuse(plugin, plugin.name, pin
+                    ? `linked for development, from ${plugin.link}, and pinned by ${pin.by}: a folder is not the bytes a pin names`
+                    : `linked for development, from ${plugin.link}: a folder has no signature to check — run the app with plain node to load it`);
+            }
+            continue;
+        }
+        if (refused.some((each) => each.package === plugin.name)) continue;
+        if (pin) {
+            mounts.push({
+                plugin,
+                mount: (at) => (runtime?.enforcing
+                    ? runtime.mountPlugin(plugin.file, { scope, rules, at, pin })
+                    : pinned().mountPinned(plugin.file, pin.hash, { by: pin.by, at })).root,
+            });
+        } else if (asked) {
+            mounts.push({ plugin, mount: (at) => (runtime ?? peer()).mountPlugin(plugin.file, { scope, rules, at }).root });
+        }
+    }
+    return { entry: { scope, dir, plugins, options: JSON.stringify(verify ?? false), verify, pins }, mounts, refused };
+}
+
+/** One mount to make: a plugin, how, and where another thread has it. */
+interface Step {
+    plugin: Plugin;
+    mount: (at?: string) => string;
+    at?: string | undefined;
+}
+
+// Make the mounts, in the order given; then throw everything refused — for
+// the first scope that has any — or put the scopes in use.
+function settle(prepared: Prepared[], steps: Step[]): void {
+    const failed = new Map(prepared.map((each) => [each.entry, [...each.refused]]));
+    for (const { plugin, mount, at } of steps) {
+        try {
+            plugin.root = mount(at);
+        } catch (err) {
+            const reasons = (err as { reasons?: unknown }).reasons;
+            const entry = prepared.find((each) => each.entry.plugins.get(plugin.name) === plugin)!.entry;
+            failed.get(entry)!.push({ name: plugin.installed, package: plugin.name, file: plugin.file, reasons: Array.isArray(reasons) ? reasons.map(String) : [message(err)] });
+        }
+    }
+    for (const [entry, refused] of failed) {
+        if (!refused.length) continue;
+        const total = entry.plugins.size + refused.filter((each) => !entry.plugins.has(each.package)).length;
+        const lines = refused.flatMap(({ name, package: pkg, file, reasons }) => [
+            `  ${name}${pkg === name ? '' : `, ${pkg},`} (${file}):`, ...reasons.map((reason) => `    ${reason}`),
+        ]);
+        throw Object.assign(new Error(
+            `${refused.length} of ${total} plugin${total === 1 ? '' : 's'} for '${entry.scope}' ${refused.length === 1 ? 'was' : 'were'} refused, so none are loaded:\n${lines.join('\n')}`),
+        { code: 'ERR_BUNDLE_UNTRUSTED', refused });
+    }
+    for (const { entry } of prepared) scopes.push(entry);
     hook();
 }
 
-/**
- * The plugins installed in a scope, by the name each was installed as, with
- * what its `package.json` says about it — so a host can tell its user what is
- * installed, and import each by `package.name`:
- *
- *   for (const [name, pkg] of list('bled')) console.log(`${name}: ${pkg.description}`);
- *   for (const [, pkg] of list('bled')) await import(pkg.name);
- *
- * The name is what `bundle install --for` was given, as typed — a URL, a
- * domain or a listing — and only identifies it: two plugins may share one,
- * never a package name. Sorted by name, then package. Nothing is verified or
- * run to answer it.
- */
-export function list(scope: string): [name: string, pkg: PluginPackage][] {
-    const used = scopes.find((each) => each.scope === scope);
-    return [...(used?.plugins ?? index(scopeDir(scope))).values()]
-        .map((plugin): [string, PluginPackage] => [plugin.installed, describe(plugin.manifest)])
-        .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+function withoutPins(rules: PluginRules): PluginRules {
+    const { pins: _, ...rest } = rules;
+    return rest;
 }
 
-function describe(manifest: PackageJson): PluginPackage {
-    const described: Record<string, unknown> = {};
-    for (const field of PACKAGE_FIELDS) {
-        if (manifest[field] !== undefined) described[field] = structuredClone(manifest[field]);
+/**
+ * The plugins installed in a scope, sorted by the name each was installed as,
+ * then by package — so a host can tell its user what is installed, read what
+ * its plugins say about themselves, and import each by `package`:
+ *
+ *   for (const plugin of list('bled')) console.log(`${plugin.name}: ${plugin.manifest.description}`);
+ *   for (const plugin of list('bled')) await import(plugin.package);
+ *
+ * Nothing is verified, mounted or run to answer it.
+ */
+export function list(scope: string): PluginInfo[] {
+    const used = scopes.find((each) => each.scope === scope);
+    return [...(used?.plugins ?? index(scopeDir(scope))).values()]
+        .map((plugin): PluginInfo => ({
+            name: plugin.installed, package: plugin.name, file: plugin.file,
+            ...(plugin.link !== undefined ? { link: plugin.link } : {}),
+            manifest: structuredClone(plugin.manifest),
+        }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.package < b.package ? -1 : a.package > b.package ? 1 : 0));
+}
+
+/**
+ * Run a plugin as the main program: what `ordner-suite run auth` does with
+ * `runPlugin('@ordner.fyi/suite', '@ordner.fyi/auth', argv)`.
+ *
+ * The scope is used first, if it is not yet — so a host's parts are checked
+ * against its pins, as `use()` always does. Then the plugin is mounted,
+ * `process.argv` is made what `--vfs-load` would make it — the plugin's
+ * archive at `argv[1]`, then `argv` — and its entry point is loaded: `main`,
+ * else the `.` of its `exports`, else `index.js`; or, with `bin`, that entry
+ * of its package.json's `bin`. A CommonJS entry is required, an ES module
+ * imported, as node decides between them. What it does from there is its own
+ * business, as it would be run by itself; this returns once it has loaded.
+ *
+ * Inside it, `import.meta.url` (and `__filename`) is the entry's place in the
+ * plugin's mount, `file:///dev/null/vfs/<n>/…` — not the archive's path, which
+ * is `process.argv[1]` — so `new URL('./x', import.meta.url)` finds the
+ * plugin's own files, and a worker started from there finds them too.
+ */
+export async function runPlugin(scope: string, pkg: string, argv: string[] = [], { bin }: { bin?: string | undefined } = {}): Promise<void> {
+    if (!scopes.some((each) => each.scope === scope)) {
+        const prepared = prepare(scope, scopeDir(scope), undefined, declaredPins(scope));
+        settle([prepared], prepared.mounts);
     }
-    return described as unknown as PluginPackage;
+    const plugin = scopes.find((each) => each.scope === scope)!.plugins.get(pkg);
+    if (!plugin) throw Object.assign(new Error(`no plugin '${pkg}' is installed for ${scope} (${scopeDir(scope)})`), { code: 'ERR_MODULE_NOT_FOUND' });
+    plugin.root ??= plugin.link !== undefined ? FS.realpathSync(plugin.link) : mountPlain(plugin);
+    plugin.host ??= caller()?.url;
+    const entry = entryOf(plugin, bin);
+    process.argv = [process.argv[0]!, plugin.file, ...argv];
+    if (entry.endsWith('.mjs') || (!entry.endsWith('.cjs') && plugin.manifest.type === 'module')) await import(pathToFileURL(entry).href);
+    else createRequire(PATH.join(plugin.root, 'package.json'))(entry);
+}
+
+function entryOf(plugin: Plugin, bin: string | undefined): string {
+    const { manifest } = plugin;
+    if (bin !== undefined) {
+        const unscoped = plugin.name.slice(plugin.name.lastIndexOf('/') + 1);
+        const path = typeof manifest.bin === 'string' ? (bin === unscoped ? manifest.bin : undefined)
+            : manifest.bin && typeof manifest.bin === 'object' ? (manifest.bin as Record<string, unknown>)[bin] : undefined;
+        if (typeof path !== 'string') throw new Error(`the plugin ${plugin.name} has no bin '${bin}' (${plugin.file})`);
+        return probe(plugin.root!, path, plugin.name);
+    }
+    if (typeof manifest.main === 'string') return probe(plugin.root!, manifest.main, plugin.name);
+    if (manifest.exports !== undefined && manifest.exports !== null) return exported(plugin, '.', ['node', 'import']);
+    return probe(plugin.root!, 'index.js', plugin.name);
+}
+
+// ------------------------------------------------------------------ the host ---
+
+// The pins the host declares: the parts in the package.json of the package
+// that called `use()` (or `runPlugin()`), when that package is the scope —
+// the host using its own scope. Read from where the host is running from,
+// its own archive, so the pins are what vouched for the host vouches for.
+function declaredPins(scope: string): Scope['pins'] {
+    const found = caller();
+    if (!found?.manifest || found.manifest.name !== scope) return {};
+    const parts = readParts(found.manifest, found.file);
+    if (!parts) return {};
+    const by = `${scope}'s parts (${found.file})`;
+    return Object.fromEntries(Object.entries(pinsOf(parts)).map(([name, hash]) => [name, { hash, by }]));
+}
+
+// The first module on the stack outside this one, and the package.json
+// nearest to it.
+function caller(): { url: string; file: string; manifest?: PackageJson | undefined } | undefined {
+    const own = new Set([import.meta.url, import.meta.filename]);
+    for (const site of UTIL.getCallSites(16)) {
+        const name = site.scriptName;
+        if (!name || own.has(name) || name.startsWith('node:') || name.startsWith('data:')) continue;
+        const path = name.startsWith('file:') ? fileURLToPath(name) : name;
+        if (!PATH.isAbsolute(path)) continue;
+        const url = pathToFileURL(path).href;
+        for (let dir = PATH.dirname(path); ; dir = PATH.dirname(dir)) {
+            const file = PATH.join(dir, 'package.json');
+            try {
+                return { url, file, manifest: JSON.parse(FS.readFileSync(file, 'utf-8')) as PackageJson };
+            } catch (err) {
+                if ((err as { code?: string }).code !== 'ENOENT' && (err as { code?: string }).code !== 'ENOTDIR') return { url, file };
+            }
+            if (PATH.dirname(dir) === dir) return { url, file };
+        }
+    }
+    return undefined;
+}
+
+// ------------------------------------------------------------------ workers ---
+
+/**
+ * `Worker` from `node:worker_threads`, starting a thread that has this
+ * thread's plugins: every scope `use()`d here is used there with the same
+ * options, and every plugin mounted here is mounted there at the same place —
+ * so a URL into a plugin means the same file in both threads, and a pinned or
+ * verified plugin is checked there again before anything loads. Then the
+ * worker's script runs, as it would have.
+ *
+ * Plugins get this one when they import `worker_threads`, so their own
+ * `new Worker(new URL('./worker.js', import.meta.url))` works with nothing
+ * to change. A host that wants its workers to have its plugins imports it
+ * from here. A thread that has used no scope starts an ordinary worker, and
+ * so does `{ eval: true }`, which node runs without the module loader.
+ */
+export class Worker extends THREADS.Worker {
+    constructor(filename: string | URL, options?: THREADS.WorkerOptions) {
+        super(...carried(filename, options));
+    }
+}
+
+/** What a worker started through `Worker` is set up with: this thread's scopes and mounts. */
+interface ThreadRecord {
+    /** The worker's own script. */
+    target: string;
+    scopes: {
+        scope: string;
+        dir: string;
+        verify: boolean | PluginRules | undefined;
+        pins: Scope['pins'];
+        mounts: { name: string; root: string; host?: string | undefined }[];
+    }[];
+}
+
+function carried(filename: string | URL, options: THREADS.WorkerOptions | undefined): [string | URL, THREADS.WorkerOptions | undefined] {
+    if (!scopes.length || options?.eval) return [filename, options];
+    const target = filename instanceof URL ? filename : pathToFileURL(PATH.resolve(filename));
+    if (target.protocol !== 'file:') return [filename, options];
+    const record: ThreadRecord = {
+        target: target.href,
+        scopes: scopes.map(({ scope, dir, verify, pins, plugins }) => ({
+            scope, dir, verify, pins,
+            mounts: [...plugins.values()].flatMap((plugin) => (plugin.root !== undefined && plugin.link === undefined
+                ? [{ name: plugin.name, root: plugin.root, host: plugin.host }] : [])),
+        })),
+    };
+    const code = `import { enterWorker } from ${JSON.stringify(import.meta.url)};\nawait enterWorker(${JSON.stringify(record)});\n`;
+    return [new URL(`data:text/javascript,${encodeURIComponent(code)}`), options];
+}
+
+/**
+ * What a worker started through `Worker` runs first: its parent's scopes, its
+ * parent's mounts at the same places — in the order they were made, the only
+ * order node can give them — and then the worker's own script. Not for hosts
+ * to call.
+ */
+export async function enterWorker(record: ThreadRecord): Promise<void> {
+    const prepared = record.scopes.map((each) => prepare(each.scope, each.dir, each.verify, each.pins));
+    const steps: Step[] = [];
+    for (const [i, done] of prepared.entries()) {
+        const checked = new Map(done.mounts.map((step) => [step.plugin, step]));
+        for (const { name, root, host } of record.scopes[i]!.mounts) {
+            const plugin = done.entry.plugins.get(name);
+            if (!plugin) continue;
+            plugin.host = host;
+            steps.push({ plugin, mount: checked.get(plugin)?.mount ?? ((at) => mountPlain(plugin, at)), at: root });
+            checked.delete(plugin);
+        }
+        // To be checked, and not mounted in the parent: checked here too, last.
+        steps.push(...checked.values());
+    }
+    const order = (step: Step) => (step.at === undefined ? Infinity : mountNumber(step.at) ?? Infinity);
+    settle(prepared, steps.sort((a, b) => order(a) - order(b)));
+    await import(record.target);
 }
 
 // ------------------------------------------------------------------ indexing ---
@@ -319,17 +564,35 @@ function readManifest(file: string): PackageJson {
 // ----------------------------------------------------------------- mounting ---
 
 interface VfsModule {
-    create(provider: unknown, options: { emitExperimentalWarning: boolean }): { mount(): string };
+    create(...args: unknown[]): { mount(): string; unmount(): void };
     ZipProvider: new (archive: unknown) => unknown;
 }
 
 // A plugin nobody asked to verify, mounted as it is: what `bundle install`
 // checked is what is there, and `bundle installed` checks that it still is.
-function mountPlain(plugin: Plugin): string {
+function mountPlain(plugin: Plugin, at?: string): string {
     const VFS = process.getBuiltinModule('node:vfs') as unknown as VfsModule | undefined;
     if (!VFS) throw new Error(`plugins are mounted with node:vfs, which needs node to run with --experimental-vfs (loading ${plugin.name})`);
     const archive = (ZLIB as unknown as ZipModule).ZipFile.openSync(plugin.file);
-    return VFS.create(new VFS.ZipProvider(archive), { emitExperimentalWarning: false }).mount();
+    return mountAt(VFS, () => VFS.create(new VFS.ZipProvider(archive), { emitExperimentalWarning: false }), at);
+}
+
+// A pinned plugin, outside a verifying runtime: checked against its pin
+// alone, which needs much less than the verifier — loaded now and not before.
+function pinned(): typeof PinnedModule {
+    try {
+        return sibling<typeof PinnedModule>(import.meta.filename, 'plugin-pinned');
+    } catch (err) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === 'ERR_UNKNOWN_BUILTIN_MODULE' && /node:vfs/.test(message(err))) {
+            throw new Error('loading pinned plugins needs node:vfs, which needs node to run with --experimental-vfs', { cause: err });
+        }
+        if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
+            throw new Error("loading pinned plugins needs @pipobscure/bundle's plugin-pinned module, which this app's bundle does not carry: " +
+                'record the bundle from a run that loads its parts, so that it does', { cause: err });
+        }
+        throw err;
+    }
 }
 
 function verifierOnGlobal(): Verifier | undefined {
@@ -363,6 +626,13 @@ interface ResolveContext {
 }
 type NextResolve = (specifier: string, context?: ResolveContext) => { url: string };
 
+const THREADS_MODULE = new URL(`./plugin-threads${import.meta.filename.endsWith('.ts') ? '.ts' : '.js'}`, import.meta.url).href;
+let threadsThere: boolean | undefined;
+
+function threadsModule(): boolean {
+    return threadsThere ??= FS.existsSync(fileURLToPath(THREADS_MODULE));
+}
+
 function hook(): void {
     if (hooked) return;
     hooked = true;
@@ -375,6 +645,12 @@ function hook(): void {
 // host's API, as the same instance the host has), then in the scopes, in the
 // order they were used.
 function resolve(specifier: string, context: ResolveContext, nextResolve: NextResolve): { url: string; shortCircuit?: boolean } {
+    // A plugin's workers start with its plugins: see `Worker`. Only when the
+    // stand-in is there: a host bundle recorded from a run in which no plugin
+    // imported worker_threads does not carry it, and its plugins get node's.
+    if ((specifier === 'node:worker_threads' || specifier === 'worker_threads') && owning(context.parentURL) && threadsModule()) {
+        return { url: THREADS_MODULE, shortCircuit: true };
+    }
     if (!bare(specifier)) return nextResolve(specifier, context);
     try {
         return nextResolve(specifier, context);

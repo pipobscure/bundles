@@ -339,7 +339,7 @@ test('create --launcher uses the packaged prefix, the audit shows it, and sign k
     const made = collector();
     assert.equal(await main(['create', '--base', source, '--files', files, '--launcher', '--output', unsigned], made), 0, made.stderr.join('\n'));
     assert.match(made.stderr.join('\n'), /\* prefix .*shell-base \(\d+ bytes\)/);
-    assert.match(made.stderr.join('\n'), /\* hash: [0-9a-f]{64}/);
+    assert.match(made.stderr.join('\n'), /\* hash: sha256:[0-9a-f]{64}/, 'as a part is pinned by');
 
     // What is about to be reviewed includes the launcher, line by line.
     const audited = collector();
