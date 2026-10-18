@@ -81,7 +81,7 @@ test('what can be done to an archive something has open', async (t) => {
                 result = aside === 'ok' ? `aside ok, in ${attempt(() => FS.renameSync(incoming, target))}` : `aside ${aside}`;
             }
             const after = await readOf(h);
-            row[op] = `${result}; still reads: ${after === before ? 'yes' : after}`;
+            row[op] = `${result}; read ${JSON.stringify(before)} before, ${JSON.stringify(after)} after`;
             if (op === 'aside, then in' && result.startsWith('aside ok')) row['delete the old one, still open'] = attempt(() => FS.unlinkSync(`${target}.previous`));
             await h.close();
         }
