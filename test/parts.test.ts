@@ -4,8 +4,9 @@ import * as FS from 'node:fs';
 import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { install, update, uninstall, installed, records, partsOf, pathOf, installDir, appsDir, recordPath, desktopSetupWanted } from '../src/install.ts';
+import { install, update, uninstall, installed, records, partsOf, pathOf, installDir, appsDir, recordPath, desktopSetupWanted, commit } from '../src/install.ts';
 import { pinOf, checkIntegrity } from '../src/integrity.ts';
 import { verifyBundleSync } from '../src/api.ts';
 import { scopeDir, pluginsDir } from '../src/scopes.ts';
@@ -93,12 +94,14 @@ const v1 = await host(SCOPE, [
     { package: '@acme/mail', url: 'parts/mail.nzip', hash: pinOf(b1)! },
 ]);
 
+const running1 = await host('@acme/running', [{ package: '@acme/auth', url: 'auth.nzip', hash: pinOf(a1)! }], 'running one');
 const a2 = await part('@acme/auth', 'auth two');
 const c2 = await part('@acme/scan', 'scan two');
 const v2 = await host(SCOPE, [
     { package: '@acme/auth', url: 'auth.nzip', hash: pinOf(a2)! },
     { package: '@acme/scan', url: 'scan.nzip', hash: pinOf(c2)! },
 ], 'v2');
+const running2 = await host('@acme/running', [{ package: '@acme/auth', url: 'auth2.nzip', hash: pinOf(a2)! }], 'running two');
 
 test('a part is pinned by its whole-file hash: what attestations name, not the sha256 of the file', async () => {
     const file = await part('@acme/pinned', 'pinned');
@@ -338,4 +341,83 @@ test('BUNDLE_ROOT puts everything under one root, and --system is the machine\'s
         delete process.env['BUNDLE_ROOT'];
         for (const [name, value] of Object.entries(saved)) if (value !== undefined) process.env[name] = value;
     }
+});
+
+test('files are put in place whether or not something has them open, either way the platform allows', () => {
+    for (const aside of [false, true]) {
+        const dir = PATH.join(tmp, `commit-${aside}`);
+        FS.mkdirSync(dir, { recursive: true });
+        const [one, two, gone] = ['one.nzip', 'two.nzip', 'gone.nzip'].map((name) => PATH.join(dir, name)) as [string, string, string];
+        FS.writeFileSync(one, 'old one');
+        FS.writeFileSync(gone, 'to go');
+        const held = FS.openSync(one, 'r');
+        try {
+            commit([{ target: one, bytes: Buffer.from('new one'), mode: 0o644 }, { target: two, bytes: Buffer.from('new two'), mode: 0o644 }], [gone], { aside });
+            const read = Buffer.alloc(7);
+            FS.readSync(held, read, 0, 7, 0);
+            assert.equal(read.toString(), 'old one', 'whoever had it open still reads what they opened');
+        } finally {
+            FS.closeSync(held);
+        }
+        assert.deepEqual([FS.readFileSync(one, 'utf-8'), FS.readFileSync(two, 'utf-8'), FS.existsSync(gone)], ['new one', 'new two', false]);
+        // Left behind, as one still open would be on Windows: the next commit takes it away.
+        FS.writeFileSync(`${one}.previous-1`, 'stale');
+        commit([{ target: one, bytes: Buffer.from('newer'), mode: 0o644 }], [], { aside });
+        assert.deepEqual(FS.readdirSync(dir).sort(), ['one.nzip', 'two.nzip'], `nothing left over (aside: ${aside})`);
+    }
+});
+
+test('a rename that fails part way puts back everything before it, either way', () => {
+    for (const aside of [false, true]) {
+        for (let failing = 1; failing <= (aside ? 5 : 3); failing++) {
+            const dir = PATH.join(tmp, `rollback-${aside}-${failing}`);
+            FS.mkdirSync(dir, { recursive: true });
+            const [one, two, fresh, gone] = ['one.nzip', 'two.nzip', 'fresh.nzip', 'gone.nzip'].map((name) => PATH.join(dir, name)) as [string, string, string, string];
+            FS.writeFileSync(one, 'old one');
+            FS.writeFileSync(two, 'old two');
+            FS.writeFileSync(gone, 'to go');
+            let calls = 0;
+            const rename = (from: string, to: string) => {
+                if (++calls === failing) throw Object.assign(new Error('refused'), { code: 'EPERM' });
+                FS.renameSync(from, to);
+            };
+            assert.throws(() => commit([
+                { target: one, bytes: Buffer.from('new one'), mode: 0o644 },
+                { target: fresh, bytes: Buffer.from('fresh'), mode: 0o644 },
+                { target: two, bytes: Buffer.from('new two'), mode: 0o644 },
+            ], [gone], { aside, rename }), { code: 'EPERM' });
+            assert.deepEqual(Object.fromEntries(FS.readdirSync(dir).sort().map((name) => [name, FS.readFileSync(PATH.join(dir, name), 'utf-8')])),
+                { 'gone.nzip': 'to go', 'one.nzip': 'old one', 'two.nzip': 'old two' }, `as it was, after rename ${failing} failed (aside: ${aside})`);
+        }
+    }
+});
+
+test('an app and its parts update while the app runs and a part is loaded', async () => {
+    serve('/running/running.nzip', running1, '"r1"');
+    serve('/running/auth.nzip', a1);
+    const record = await install(`${BASE}/running/running.nzip`, options);
+    const archive = pathOf(record);
+    const loaded = PATH.join(scopeDir('@acme/running'), '@acme', 'auth.nzip');
+
+    // The app, running from its archive, as a launcher runs it; and its part, open.
+    const app = spawn(process.execPath, ['--no-warnings', '--experimental-vfs', '--vfs-load', archive, '-e',
+        "setInterval(() => {}, 1000); console.log('running');"], { stdio: ['ignore', 'pipe', 'inherit'] });
+    await new Promise<void>((resolve) => app.stdout.once('data', () => resolve()));
+    const part = (await import('node:zlib')).ZipFile.openSync(loaded);
+    try {
+        serve('/running/running.nzip', running2, '"r2"');
+        serve('/running/auth2.nzip', a2);
+        const results = await update(record.name, options);
+        assert.deepEqual(results.map(({ state, reason }) => [state, reason]), [['updated', undefined], ['updated', undefined]]);
+        assert.deepEqual(FS.readFileSync(archive), FS.readFileSync(running2), 'the app\'s archive is the new one');
+        assert.deepEqual(FS.readFileSync(loaded), FS.readFileSync(a2), 'and so is its part');
+        assert.match(part.getSync('index.js').contentSync().toString(), /auth one/, 'what was loaded goes on reading the old one');
+        assert.equal(app.exitCode, null, 'and the app goes on running');
+    } finally {
+        part.closeSync();
+        app.kill();
+        await new Promise((resolve) => app.once('exit', resolve));
+    }
+    uninstall(record.name);
+    assert.deepEqual(FS.readdirSync(PATH.dirname(archive)).filter((name) => name.includes('.previous-')), [], 'the old archive, once closed, is gone too');
 });

@@ -405,9 +405,17 @@ one signed app and the archives it is made of, beside it:
   and only by the same means, so a release is a directory a CI publishes whole, and an app from
   a server cannot have this machine read its own files.
 - **All of them, or none.** An install or update fetches and checks every new part before
-  anything moves, then renames the app and its parts into place together, keeping a second
-  name for each file replaced until all are in place. A failure before then changes nothing,
-  and one during it puts back what was renamed. So no run leaves a mix of old and new parts.
+  anything moves, then renames the app and its parts into place together, keeping each old
+  file until all are in place. A failure before then changes nothing, and one during it puts
+  back what was renamed. So no run leaves a mix of old and new parts.
+- **While it runs, on every platform.** Elsewhere a new file is renamed over the old one, in
+  one step. Windows will not rename over a file a process has open, such as a running app's
+  archive or a part a service has loaded, but it will move one aside, and delete it, while it
+  is open, and whoever has it open goes on reading it. So there the old file is moved aside
+  for the moment it takes to rename the new one in. A running app keeps the version it started
+  with until it is restarted; an old file that cannot be deleted yet goes on the next update.
+  (Tried on the Windows CI runner with every way bundle holds an archive open: a plain open,
+  `ZipFile`, a mount, and an app run with `--vfs-load`.)
 - **A part is the app's, not a plugin someone else wrote.** It is installed as a plugin in the
   app's scope, so the app loads it by package name like any other, but only with the app: it is
   updated, checked and removed with it, never by itself. The app is reviewed under the policy's

@@ -97,9 +97,11 @@ the app was: an app from a server cannot name a file on this machine, and an app
 ### All of them, or none
 
 Every part that is new or changed is fetched and checked first, then the app and its parts are
-renamed into place, each over its old file with a second name kept for the old one until all
-are in. A failure before that changes nothing, the app included; one during it puts back what
-was renamed. Records are written once, after. So no install or update leaves a mix of old and
+renamed into place, each old file kept until all are in. A failure before that changes
+nothing, the app included; one during it puts back what was renamed. On Windows, which will
+not rename over a file a process has open but will move one aside, each old file is moved
+aside first, so an app and its parts update while the app runs; each running service keeps
+the version it loaded until it is restarted. Records are written once, after. So no install or update leaves a mix of old and
 new parts, short of the machine stopping between two renames, which a set of files in several
 directories cannot be guarded against; the next update puts that right.
 

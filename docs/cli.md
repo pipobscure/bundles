@@ -1215,7 +1215,8 @@ removed. Each that changed is reported under the app, with its hash. They are al
 checked first, and put in place with the app as one step, so if one cannot be had, or is not
 what the app pins, nothing changes, the app included. A part whose file is not what was
 installed is fetched again, even when the app itself is unchanged. Naming a part updates its
-app. From code, `update()` returns a result for each part (`unchanged`, `updated` with the hash
+app. An app updates while it runs, on Windows too: what is running keeps the version it
+started with until it is restarted. From code, `update()` returns a result for each part (`unchanged`, `updated` with the hash
 before and after, `added`, `removed`), so a program can tell which of its services to restart.
 
 | Option | |

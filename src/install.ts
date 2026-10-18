@@ -1513,20 +1513,40 @@ async function judgeArchive(bytes: Buffer, { name, scope, url, options, previous
 }
 
 /** One file to put in place, and how. */
-interface Placement {
+export interface Placement {
     target: string;
     bytes: Buffer;
     mode: number;
 }
 
-// Move everything into place as one step: every file written beside its
-// target first, then each renamed over it, and only then the old ones and
-// those to go removed. A failure while writing changes nothing; one while
-// renaming puts back what had been renamed. So no run ends with some of the
-// new files and some of the old — short of the machine stopping between two
-// renames, which a set of files spread over several directories cannot be
-// guarded against.
-function commit(placements: Placement[], removals: string[] = []): void {
+/**
+ * Move everything into place as one step: every file written beside its
+ * target first, then each renamed into place, and only then the old ones and
+ * those to go removed. A failure while writing changes nothing; one while
+ * renaming puts back what had been renamed. So no run ends with some of the
+ * new files and some of the old — short of the machine stopping between two
+ * renames, which a set of files spread over several directories cannot be
+ * guarded against.
+ *
+ * How a file that is there is replaced depends on the platform. Elsewhere the
+ * new one is renamed over it, which replaces it in one step, and the old one
+ * is kept as a second name for the same file, to put back. Windows will not
+ * rename over a file a process has open — a running app's own archive, a part
+ * a service has loaded — but will move one aside, and delete it, while it is
+ * open; whoever has it open goes on reading it. So there (`aside`) the old
+ * file is renamed out of the way first, for the moment it takes to rename the
+ * new one in, and a running program keeps the version it started with until
+ * it is restarted. An old file that cannot be deleted yet is left, and the
+ * next commit to the same place takes it away.
+ *
+ * Exported because this is the part of updating a running app on Windows that
+ * can be tested anywhere: `aside` chooses the strategy, and `rename` can fail
+ * on purpose.
+ */
+export function commit(placements: Placement[], removals: string[] = [], { aside = process.platform === 'win32', rename = FS.renameSync }: {
+    aside?: boolean | undefined;
+    rename?: ((from: string, to: string) => void) | undefined;
+} = {}): void {
     const incoming = (target: string) => `${target}.incoming-${process.pid}`;
     const previous = (target: string) => `${target}.previous-${process.pid}`;
     const written: string[] = [];
@@ -1544,30 +1564,69 @@ function commit(placements: Placement[], removals: string[] = []): void {
         throw err;
     }
 
-    // What was there is kept, as a second name for the same file, until
-    // everything is in place: renaming over a file replaces it in one step,
-    // and the second name is what puts it back.
-    const done: { target: string; kept: boolean; removal: boolean }[] = [];
+    // Each step says what has happened to its target so far, so that a
+    // failure part way puts back exactly that.
+    const done: { target: string; kept?: boolean; moved?: boolean; placed?: boolean }[] = [];
     try {
         for (const { target } of placements) {
-            const kept = keep(target, previous(target));
-            FS.renameSync(incoming(target), target);
-            done.push({ target, kept, removal: false });
+            const step: (typeof done)[number] = { target };
+            done.push(step);
+            if (exists(target)) {
+                if (aside) {
+                    rename(target, previous(target));
+                    step.moved = true;
+                } else {
+                    step.kept = keep(target, previous(target));
+                }
+            }
+            rename(incoming(target), target);
+            step.placed = true;
         }
         for (const target of removals) {
             if (!exists(target)) continue;
-            FS.renameSync(target, previous(target));
-            done.push({ target, kept: true, removal: true });
+            const step: (typeof done)[number] = { target };
+            done.push(step);
+            rename(target, previous(target));
+            step.moved = true;
         }
     } catch (err) {
-        for (const { target, kept, removal } of done.reverse()) {
-            if (kept) FS.renameSync(previous(target), target);
-            else if (!removal) FS.rmSync(target, { force: true });
+        for (const { target, kept, moved, placed } of done.reverse()) {
+            if (placed) FS.rmSync(target, { force: true });
+            // A second name for a file still in place is the same file:
+            // renaming one onto the other does nothing, so it is dropped.
+            if (moved || (kept && placed)) FS.renameSync(previous(target), target);
+            else if (kept) FS.rmSync(previous(target), { force: true });
         }
         for (const path of written) FS.rmSync(path, { force: true });
         throw err;
     }
-    for (const { target, kept } of done) if (kept) FS.rmSync(previous(target), { force: true });
+    for (const { target, kept, moved } of done) {
+        if (kept || moved) forget(previous(target));
+        sweep(target);
+    }
+}
+
+// Delete a file that may still be open; on Windows one opened without leave
+// to delete it cannot be yet, and `sweep()` takes it away later.
+function forget(path: string): void {
+    try {
+        FS.rmSync(path, { force: true });
+    } catch {
+        // later
+    }
+}
+
+// What earlier commits to `target` could not delete yet: their old files,
+// since closed.
+function sweep(target: string): void {
+    const stale = `${PATH.basename(target)}.previous-`;
+    let entries: string[];
+    try {
+        entries = FS.readdirSync(PATH.dirname(target));
+    } catch {
+        return;
+    }
+    for (const entry of entries) if (entry.startsWith(stale)) forget(PATH.join(PATH.dirname(target), entry));
 }
 
 // Give `target`, if it is there, a second name; whether it was.

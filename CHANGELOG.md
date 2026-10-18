@@ -3,6 +3,15 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **Updating a running app works on Windows**, its parts included. Windows will not rename
+  over a file a process has open, so an update of a running app, or of a part a service had
+  loaded, failed with `EPERM` and was rolled back. Now the old file is moved aside first, as
+  Windows allows while it is open, and the new one renamed in; what is running keeps the
+  version it started with until it is restarted. Elsewhere nothing changes. A rename that
+  fails part way also no longer leaves a stray `.previous` file behind.
+
 ## 0.1.6
 
 - **`bundle node`** says which node runs bundles here, and **`bundle node install`** gets one
