@@ -37,7 +37,10 @@ const holders: Record<string, (file: string) => Promise<Hold>> = {
     },
     'an app run with --vfs-load': async (file) => {
         const child = spawn(process.execPath, ['--no-warnings', '--experimental-vfs', '--vfs-load', file, '-e',
-            "process.stdin.on('data', () => { try { process.stdout.write(require('fs').readFileSync(require('path').join(process.argv[1] ? '' : '', '/dev/null/vfs/0/greet.js'), 'utf-8').slice(0, 12) + '\\n'); } catch (e) { process.stdout.write('ERR ' + e.code + '\\n'); } }); console.log('ready');"],
+            // Where --vfs-load mounted the app: mount point 0, in whatever form this platform gives them.
+            "const v = require('node:vfs').create({ emitExperimentalWarning: false }); const probe = v.mount(); v.unmount();" +
+            "const root = probe.replace(/\\d+([\\\\/]*)$/, '0$1');" +
+            "process.stdin.on('data', () => { try { process.stdout.write(require('fs').readFileSync(require('path').join(root, 'greet.js'), 'utf-8').slice(0, 12) + '\\n'); } catch (e) { process.stdout.write('ERR ' + e.code + ' ' + root + '\\n'); } }); console.log('ready');"],
             { stdio: ['pipe', 'pipe', 'inherit'] });
         let buffered = '';
         const next = () => new Promise<string>((resolve) => {
