@@ -51,8 +51,10 @@ this phase gates the rest. It is mandatory in both situations: pre-signing, it i
 proves the archive on disk is the one the build just wrote and that its member digests
 are internally consistent.
 
-Find the CLI. Installed, it is `bundle`; without an install, `npx @pipobscure/bundle`
-works; in a checkout of the tool itself it is `node dist/main.js` (after `npm run build`).
+Find the CLI. Installed, it is `bundle`. Without an install, download `bundle.nzip` from
+https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip and run it as
+`node --experimental-vfs --vfs-load ./bundle.nzip <command>`. In a checkout of the tool
+itself it is `node dist/main.js` (after `npm run build`).
 Then:
 
 ```sh

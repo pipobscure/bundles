@@ -316,6 +316,12 @@ jobs:
           ./bundle.nzip --help
           \`\`\`
 
+          To install it, which puts \`bundle\` on your PATH and makes \`nzip:\` links open it:
+
+          \`\`\`sh
+          node --experimental-vfs --vfs-load ./bundle.nzip install
+          \`\`\`
+
           It was signed through sigstore by this repository's publish workflow. Running it does not check it; to check it with a copy you already trust:
 
           \`\`\`sh

@@ -120,7 +120,7 @@ test('on macOS: an app in ~/Applications, its plist escaped, its script quoted',
     assert.match(plist, /<key>CFBundleIconFile<\/key><string>AppIcon\.icns<\/string>/);
     const script = plan.files.find((file) => file.path.endsWith('/MacOS/davsync'))!;
     assert.equal(script.mode, 0o755);
-    assert.match(script.content.toString(), /^exec '\/r\/it'\\''s\/davsync\.nzip' '--window' 'two words' "\$@"$/m);
+    assert.match(script.content.toString(), /^PATH="\/opt\/homebrew\/bin:\/usr\/local\/bin:\$PATH" exec '\/r\/it'\\''s\/davsync\.nzip' '--window' 'two words' "\$@"$/m);
     assert.ok(plan.files.some((file) => file.path.endsWith('/Resources/AppIcon.icns')));
     assert.deepEqual(plan.remove, [plan.entry]);
     assert.match(plan.commands[0]![0]!, /lsregister$/);

@@ -21,6 +21,7 @@ import type { NetworkOptions } from './atproto.ts';
 import { FLOOR, windowsNode, type FoundNode } from './runtime.ts';
 import { iconPath } from './files.ts';
 import * as ENTRY from './app-entry.ts';
+import * as LINKS from './links.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -1139,6 +1140,8 @@ export function uninstall(which?: string): Uninstalled {
     const record = all[name]!;
     remove(record);
     delete all[name];
+    // The links it opened have nothing to open them with now.
+    if (selfTrust(record.url).length) removeLinkHandler();
 
     const plugins: InstallRecord[] = [];
     let sharedWith: string[] = [];
@@ -1314,6 +1317,8 @@ async function place(bytes: Buffer, { name, dir, file, scope, pkg, label, source
 
     if ((options.associate ?? desktopSetupWanted()) && !plugin) {
         for (const line of ensureDesktopSetup(name)) log(`  ${line}`);
+        // bundle itself also opens nzip: links: one click on a page installs from then on.
+        if (selfTrust(url).length) for (const line of ensureLinkHandler(target)) log(`  ${line}`);
     }
     const menuDeclined = plugin ? undefined : options.menu === false || (options.menu === undefined && previous?.menuDeclined) || undefined;
     // An entry made before is kept up to date; a first one is made unless the desktop is not to be touched.
@@ -1494,7 +1499,7 @@ export function desktopSetupWanted(): boolean {
 }
 
 /** How the desktop setup runs a program — injected by tests, which have none of them. */
-export type Runner = (command: string, args: string[]) => { status: number | null; error?: Error | undefined; stderr?: string | undefined };
+export type Runner = (command: string, args: string[]) => { status: number | null; error?: Error | undefined; stdout?: string | undefined; stderr?: string | undefined };
 
 const run: Runner = (command, args) => spawnSync(command, args, { encoding: 'utf-8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -1748,6 +1753,165 @@ export function ensureMacFileType({ home = OS.homedir(), runner = run }: {
         return [`wrote ${app}, but could not register it with Launch Services (${failure(registered)})`];
     }
     return ['registered the .nzip file type and its icon, for this user'];
+}
+
+// ------------------------------------------------------ nzip: links ---
+
+/** Where the applet that receives `nzip:` links goes, on macOS. */
+export function macLinksApp(home = OS.homedir()): string {
+    return PATH.join(home, 'Library', 'Application Support', 'bundle', 'NodeBundleLinks.app');
+}
+
+/**
+ * Make `nzip:` links open `archive` — the installed bundle — for this user
+ * (see links.ts for what each platform registers, and why each passes the
+ * link on as it does). Idempotent like the rest of the desktop setup: what is
+ * right already is left, and a step that fails is a note.
+ */
+export function ensureLinkHandler(archive: string, { runner = run, home = OS.homedir(), dataHome = xdgDataHome(), force = false }: {
+    runner?: Runner | undefined;
+    home?: string | undefined;
+    dataHome?: string | undefined;
+    /** Do every step again, whatever looks right already: `bundle links` repairing. */
+    force?: boolean | undefined;
+} = {}): string[] {
+    try {
+        if (process.platform === 'win32') return windowsLinkHandler(archive);
+        if (process.platform === 'darwin') return macLinkHandler(archive, runner, home, force);
+        return freedesktopLinkHandler(archive, runner, dataHome, force);
+    } catch (err) {
+        return [`could not register nzip: links: ${message(err)}`];
+    }
+}
+
+function freedesktopLinkHandler(archive: string, runner: Runner, dataHome: string, force: boolean): string[] {
+    const applications = PATH.join(dataHome, 'applications');
+    const changed = writeAll({ [PATH.join(applications, 'bundle-nzip-links.desktop')]: LINKS.desktopHandler(archive) });
+    if (!changed && !force) return [];
+    const notes = ['nzip: links now open bundle, for this user'];
+    const set = runner('xdg-mime', ['default', 'bundle-nzip-links.desktop', `x-scheme-handler/${LINKS.SCHEME}`]);
+    if (set.error || set.status !== 0) notes.push(`a browser offers bundle for nzip: links once 'xdg-mime default bundle-nzip-links.desktop x-scheme-handler/nzip' has run (${failure(set)})`);
+    runner('update-desktop-database', ['-q', applications]);
+    return notes;
+}
+
+// The applet is compiled from the script by osacompile, then told what it
+// handles — with plutil, rather than by editing its plist as text — then
+// signed again ad hoc, since that edit broke the signature osacompile made,
+// and registered. All only when the script, which names the archive, changed.
+function macLinkHandler(archive: string, runner: Runner, home: string, force: boolean): string[] {
+    const app = macLinksApp(home);
+    const source = PATH.join(PATH.dirname(app), 'links.applescript');
+    if (!writeAll({ [source]: LINKS.appleScriptHandler(archive) }) && FS.existsSync(PATH.join(app, 'Contents', 'Info.plist')) && !force) return [];
+    FS.rmSync(app, { recursive: true, force: true });
+    const plist = PATH.join(app, 'Contents', 'Info.plist');
+    const steps: [string, string[]][] = [
+        ['osacompile', ['-o', app, source]],
+        ['plutil', ['-replace', 'CFBundleIdentifier', '-string', 'com.pipobscure.bundle.links', plist]],
+        ['plutil', ['-replace', 'CFBundleName', '-string', 'bundle', plist]],
+        ['plutil', ['-replace', 'LSUIElement', '-bool', 'YES', plist]],
+        ['plutil', ['-replace', 'CFBundleURLTypes', '-json', JSON.stringify([{ CFBundleURLName: 'nzip install link', CFBundleURLSchemes: [LINKS.SCHEME] }]), plist]],
+        ['codesign', ['--force', '--sign', '-', app]],
+        [LSREGISTER, ['-f', app]],
+    ];
+    for (const [command, args] of steps) {
+        const res = runner(command, args);
+        if (res.error || res.status !== 0) {
+            // Unfinished, it would be found and half work; gone, the next install tries again.
+            FS.rmSync(app, { recursive: true, force: true });
+            FS.rmSync(source, { force: true });
+            return [`could not register nzip: links: ${PATH.basename(command)} ${failure(res)}`];
+        }
+    }
+    return ['nzip: links now open bundle, for this user'];
+}
+
+function windowsLinkHandler(archive: string): string[] {
+    const node = windowsNode();
+    if (!node) return [`no node ${FLOOR} or newer, so nzip: links open nothing yet — 'bundle node install', then 'bundle install' again`];
+    const base = process.env['LOCALAPPDATA'] || PATH.join(OS.homedir(), 'AppData', 'Local');
+    const script = PATH.join(base, 'bundle', 'links.ps1');
+    const icon = PATH.join(base, 'bundle', 'icons', 'nzip.ico');
+    const changed = writeAll({ [script]: LINKS.windowsHandlerScript(node.path, archive) });
+    const key = `HKCU\Software\Classes\${LINKS.SCHEME}`;
+    const command = LINKS.windowsHandlerCommand(script);
+    let wrote = changed;
+    if (query(key, '') !== 'URL:nzip install link') { reg(['add', key, '/ve', '/d', 'URL:nzip install link', '/f']); wrote = true; }
+    if (query(key, 'URL Protocol') !== '') { reg(['add', key, '/v', 'URL Protocol', '/d', '', '/f']); wrote = true; }
+    if (query(`${key}\DefaultIcon`, '') !== `${icon},0`) { reg(['add', `${key}\DefaultIcon`, '/ve', '/d', `${icon},0`, '/f']); wrote = true; }
+    if (query(`${key}\shell\open\command`, '') !== command) { reg(['add', `${key}\shell\open\command`, '/ve', '/d', command, '/f']); wrote = true; }
+    return wrote ? ['nzip: links now open bundle, for this user'] : [];
+}
+
+/**
+ * What keeps `nzip:` links from opening `archive` here, if anything: what
+ * `bundle links` checks before it repairs. Empty when they open it. On macOS
+ * the applet is checked, not which app Launch Services prefers, which has no
+ * command to ask; registering again is how that is put right.
+ */
+export function linkHandlerProblems(archive: string, { runner = run, home = OS.homedir(), dataHome = xdgDataHome() }: {
+    runner?: Runner | undefined;
+    home?: string | undefined;
+    dataHome?: string | undefined;
+} = {}): string[] {
+    const problems: string[] = [];
+    if (!FS.existsSync(archive)) problems.push(`the bundle they would open, ${archive}, is not there`);
+    const differs = (path: string, expected: string) => {
+        try {
+            return FS.readFileSync(path, 'utf-8') !== expected;
+        } catch {
+            return true;
+        }
+    };
+    if (process.platform === 'win32') {
+        const base = process.env['LOCALAPPDATA'] || PATH.join(OS.homedir(), 'AppData', 'Local');
+        const script = PATH.join(base, 'bundle', 'links.ps1');
+        const node = windowsNode();
+        if (!node) problems.push(`there is no node ${FLOOR} or newer to open them with`);
+        else if (differs(script, LINKS.windowsHandlerScript(node.path, archive))) problems.push(`${script} is missing, or opens something else`);
+        if (query(`HKCU\\Software\\Classes\\${LINKS.SCHEME}\\shell\\open\\command`, '') !== LINKS.windowsHandlerCommand(script)) problems.push('the nzip URL protocol is not registered to run it');
+        return problems;
+    }
+    if (process.platform === 'darwin') {
+        const app = macLinksApp(home);
+        if (differs(PATH.join(PATH.dirname(app), 'links.applescript'), LINKS.appleScriptHandler(archive)) || !FS.existsSync(PATH.join(app, 'Contents', 'Info.plist'))) {
+            problems.push(`${app} is missing, or opens something else`);
+        }
+        return problems;
+    }
+    const entry = PATH.join(dataHome, 'applications', 'bundle-nzip-links.desktop');
+    if (differs(entry, LINKS.desktopHandler(archive))) problems.push(`${entry} is missing, or opens something else`);
+    const res = runner('xdg-mime', ['query', 'default', `x-scheme-handler/${LINKS.SCHEME}`]);
+    const handler = res.status === 0 ? res.stdout?.trim() ?? '' : '';
+    if (res.error) problems.push(`xdg-mime cannot say what opens them (${failure(res)})`);
+    else if (handler !== 'bundle-nzip-links.desktop') problems.push(handler ? `${handler} opens them instead` : 'nothing is set to open them');
+    return problems;
+}
+
+/** Take away what `ensureLinkHandler()` registered: nothing is left to open the links. */
+export function removeLinkHandler({ runner = run, home = OS.homedir(), dataHome = xdgDataHome() }: {
+    runner?: Runner | undefined;
+    home?: string | undefined;
+    dataHome?: string | undefined;
+} = {}): void {
+    try {
+        if (process.platform === 'win32') {
+            const base = process.env['LOCALAPPDATA'] || PATH.join(OS.homedir(), 'AppData', 'Local');
+            FS.rmSync(PATH.join(base, 'bundle', 'links.ps1'), { force: true });
+            if (query(`HKCU\Software\Classes\${LINKS.SCHEME}\shell\open\command`, '') !== null) reg(['delete', `HKCU\Software\Classes\${LINKS.SCHEME}`, '/f']);
+            return;
+        }
+        if (process.platform === 'darwin') {
+            const app = macLinksApp(home);
+            if (FS.existsSync(app)) runner(LSREGISTER, ['-u', app]);
+            FS.rmSync(app, { recursive: true, force: true });
+            FS.rmSync(PATH.join(PATH.dirname(app), 'links.applescript'), { force: true });
+            return;
+        }
+        FS.rmSync(PATH.join(dataHome, 'applications', 'bundle-nzip-links.desktop'), { force: true });
+    } catch {
+        // Uninstalling goes ahead; a handler left behind opens a bundle that is gone, and says so.
+    }
 }
 
 /** The ProgID this tool registers `.nzip` against. */

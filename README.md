@@ -47,15 +47,22 @@ Node runs the app straight out of the file.
 
 ## Install bundle
 
+Download **[`bundle.nzip`](https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip)**
+from the [latest release](https://github.com/pipobscure/bundles/releases/latest), and run its
+`install` with node 26.11.1 or later:
+
 ```sh
 curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
 node --experimental-vfs --vfs-load ./bundle.nzip install
 ```
 
+On Windows, `curl.exe -LO …` in PowerShell downloads it, and the second line is the same.
+
 The download runs once, to install the real thing: it fetches the latest release, checks its
 signature, and puts the signed `bundle` on your PATH, where `bundle update` keeps it current.
-It also offers to add Tab completion and a quiet daily re-check of your installs to your
-shell. Afterwards, `bundle --help`.
+It makes `nzip:` links open bundle, so one click on an install link installs an app. It also
+offers to add Tab completion and a quiet daily re-check of your installs to your shell.
+Afterwards, `bundle --help`.
 
 The `bundle` command is itself a bundle: `unzip -l` lists everything in it, and
 `bundle verify` tells you who signed it. Releases are signed by this repository's
@@ -68,6 +75,11 @@ bundle install https://example.com/tool.nzip     # from a URL
 bundle install tool.example.com                 # from a domain: its TXT record says where
 bundle install @alice.example/tool              # from a name someone published
 ```
+
+**Or one click.** Once bundle is installed, an `nzip:` link on a page, such as
+`<a href="nzip:alice.example/tool">Install tool</a>`, opens bundle. It shows the same review
+and asks the same questions in a window, so people who never open a terminal can install apps
+too. `bundle publish` prints the link for what you publish.
 
 Before anything is put on your PATH, `bundle install` shows you what vouches for it:
 

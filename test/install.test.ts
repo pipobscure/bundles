@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import * as CRYPTO from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBundle, signBundle } from '../src/api.ts';
-import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias, labelOf, appsDir, storedPath, commandsOf, pathOf } from '../src/install.ts';
+import { install, update, uninstall, installed as installedChecks, records, recordPath, fileName, installDir, resolveAlias, labelOf, appsDir, storedPath, commandsOf, pathOf, self } from '../src/install.ts';
 import { STATES } from '../src/manifest.ts';
 import { selectable, type Review } from '../src/review.ts';
 import { UNDECIDED, main } from '../src/cli.ts';
@@ -849,4 +849,40 @@ test('an app that asks for an applications entry gets one; updates keep it curre
     await update('shown', { ...options });
     assert.equal(FS.existsSync(entry), false);
     uninstall('shown');
+});
+
+test('install --window asks its question in the window, and takes an nzip: link for a listing', async () => {
+    process.env['BUNDLE_NO_BROWSER'] = '1';
+    served.bytes = first;
+    served.etag = '"window"';
+    const io = collector();
+    // Unanchored, so there is a question: answered in the window, by its page's API.
+    const running = main(['install', '--window', '--name', 'windowed.nzip', URL_], io);
+    let url: string | undefined;
+    while (!(url = io.stderr.map((line) => /decisions are in a window: (\S+)/.exec(line)?.[1]).find(Boolean))) await new Promise((r) => setTimeout(r, 20));
+    const res = await fetch(`${url}events`);
+    const reader = res.body!.getReader();
+    let text = '';
+    while (!text.includes('"type":"ask"')) text += Buffer.from((await reader.read()).value!).toString('utf-8');
+    const id = /"type":"ask","id":"(q\d+)"/.exec(text)![1];
+    const answered = await fetch(`${url}answer`, { method: 'POST', headers: { origin: new URL(url).origin, 'content-type': 'application/json' }, body: JSON.stringify({ id, picked: [0] }) });
+    assert.equal(answered.status, 204);
+    while (!text.includes('"type":"done"')) text += Buffer.from((await reader.read()).value!).toString('utf-8');
+    await reader.cancel();
+    assert.equal(await running, 0);
+    assert.match(text, /"type":"done","ok":true,"text":"[^"]+ is installed"/);
+    assert.ok(FS.existsSync(PATH.join(BIN, 'windowed.nzip')));
+    uninstall('windowed.nzip');
+
+    // A link is read as the listing it names — and a link that is not one is refused before anything is fetched.
+    const bad = collector();
+    assert.equal(await main(['install', 'nzip:https://evil.example/x.nzip'], bad), 70);
+    assert.match(bad.stderr.join('\n'), /nzip:<handle or did>\/<name>/);
+});
+
+test('bundle links needs bundle installed: the links open the installed copy', async () => {
+    for (const [name, record] of Object.entries(records())) if (record.url === self().url) uninstall(name);
+    const io = collector();
+    assert.equal(await main(['links', '--check'], io), 70);
+    assert.match(io.stderr.join('\n'), /bundle is not installed here — 'bundle install' installs it, and makes nzip: links open it/);
 });

@@ -50,6 +50,7 @@ commands:
   lexicon   show, check or publish the atproto lexicons for attestations and listings
   skill     install this package's bundle-auditing skill into a project
   shell     print what to load at shell start: Tab completion, and validate
+  links     make nzip: links open bundle, or say whether they do
 
   bundle <command> --help     what one command does, and its options
   bundle help <command>       the same
@@ -299,7 +300,7 @@ export const HELP: Record<string, string> = {
       --json            print the listings as JSON
 
   every listing in the index, synced first as for 'search'.`,
-    install: `install options:                    usage: install [options] [url | domain | @account/name | ./folder]
+    install: `install options:                    usage: install [options] [url | domain | @account/name | nzip:link | ./folder]
   -y, --yes             accept everything found, rather than asking
       --identity <san>  require this sigstore signing identity
       --issuer <url>    require this sigstore OIDC issuer
@@ -323,6 +324,8 @@ export const HELP: Record<string, string> = {
       --no-shell        installing itself, do not offer to set up the shell
       --no-menu         give the app no entry in the desktop's applications,
                         even though it asks for one — nor on its updates
+      --window          ask in a window rather than at the terminal: what an
+                        nzip: link opens
 
   everything that vouches for the archive is found and shown: its signature,
   and every attestation of it — from attesters this machine knows, and from
@@ -346,6 +349,10 @@ export const HELP: Record<string, string> = {
   'bundle install npm.npmjs.org' fetch https://npm.npmjs.org/app/npm.nzip
   and install it as 'npm'. The record only says where; the archive is
   verified exactly as a url's would be.
+
+  an nzip: link — nzip:alice.example/devtools, what a page's install button
+  holds — is the listing or suite it names, and nothing else. Installing
+  bundle itself registers it to open such links, as 'install --window'.
 
   an app whose package.json asks for it ("bundle": { "app": { "title": … } })
   also gets an entry in the desktop's applications, for you only: a desktop
@@ -392,9 +399,10 @@ export const HELP: Record<string, string> = {
   round; uninstall removes the link and never the folder.
 
   with neither, this package installs itself from its own published release,
-  whose publish workflow's signature is accepted without asking — so
-  'npx @pipobscure/bundle install' leaves a signed 'bundle' on your PATH that
-  'bundle update' keeps current. The archive is named '.nzip', and the name it
+  whose publish workflow's signature is accepted without asking — so running
+  'install' from a downloaded bundle.nzip (node --experimental-vfs --vfs-load
+  ./bundle.nzip install) leaves a signed 'bundle' on your PATH that
+  'bundle update' keeps current, and makes nzip: links open it. The archive is named '.nzip', and the name it
   installs under drops that everywhere but Windows, where the extension is what
   makes it runnable. It then offers to add 'bundle shell' to the startup file
   of the shell it is run from — Tab completion, and a quiet daily re-check of
@@ -584,6 +592,16 @@ export const HELP: Record<string, string> = {
   someone marking it bad since — is the first thing a new terminal says. It
   asks the network at most once per --every, gives up after --timeout and
   answers from the cache, and says nothing when there is nothing to say.`,
+    links: `links options:                      usage: links [--check]
+      --check           only say whether they do; exit 1 when not
+
+  nzip: links — nzip:alice.example/devtools, what an install button on a
+  page holds — open the installed bundle, which installs what they name
+  with its decisions in a window ('install --window'). Installing bundle
+  sets that up; this checks it, and puts right whatever is missing or
+  points elsewhere: the desktop entry and xdg-mime's default on Linux, the
+  applet in ~/Library/Application Support/bundle on macOS, the nzip URL
+  protocol on Windows. Needs bundle installed ('bundle install').`,
 };
 
 /**
@@ -859,7 +877,7 @@ export const UNDECIDED = 4;
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
     create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, update, installed, validate, uninstall,
-    node: nodeCommand, sea, trust, policy: policyCommand, lexicon, skill, shell,
+    node: nodeCommand, sea, trust, policy: policyCommand, lexicon, skill, shell, links,
 };
 
 /**
@@ -1365,13 +1383,48 @@ async function install(args: string[], io: Console): Promise<number> {
         allowNegative: true,
         options: OPTIONS.install,
     });
+    // An nzip: link — what a page's install button opens — is the listing or suite it names.
+    if (positionals[0] !== undefined && /^nzip:/i.test(positionals[0])) positionals[0] = (await import('./links.ts')).targetOf(positionals[0]);
+    if (!values.window) return installWith(values, positionals, io);
+
+    // The decisions in a window: everything this says goes there as well, and
+    // what it asks is asked there. How it ended is the window's last word.
+    const WINDOW = await import('./window.ts');
+    const target = positionals[0];
+    const window = await WINDOW.openWindow({ title: target ? `Install ${target}` : 'Install bundle' });
+    io.err(styles(io).e.note(`the decisions are in a window: ${window.url}`));
+    const lines: string[] = [];
+    const tee: Console = {
+        ...io,
+        out: (line) => { io.out(line); lines.push(line); },
+        err: (line) => { io.err(line); window.log(line); },
+        // Nothing here asks at a terminal: the window does.
+        ask: undefined,
+        style: { out: PLAIN, err: PLAIN },
+    };
+    let code = 70;
+    try {
+        code = await installWith(values, positionals, tee, window);
+        window.finish(code === 0, code === 0 ? `${target ?? 'bundle'} is installed` : code === UNDECIDED ? 'Nothing was installed' : 'It did not install', lines);
+    } catch (err) {
+        window.finish(false, 'It did not install', [message(err)]);
+        throw err;
+    } finally {
+        // Long enough for the page to hear the end; it keeps showing it after this process is gone.
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await window.close();
+    }
+    return code;
+}
+
+async function installWith(values: ReturnType<typeof parseInstall>['values'], positionals: string[], io: Console, window?: import('./window.ts').DecisionWindow): Promise<number> {
     const INSTALL = await import('./install.ts');
     const demands = await policy(values);
     if (values.for !== undefined && !positionals[0]) throw new Error('install: --for needs a plugin to install: a url, a domain, @account/name, or a folder to link');
     const scope = values.for !== undefined ? await scopeFor(values.for, INSTALL) : undefined;
 
     // With no URL, this package installs itself: the published release, signed
-    // by the workflow that publishes it. `npx @pipobscure/bundle install` is
+    // by the workflow that publishes it. Running `install` from a downloaded bundle.nzip is
     // then the whole bootstrap — npm fetches it once, and what stays behind is
     // a signed archive that updates itself from its own releases.
     const target = positionals[0] ?? INSTALL.self().url;
@@ -1398,8 +1451,8 @@ async function install(args: string[], io: Console): Promise<number> {
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
             discover: values.discover,
             menu: values.menu === false ? false : undefined,
-            onReview: (review, about) => showReview(review, about, io),
-            decide: decider(Boolean(values.yes), io),
+            onReview: (review, about) => { showReview(review, about, io); window?.review(review, about); },
+            decide: values.yes || !window ? decider(Boolean(values.yes), io) : window.decide,
             log: logger(io),
         });
         // Installed by hand, it is the person's own, whatever suite has it too.
@@ -1428,7 +1481,7 @@ async function install(args: string[], io: Console): Promise<number> {
             if (values.name !== undefined || values.for !== undefined) throw new Error(`install: ${target} is a suite — its members say where each goes, so --name and --for do not apply`);
             const SUITES = await import('./suite-install.ts');
             try {
-                const result = await SUITES.installSuite(target, { ...suiteOptions(values, demands, io), dir: values.dir, suite, menu: values.menu === false ? false : undefined });
+                const result = await SUITES.installSuite(target, { ...suiteOptions(values, demands, io, window), dir: values.dir, suite, menu: values.menu === false ? false : undefined });
                 return reportSuites([result], io);
             } catch (refusedSuite) {
                 return refused(refusedSuite, io);
@@ -1441,16 +1494,22 @@ async function install(args: string[], io: Console): Promise<number> {
 // What installing or updating a suite is told: the same as any install, and
 // how to ask, once, about everyone the suite expects its members to carry.
 function suiteOptions(values: { root?: string[] | undefined; identity?: string | undefined; issuer?: string | undefined; discover?: boolean | undefined; yes?: boolean | undefined },
-    demands: Awaited<ReturnType<typeof policy>>, io: Console): import('./suite-install.ts').SuiteOptions {
+    demands: Awaited<ReturnType<typeof policy>>, io: Console, window?: import('./window.ts').DecisionWindow | undefined): import('./suite-install.ts').SuiteOptions {
+    const windowed = window && !values.yes ? window : undefined;
     return {
         roots: values.root ?? [], identity: values.identity, issuer: values.issuer,
         attesters: demands.attesters.length ? demands.attesters : undefined, quorum: demands.quorum, block: demands.block,
         discover: values.discover,
-        onReview: (review, about) => showReview(review, about, io),
-        decide: decider(Boolean(values.yes), io),
-        confirm: confirmer(Boolean(values.yes), io),
+        onReview: (review, about) => { showReview(review, about, io); window?.review(review, about); },
+        decide: windowed ? windowed.decide : decider(Boolean(values.yes), io),
+        confirm: windowed ? windowed.confirm : confirmer(Boolean(values.yes), io),
         log: logger(io),
     };
+}
+
+// What `install` parses its arguments into, for the half of it that does the work.
+function parseInstall(args: string[]) {
+    return parseArgs({ args, allowPositionals: true, allowNegative: true, options: OPTIONS.install });
 }
 
 // The one question a suite asks: whom, of everyone it expects its members to
@@ -1975,10 +2034,12 @@ async function publish(args: string[], io: Console): Promise<number> {
                 io.out(o.bundle(`${o.green(replaced ? 'updated' : 'published')} ${o.bold(name)}  ${o.dim(`as ${session.did}`)}`));
                 io.out(`   ${o.cyan(uri)}`);
                 io.err(`   ${e.dim('install it with:')} ${e.bold(command)}`);
+                if (app === undefined) io.err(`   ${e.dim('or link to it:  ')} ${e.bold(`nzip:${session.handle ?? session.did}/${name}`)}`);
             } else {
                 io.out(`${replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
                 io.out(`  ${uri}`);
                 io.err(`  install it with: ${command}`);
+                if (app === undefined) io.err(`  or link to it: nzip:${session.handle ?? session.did}/${name}`);
             }
         }
     } finally {
@@ -2317,6 +2378,33 @@ async function nodeCommand(args: string[], io: Console): Promise<number> {
     const { node, how } = await NODES.ensureNode({ minimum, via: values.via, log: logger(io) });
     io.out(how === 'found' ? `${said(node)}${o.people ? o.dim('  — already here') : ' — already here'}`
         : `${said(node)}${o.people ? o.dim(`  — installed by ${how === 'download' ? 'bundle' : how}`) : ` — installed by ${how === 'download' ? 'bundle' : how}`}`);
+    return 0;
+}
+
+// Whether nzip: links open the installed bundle, and making them.
+async function links(args: string[], io: Console): Promise<number> {
+    const { values } = parseArgs({ args, options: OPTIONS.links });
+    const INSTALL = await import('./install.ts');
+    const record = Object.values(INSTALL.records()).find((each) => each.scope === undefined && (each.url === INSTALL.SELF.url || each.url === INSTALL.self().url));
+    if (!record) throw new Error("links: bundle is not installed here — 'bundle install' installs it, and makes nzip: links open it");
+    const archive = INSTALL.pathOf(record);
+    const { o, e } = styles(io);
+    const fine = () => io.out(o.people ? `${o.green('✔')} ${o.bold('nzip: links open bundle')}  ${o.dim(archive)}` : `nzip: links open ${archive}`);
+    const problems = INSTALL.linkHandlerProblems(archive);
+    if (!problems.length) {
+        fine();
+        return 0;
+    }
+    for (const problem of problems) io.err(e.warn(problem));
+    if (values.check) return 1;
+    if (!FS.existsSync(archive)) throw new Error(`links: ${archive} is gone — 'bundle install' puts bundle back first`);
+    for (const note of INSTALL.ensureLinkHandler(archive, { force: true })) io.err(e.note(note));
+    const left = INSTALL.linkHandlerProblems(archive);
+    if (left.length) {
+        for (const problem of left) io.err(e.error(problem));
+        return 1;
+    }
+    fine();
     return 0;
 }
 
@@ -2865,10 +2953,12 @@ async function suite(args: string[], io: Console): Promise<number> {
                 io.out(o.bundle(`${o.green(replaced ? 'updated' : 'published')} suite ${o.bold(spec.name)}  ${o.dim(`as ${session.did}`)}`));
                 io.out(`   ${o.cyan(uri)}`);
                 io.err(`   ${e.dim('install it with:')} ${e.bold(command)}`);
+                io.err(`   ${e.dim('or link to it:  ')} ${e.bold(`nzip:${session.handle ?? session.did}/${spec.name}`)}`);
             } else {
                 io.out(`${replaced ? 'updated' : 'published'} suite ${spec.name} as ${session.did}`);
                 io.out(`  ${uri}`);
                 io.err(`  install it with: ${command}`);
+                io.err(`  or link to it: nzip:${session.handle ?? session.did}/${spec.name}`);
             }
         } finally {
             await session.end?.();
@@ -3501,6 +3591,7 @@ export const OPTIONS = {
         for:       { type: 'string' },
         shell:     { type: 'boolean', default: true },
         menu:      { type: 'boolean', default: true },
+        window:    { type: 'boolean' },
     },
     update: INSTALL_OPTIONS,
     installed: { root: { type: 'string', short: 'r', multiple: true }, json: { type: 'boolean' } },
@@ -3545,6 +3636,9 @@ export const OPTIONS = {
         'dry-run':       { type: 'boolean' },
         force:           { type: 'boolean' },
         'password-file': { type: 'string' },
+    },
+    links: {
+        check: { type: 'boolean' },
     },
     shell: {
         every:    { type: 'string', default: '1d' },

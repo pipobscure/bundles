@@ -51,6 +51,7 @@ bundle --help                            bundle -v, --version
 |---|---|
 | [`node`](#node) | say which node runs bundles here, or install one where there is none |
 | [`shell`](#shell) | print what to load at shell start: Tab completion, and a quiet re-check |
+| [`links`](#links) | make `nzip:` links open bundle, or say whether they do |
 | [`skill`](#skill) | install the bundle-auditing skill into a project |
 
 ## Conventions
@@ -529,6 +530,8 @@ bundle publish --as alice.example --for @pipobscure.com/bled bled-gpio https://�
 ```
 
 Writes `at://<your DID>/com.pipobscure.bundle.listing/<name>`, naming the URL, or the domain.
+It prints how to install what it listed, and the `nzip:` link to put on a page so that one
+click installs it (see [`install`](#install)).
 A listing that names a domain follows its `nzip:` TXT record wherever it points, on every
 install and update. `<name>` is lowercase letters,
 digits and `-`, at most 64, and is what the archive installs as. Publishing the same name again
@@ -836,12 +839,13 @@ Every listing in the index, by name, synced first exactly as for [`search`](#sea
 ### `install`
 
 ```
-bundle install [options] [url | domain | @account/name]
+bundle install [options] [url | domain | @account/name | nzip:link]
 bundle install https://example.com/tool.nzip     # fetch, review, put on PATH
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
 bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into bled's scope
 bundle install @pipobscure.com/devtools         # a suite: every listing in it
+bundle install --window nzip:pipobscure.com/devtools   # what clicking that link runs
 bundle install                                  # this package, from its own release
 ```
 
@@ -968,6 +972,46 @@ and [`uninstall`](#uninstall) takes it away. `--no-menu` declines it for this in
 updates, and `BUNDLE_NO_DESKTOP_SETUP` makes no new ones. A failure is a note, never a failed
 install. Plugins never get one.
 
+**One click installs from an `nzip:` link.** An author puts a link on their page:
+
+```html
+<a href="nzip:alice.example/devtools">Install devtools</a>
+```
+
+When bundle installs itself, it registers to open such links for the current user. Clicking
+one, the browser asks whether to open bundle, and bundle runs `install --window` with the
+link: the same install as `bundle install @alice.example/devtools`, with every decision made
+in a window instead of at a terminal. Someone who never opens a terminal sees the same review
+and answers the same questions.
+
+- **A link names something published, and nothing else**: `nzip:<handle or did>/<name>` for a
+  listing or a suite, or `nzip:at://<did>/<collection>/<name>`. It is never a URL or a domain,
+  so a page cannot point bundle at an arbitrary download. A link carries no trust of its own.
+  What it names is fetched, verified and reviewed as any install is, and what a suite requires
+  of its members comes from the suite's signed record. Any page can make a link, so it is read
+  strictly: anything after the name, or anything that is not one of those forms, is refused
+  before anything is fetched. [`publish`](#publish) and [`suite publish`](#suite) print the link
+  for what they publish.
+- **How each system hands it over**: the link is always passed as one argument, after `--`,
+  never into a command line anything parses.
+  - Linux: a hidden desktop entry, `$XDG_DATA_HOME/applications/bundle-nzip-links.desktop`, for
+    `x-scheme-handler/nzip`, made the default with `xdg-mime`.
+  - macOS: links arrive as an Apple Event, which a script cannot receive. The handler is
+    therefore a small AppleScript applet, `~/Library/Application Support/bundle/NodeBundleLinks.app`,
+    compiled with `osacompile`, told its scheme with `plutil`, signed ad hoc again, and
+    registered with Launch Services.
+  - Windows: the `nzip` URL protocol in `HKCU\Software\Classes`, which runs
+    `%LOCALAPPDATA%\bundle\links.ps1` in a hidden PowerShell.
+
+  Uninstalling bundle takes the handler away again.
+- **The window** is a page served by bundle on `127.0.0.1`, at a path holding a random token,
+  with a Content-Security-Policy that allows only itself. It opens as a Chromium app window
+  when Chrome, Edge, Chromium or Brave is installed, and in the default browser otherwise. Only
+  that address and port answer, so a page elsewhere cannot reach it through a DNS name pointed
+  at the loopback address. Answers are taken only as JSON from its own origin. Closing the
+  window declines whatever is still being asked, once a minute has passed. The URL is printed
+  too, and with `BUNDLE_NO_BROWSER` set nothing is opened.
+
 **A domain works in place of a URL.** `bundle install tool.example.com` looks for a TXT
 record on that domain of the form `nzip:<url>`. The URL is a full `https:` URL, or a
 reference resolved against `https://tool.example.com/`, and the install is named after the
@@ -1026,9 +1070,11 @@ declined does not stop the others. A suite that an attester the policy blocks on
 is refused as a whole. `--dir` applies to its apps; `--name` and `--for` do not apply.
 
 **With neither, it installs this package itself**, from its own GitHub release, accepting
-the identity its [publish workflow](../.github/workflows/publish.yml) signs with. `npx
-@pipobscure/bundle install` is therefore the whole bootstrap. It then offers to set up the
-shell it is run from (see [`shell`](#shell)). Run it again once installed and it fetches
+the identity its [publish workflow](../.github/workflows/publish.yml) signs with. Downloading
+[`bundle.nzip`](https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip) and
+running its `install` (`node --experimental-vfs --vfs-load ./bundle.nzip install`) is
+therefore the whole bootstrap. It makes `nzip:` links open the installed bundle (see
+[`links`](#links)), and then offers to set up the shell it is run from (see [`shell`](#shell)). Run it again once installed and it fetches
 nothing: it only offers the shell setup for the shell you are in now, so after switching
 shells, `bundle install` is all it takes.
 
@@ -1047,6 +1093,7 @@ shells, `bundle install` is all it takes.
 | `-d, --dir <dir>` | install here (default: `~/.local/bin`, or `%LOCALAPPDATA%\bundle\bin`) |
 | `--no-shell` | installing itself, do not offer to set up the shell |
 | `--no-menu` | give the app no entry in the desktop's applications, though it asks for one, nor on its updates |
+| `--window` | ask in a window rather than at the terminal; what an `nzip:` link opens |
 
 ### `update`
 
@@ -1413,6 +1460,30 @@ leaving the rest of the file as it was.
 | `--no-validate` | leave out the re-validation |
 | `--no-complete` | leave out Tab completion |
 
+### `links`
+
+```
+bundle links            # check, and put right whatever is missing or points elsewhere
+bundle links --check    # only say; exit 1 when links do not open bundle
+```
+
+Checks that `nzip:` links open the installed bundle (see [`install`](#install) for what a link
+is and what clicking one does). If they don't, it registers the handler again for the
+current user, doing every step even where something looks right already, then checks again:
+
+- **Linux:** the desktop entry, and `xdg-mime`'s default for `x-scheme-handler/nzip`, which
+  another application may have taken.
+- **macOS:** the applet in `~/Library/Application Support/bundle`. Which app Launch Services
+  prefers can't be asked from a command, so the applet is registered again rather than checked.
+- **Windows:** the `nzip` URL protocol and its script, and a node to run it with.
+
+[`install`](#install) does all of this when bundle installs itself, so this command is for
+repairs. It needs bundle installed, because the links open the installed copy.
+
+| Option | |
+|---|---|
+| `--check` | only say whether they do; exit 1 when not |
+
 ### `skill`
 
 ```
@@ -1451,6 +1522,7 @@ a file that is already there unless forced, so local edits survive.
 | Shell setup | `~/.bashrc`, `${ZDOTDIR:-~}/.zshrc`, `~/.config/fish/config.fish`, PowerShell's `$PROFILE`, only with your yes | `BUNDLE_SHELL`, `BUNDLE_POWERSHELL_PROFILE` |
 | `.nzip` association | `HKCU\Software\Classes` and the user's `PATHEXT`, on Windows | `BUNDLE_NO_DESKTOP_SETUP` |
 | Applications entries | `$XDG_DATA_HOME/applications/bundle-<name>.desktop` and `$XDG_DATA_HOME/bundle/icons/` on Linux; `~/Applications/<title>.app` on macOS; the Start menu's `Programs`, `%LOCALAPPDATA%\bundle\apps\` and `%LOCALAPPDATA%\bundle\icons\` on Windows — see [`install`](#install) | `--no-menu`, `BUNDLE_NO_DESKTOP_SETUP` |
+| `nzip:` link handler | `$XDG_DATA_HOME/applications/bundle-nzip-links.desktop` and `xdg-mime`'s default on Linux; `~/Library/Application Support/bundle/NodeBundleLinks.app` on macOS; `HKCU\Software\Classes\nzip` and `%LOCALAPPDATA%\bundle\links.ps1` on Windows — see [`install`](#install) | `BUNDLE_NO_DESKTOP_SETUP` |
 | `.nzip` icon | `%LOCALAPPDATA%\bundle\icons` on Windows; `$XDG_DATA_HOME/mime` and `$XDG_DATA_HOME/icons/hicolor` (`~/.local/share`) on Linux; `~/Library/Application Support/bundle/NodeBundle.app` on macOS | `BUNDLE_NO_DESKTOP_SETUP` |
 
 The sigstore certificate's key and OAuth sessions are never stored. An app-password session
@@ -1497,7 +1569,7 @@ never kept: they are bound to a key that only ever exists in memory.
 | `SOURCE_DATE_EPOCH` | the latest time `create` dates a member with, in seconds: for reproducible builds from a fresh checkout |
 | `BUNDLE_RATE_LIMIT_WAIT` | the longest a rate-limited request waits before asking again, in seconds (default: 600). `0` never waits |
 | `BUNDLE_PLC_DIRECTORY` | the PLC directory `did:plc` is resolved against (default: `https://plc.directory`) |
-| `BUNDLE_NO_BROWSER` | never open a browser to sign in with sigstore; use a device code |
+| `BUNDLE_NO_BROWSER` | never open a browser: to sign in with sigstore, a device code instead; for `install --window`, only the URL is printed |
 | `BUNDLE_AUDIT_VERDICT` | where the audit skill writes its verdict, when a pipeline asks for one |
 
 The verifying preload and an executable built without a baked policy take their policy from the

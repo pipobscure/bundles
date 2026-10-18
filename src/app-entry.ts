@@ -347,7 +347,8 @@ function macPlan({ name, app, icons, archive, places }: PlanInput): Plan {
     const script = [
         '#!/bin/sh',
         `# Written by 'bundle install'; runs the installed ${name.replace(/[^\w.@/+-]/g, '?')}.`,
-        `exec ${[archive, ...app.args].map(shQuote).join(' ')} "$@"`,
+        // Started from Finder, the PATH is the system's alone; Homebrew keeps node elsewhere.
+        `PATH="${'/opt/homebrew/bin:/usr/local/bin'}:$PATH" exec ${[archive, ...app.args].map(shQuote).join(' ')} "$@"`,
         '',
     ].join('\n');
     return {
