@@ -3,8 +3,22 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.1.6
 
+- **`bundle node`** says which node runs bundles here, and **`bundle node install`** gets one
+  where there is none: the newest LTS at or above the minimum, through mise, fnm, nvm or asdf
+  (nvm-windows on Windows) when one is here, else the official build from nodejs.org, checked
+  against `SHASUMS256.txt`, kept in bundle's data directory and never put on the `PATH`. The
+  launcher and the Windows association look there too (`BUNDLE_NODE_DIR`,
+  `BUNDLE_NODE_MIRROR`).
+- **Apps get an entry in the desktop's applications** when their `package.json` asks for one
+  (`bundle.app`), with their own title and icons from inside the signed archive: a `.desktop`
+  file on Linux, `~/Applications/<title>.app` on macOS, a Start menu shortcut on Windows.
+  `update` keeps it current, `uninstall` removes it, `install --no-menu` declines it.
+- **`nzip:` links install in one click.** `install` takes `nzip:alice.example/devtools`,
+  `nzip:<did>/<name>` and `nzip:at://…` (a published listing or suite only), and `install
+  --window` makes its decisions in a window instead of at a terminal. Installing bundle
+  registers it for the links, per user, and **`bundle links`** checks and repairs that.
 - **Apps made of parts.** An app can declare, in its `package.json` (`bundle.parts`), the
   archives it ships beside it, each by package, `url` (resolved against the app's) and `hash`.
   Installing the app installs every part as a plugin in its scope, trusted because the app is:
