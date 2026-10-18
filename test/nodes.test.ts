@@ -73,7 +73,7 @@ const run = (node: string) => {
     }
 };
 
-test('findNode picks as the launcher does: PATH when new enough, else the newest kept anywhere, bundle\'s own included', () => {
+test('findNode picks as the launcher does: PATH when new enough, else the newest kept anywhere, bundle\'s own included', { skip: WINDOWS && 'the macOS and Linux search, with a PATH split on colons; Windows is windowsNode, tested in runtime.test.ts' }, () => {
     const home = PATH.join(tmp, 'h-find');
     const bin = PATH.join(tmp, 'p-find');
     fakeNode(PATH.join(bin, 'node'), 'v26.11.1');
@@ -99,7 +99,7 @@ test('a version manager is asked only when it would leave the default node alone
     FS.writeFileSync(PATH.join(home, '.nvm', 'nvm.sh'), '');
     const [nvm] = managers({ env: {}, home, platform: 'linux', has: has() });
     assert.equal(nvm?.name, 'nvm');
-    assert.deepEqual(nvm!.command('v27.1.0'), ['sh', '-c', '. "$1" && nvm install "$2"', 'nvm', PATH.join(home, '.nvm', 'nvm.sh'), 'v27.1.0'], 'arguments, never spliced into the script');
+    assert.deepEqual(nvm!.command('v27.1.0'), ['sh', '-c', '. "$1" && nvm install "$2"', 'nvm', PATH.posix.join(home, '.nvm', 'nvm.sh'), 'v27.1.0'], 'arguments, never spliced into the script');
     assert.deepEqual(managers({ env: {}, home, platform: 'win32', has: has('nvm.exe', 'volta.exe', 'mise.exe') }).map((manager) => manager.command('v27.1.0')),
         [['mise.exe', 'install', 'node@27.1.0'], ['nvm.exe', 'install', '27.1.0']]);
 });
@@ -134,7 +134,7 @@ test('with nothing here and no manager, the official build is downloaded, checke
 
     const lines: string[] = [];
     const ensured = await ensureNode({ ...options, fetch: mirror(version, build.archive, bytes).fetch, log: (line) => lines.push(line) });
-    const dir = PATH.join(home, '.local', 'share', 'bundle', 'node', version);
+    const dir = PATH.join(nodesDir(env, platform, home), version);
     assert.deepEqual(ensured, { how: 'download', node: { path: PATH.join(dir, 'bin', 'node'), version, from: 'bundle' } });
     assert.deepEqual(FS.readdirSync(dir), ['bin'], 'the node binary, and nothing else of the release');
     assert.ok(lines.some((line) => line.includes('https://mirror.test/dist/v27.2.0/node-v27.2.0-')));
@@ -159,7 +159,7 @@ test('a download that does not match its checksum, or a node that is not the ver
 
     await assert.rejects(ensureNode({ ...options, fetch: mirror(version, build.archive, bytes, { sum: '0'.repeat(64) }).fetch }), /sha256 [0-9a-f]{64}, but SHASUMS256\.txt says 0{64} — not installed/);
     await assert.rejects(ensureNode({ ...options, fetch: mirror(version, build.archive, bytes).fetch }), /says it is v27\.1\.9, not v27\.2\.0 — not installed/);
-    assert.deepEqual(FS.readdirSync(PATH.join(home, '.local', 'share', 'bundle', 'node')), [], 'no version directory, and no partial one');
+    assert.deepEqual(FS.readdirSync(nodesDir(options.env, platform, home)), [], 'no version directory, and no partial one');
 });
 
 test('on Windows, the node.exe out of the zip, read through node:zlib', { skip: WINDOWS ? false : 'the zip is the Windows build' }, async () => {

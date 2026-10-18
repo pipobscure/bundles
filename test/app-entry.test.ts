@@ -83,13 +83,17 @@ test('quoting: Exec= twice over and % doubled, sh single quotes, PowerShell sing
     assert.equal(psQuote("it's"), "'it''s'");
 });
 
-const places = (root: string, platform: NodeJS.Platform): Places => ({
-    platform,
-    home: PATH.join(root, 'home'),
-    dataHome: PATH.join(root, 'home', '.local', 'share'),
-    appData: PATH.join(root, 'Roaming'),
-    localAppData: PATH.join(root, 'Local'),
-});
+// Each platform's places spelled as that platform spells them, wherever this runs.
+const places = (root: string, platform: NodeJS.Platform): Places => {
+    const join = platform === 'win32' ? PATH.win32.join : root.startsWith('/') ? PATH.posix.join : PATH.join;
+    return {
+        platform,
+        home: join(root, 'home'),
+        dataHome: join(root, 'home', '.local', 'share'),
+        appData: join(root, 'Roaming'),
+        localAppData: join(root, 'Local'),
+    };
+};
 const app: AppDeclaration = { title: 'Dav "Sync"', description: 'Sync & <more>', args: ['--window', 'two words'], categories: ['Network', 'FileTransfer'], icons: {} };
 
 test('on Linux: a desktop entry that runs the archive, with its icon by absolute path', () => {
