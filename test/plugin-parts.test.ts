@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { use, list, runPlugin } from '../src/plugins.ts';
 import { pinOf } from '../src/integrity.ts';
 import { scopeDir } from '../src/scopes.ts';
-import { ROOT, build, scratch, tree } from './helpers.ts';
+import { ROOT, WINDOWS, build, scratch, tree } from './helpers.ts';
 
 // Plugins a host pins by hash — its declared parts, or pins it passes —
 // running a plugin as the main program, and workers started from inside a
@@ -179,7 +179,9 @@ test('a pinned plugin is checked again in the worker: a file changed since is re
     assert.equal(answer['rules'], 'another plugin, from the worker');
 
     // Replaced on disk after the parent checked it: the parent keeps what it
-    // checked, and a new worker checks the file as it is now.
+    // checked, and a new worker checks the file as it is now. Windows will
+    // not rename over a file a process has open, so there it cannot be.
+    if (WINDOWS) return;
     const replacement = await plugin({ ...SCANNER, 'lib/helper.js': "export const helper = 'swapped';" });
     FS.copyFileSync(replacement, `${placed}.swap`);
     FS.renameSync(`${placed}.swap`, placed);

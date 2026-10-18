@@ -158,7 +158,7 @@ test('a part that is not what its app pins refuses the app, and nothing is insta
     serve('/other/p.nzip', wrong);
     const before = FS.readFileSync(recordPath(), 'utf-8');
     await assert.rejects(install(`${BASE}/other/other.nzip`, options),
-        (err: Error & { code?: string }) => err.code === 'ERR_BUNDLE_UNTRUSTED' && /its part @acme\/other-part, from .*, has the whole-file hash sha256:\w+, and other pins sha256:/.test(err.message));
+        (err: Error & { code?: string }) => err.code === 'ERR_BUNDLE_UNTRUSTED' && new RegExp(`its part @acme/other-part, from .*, has the whole-file hash sha256:\\w+, and ${WINDOWS ? 'other\\.nzip' : 'other'} pins sha256:`).test(err.message));
     assert.equal(FS.readFileSync(recordPath(), 'utf-8'), before, 'no record');
     assert.equal(FS.existsSync(scopeDir('@acme/other')), false, 'no part');
     assert.equal(FS.existsSync(PATH.join(installDir(), WINDOWS ? 'other.nzip' : 'other')), false, 'and no app');
@@ -284,12 +284,12 @@ test('an app installs from a file, finding its parts beside it — and from byte
     asked.length = 0;
     serve('/mirror/auth.nzip', a1);
     serve('/mirror/parts/mail.nzip', b1);
-    const fromBytes = await install({ bytes: FS.readFileSync(v1), name: 'suite', source: `${BASE}/mirror/suite.nzip` }, options);
+    const fromBytes = await install({ bytes: FS.readFileSync(v1), name: APP, source: `${BASE}/mirror/suite.nzip` }, options);
     assert.equal(fromBytes.url, `${BASE}/mirror/suite.nzip`);
     assert.deepEqual(asked, ['/mirror/auth.nzip', '/mirror/parts/mail.nzip'], 'only its parts were fetched, against the source');
     uninstall(APP);
 
-    await assert.rejects(install({ bytes: FS.readFileSync(v1), name: 'suite' }, options), /give the URL it stands for/);
+    await assert.rejects(install({ bytes: FS.readFileSync(v1), name: APP }, options), /give the URL it stands for/);
     const io = collector();
     assert.equal(await main(['install', '--source', `${BASE}/mirror/suite.nzip`, '--yes', '--root', ROOT_PEM, '--no-discover', PATH.join(dir, 'suite.nzip')], io), 0, io.stderr.join('\n'));
     assert.equal(records()[APP]?.url, `${BASE}/mirror/suite.nzip`);
