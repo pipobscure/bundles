@@ -1,6 +1,6 @@
 import { verifyBundleSync } from './api.ts';
 import { wholeFileHash, type VerificationResult, type VerificationState } from './manifest.ts';
-import { cached, cachedFor, formatAttester, type Attester, type Verdict } from './attestation.ts';
+import { cached, cachedFor, formatAttester, type Attester, type StrongRef, type Verdict } from './attestation.ts';
 import type { NetworkOptions } from './atproto.ts';
 import type { Policy, Signer } from './policy.ts';
 
@@ -35,7 +35,10 @@ export type Evidence =
     | { type: 'certificate'; subject: string; anchor: string; anchored: boolean }
     | { type: 'attestation'; did: string; handle?: string | undefined; kind?: string | undefined; verdict: Verdict; createdAt?: string | undefined;
         /** Not of the archive itself but of a suite it is in, which carries over: `suite devtools`. */
-        via?: string | undefined };
+        via?: string | undefined;
+        /** The attester's own words about it, and a post they link for context: shown, never decisive. */
+        note?: string | undefined;
+        post?: StrongRef | undefined };
 
 /**
  * Another hash whose attestations count as the archive's own: a suite's, for
@@ -216,7 +219,10 @@ export function gatherSync(bytes: Buffer, options: GatherOptions = {}, notes: st
         if (ignore.has(did)) continue;
         const found = cached(did, hashAlg, hash, { maxAge: options.maxAge });
         if (!found) continue;
-        evidence.push({ type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: found.verdict ?? 'good', createdAt: found.createdAt });
+        evidence.push({
+            type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: found.verdict ?? 'good', createdAt: found.createdAt,
+            ...(found.note !== undefined ? { note: found.note } : {}), ...(found.post ? { post: found.post } : {}),
+        });
     }
     // Good attestations of a suite it is in count as its own, said as such —
     // unless the attester has said something of the archive itself, which is
@@ -227,7 +233,10 @@ export function gatherSync(bytes: Buffer, options: GatherOptions = {}, notes: st
             if (ignore.has(did) || evidence.some((each) => each.type === 'attestation' && each.did === did && each.via === undefined)) continue;
             const found = cached(did, alg, of, { maxAge: options.maxAge });
             if (!found || (found.verdict ?? 'good') !== 'good') continue;
-            evidence.push({ type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: 'good', createdAt: found.createdAt, via });
+            evidence.push({
+                type: 'attestation', did, handle: found.handle, kind: found.attested, verdict: 'good', createdAt: found.createdAt, via,
+                ...(found.note !== undefined ? { note: found.note } : {}), ...(found.post ? { post: found.post } : {}),
+            });
         }
     }
     return { hashAlg, hash, result, evidence, notes };

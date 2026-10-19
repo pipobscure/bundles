@@ -5,7 +5,7 @@ import * as PATH from 'node:path';
 import {
     COLLECTION, cacheDir, readDocument, writeDocument, readProof, writeProof, removeProof, cachedKeys, readHead, writeHead,
     parseAttester, isDid, readRecord, recordUri, stateDir, parseDuration,
-    type Attester, type AttestationRecord, type Verdict,
+    type Attester, type AttestationRecord, type StrongRef, type Verdict,
 } from './attestation.ts';
 import { patientFetch, type Patience } from './ratelimit.ts';
 import { verifyRecordProof, signingKey, pdsEndpoint, claimedHandle, treeStep, decode, writeCar, CID, readCar, type DidDocument, type Value } from './repo.ts';
@@ -465,6 +465,22 @@ export async function* backlinks(subject: string, source: string, { index, ...op
     } while (cursor);
 }
 
+/**
+ * How many accounts have a record in `collection` whose field at `path`
+ * (`.subject`) links to `subject`, according to a backlink index: each account
+ * counted once, however many records it has. A count the index keeps, not one
+ * verified here.
+ */
+export async function backlinkDistinctCount(subject: string, collection: string, path: string, { index, ...options }: NetworkOptions & { index: string }): Promise<number> {
+    const params = new URLSearchParams({ target: subject, collection, path });
+    const response = await net(options)(`${index.replace(/\/+$/, '')}/links/count/distinct-dids?${params}`,
+        { headers: { 'user-agent': USER_AGENT, accept: 'application/json' } });
+    if (!response.ok) throw new Error(`${index}: ${response.status} ${response.statusText}`);
+    const { total } = await response.json() as { total?: unknown };
+    if (typeof total !== 'number' || !Number.isInteger(total) || total < 0) throw new Error(`${index} answered no count`);
+    return total;
+}
+
 // ---------------------------------------------------------------- writing ---
 
 /** A logged-in session on someone's PDS. */
@@ -644,7 +660,10 @@ export interface Attesting {
     kind?: string | undefined;
     /** 'bad' to warn against the file; good is the default and is not written. */
     verdict?: Verdict | undefined;
+    /** Context, in the attester's own words. */
     note?: string | undefined;
+    /** A post that gives the context: see `resolvePost()` and `createPost()`. */
+    post?: StrongRef | undefined;
 }
 
 /**
@@ -661,7 +680,7 @@ export async function attest(session: Session, attesting: Attesting, options: Ne
 /** Publish several attestations, in as few requests as the PDS allows (see `putAll()`). */
 export async function attestAll(session: Session, attestations: Attesting[], options: NetworkOptions = {}): Promise<{ uri: string }[]> {
     const now = (options.now ?? (() => new Date()))().toISOString();
-    const records = attestations.map(({ hashAlg, hex, kind, verdict, note }) => ({
+    const records = attestations.map(({ hashAlg, hex, kind, verdict, note, post }) => ({
         rkey: hex,
         record: {
             $type: COLLECTION,
@@ -669,11 +688,61 @@ export async function attestAll(session: Session, attestations: Attesting[], opt
             ...(kind ? { kind } : {}),
             ...(verdict === 'bad' ? { verdict } : {}),
             ...(note ? { note } : {}),
+            ...(post ? { post: { uri: post.uri, cid: post.cid } } : {}),
             createdAt: now,
         } satisfies AttestationRecord as Record<string, unknown>,
     }));
     await putAll(session, COLLECTION, records, options);
     return records.map(({ rkey }) => ({ uri: recordUri(session.did, rkey) }));
+}
+
+/** The collection a post of the Atmosphere's microblog is a record in. */
+export const POST_COLLECTION = 'app.bsky.feed.post';
+
+/** A post, as `resolvePost()` found it: pinned to this version, with its text when it has some. */
+export interface FoundPost extends StrongRef {
+    text?: string | undefined;
+}
+
+/**
+ * The post `ref` names, fetched from its author's PDS and verified, pinned to
+ * the version there now. `ref` is an `at://` address — of a post, or of any
+ * record — or a post's web address, `https://bsky.app/profile/<handle or
+ * did>/post/<rkey>`. A handle is resolved, and the address returned names the
+ * DID, which does not change hands.
+ */
+export async function resolvePost(ref: string, options: NetworkOptions = {}): Promise<FoundPost> {
+    const web = /^https:\/\/(?:www\.)?bsky\.app\/profile\/([^/]+)\/post\/([^/?#]+)\/?(?:[?#].*)?$/.exec(ref);
+    const at = /^at:\/\/([^/]+)\/([^/]+)\/([^/?#]+)$/.exec(ref);
+    if (!web && !at) throw new Error(`'${ref}' is not a post: give its at:// address, or its https://bsky.app/profile/…/post/… link`);
+    const [who, collection, rkey] = web ? [web[1]!, POST_COLLECTION, web[2]!] : [at![1]!, at![2]!, at![3]!];
+    const did = who.startsWith('did:') ? who : (await resolveHandle(who, options)).did;
+    const found = await getRecord(did, collection, rkey, options);
+    if (!found) throw new Error(`${ref}: there is no such post (at://${did}/${collection}/${rkey})`);
+    const text = (found.value as { text?: unknown } | null)?.text;
+    return { uri: `at://${did}/${collection}/${rkey}`, cid: found.cid, ...(typeof text === 'string' ? { text } : {}) };
+}
+
+/**
+ * Post `text` from the session's account, as a post of the Atmosphere's
+ * microblog — with `facets` marking links in it, when there are any — and
+ * return where it is, pinned. Its key is left to the PDS, which
+ * gives a post the time-ordered key it should have.
+ */
+export async function createPost(session: Session, { text, facets }: { text: string; facets?: Record<string, unknown>[] | undefined },
+    options: NetworkOptions = {}): Promise<StrongRef> {
+    const now = (options.now ?? (() => new Date()))().toISOString();
+    const written = await xrpcPost(session.pds, 'com.atproto.repo.createRecord', {
+        repo: session.did, collection: POST_COLLECTION, record: { $type: POST_COLLECTION, text, ...(facets?.length ? { facets } : {}), createdAt: now },
+    }, session, options) as { uri?: unknown; cid?: unknown };
+    if (typeof written.uri !== 'string' || typeof written.cid !== 'string') throw new Error(`com.atproto.repo.createRecord at ${session.pds} did not say where the post is`);
+    return { uri: written.uri, cid: written.cid };
+}
+
+/** Delete a post `createPost()` made, by its address. */
+export async function deletePost(session: Session, uri: string, options: NetworkOptions = {}): Promise<void> {
+    const rkey = uri.slice(uri.lastIndexOf('/') + 1);
+    await deleteRecord(session, POST_COLLECTION, rkey, options);
 }
 
 /** Withdraw attestations, in as few requests as it takes, and drop them from the cache. */

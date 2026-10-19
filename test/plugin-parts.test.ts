@@ -200,9 +200,10 @@ test('a pinned plugin needs no verifier, and ./integrity no sigstore or attestat
         const seen = [];
         registerHooks({ resolve: (specifier, context, next) => { const found = next(specifier, context); seen.push(found.url); return found; } });
         ${body}
-        const loaded = (part) => seen.some((url) => url.includes(part));
+        // By the module's own file name: a directory on the way may be called anything.
+        const loaded = (name) => seen.some((url) => url.slice(url.lastIndexOf('/') + 1).replace(/\\.[cm]?[jt]s$/, '') === name);
         console.log(JSON.stringify({ pinned: loaded('plugin-pinned'), provider: loaded('bundle-provider'), verifier: loaded('plugin-verifier'),
-            sigstore: loaded('sigstore'), attestation: loaded('attestation'), manifest: loaded('/manifest.') }));`;
+            sigstore: loaded('sigstore'), attestation: loaded('attestation'), manifest: loaded('manifest') }));`;
     const run = (body: string) => {
         const res = spawnSync(process.execPath, ['--no-warnings', '--experimental-vfs', '--input-type=module', '-e', script(body)], { encoding: 'utf-8' });
         assert.equal(res.status, 0, res.stderr);

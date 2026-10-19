@@ -21,6 +21,17 @@ how to use it is in the [README](README.md) and [docs/](docs/).
   bundle is, why, and how to get it. It lives in `site/`, plain HTML and CSS with no build
   step, and is deployed to GitHub Pages with each release by the publish workflow;
   `pages.yml` deploys it by hand for a fix between releases.
+- **An attestation can say why.** `attest` and `suite attest` take `--note` (context in your own
+  words, now shown wherever the attestation is), `--post` (a link to a post that gives the
+  context, fetched, verified and pinned by its CID), `--note-as-post` (post the note from the
+  same account too, and link it) and `--note-from-post` (take the note from the linked post).
+  The install review, `verify` (and `verify --json`) and `validate` show the note, made safe to
+  print, and the post as a link. They decide nothing. The attestation lexicon gains `post`.
+- **Likes.** `bundle like` stars an app, of its listing so across its releases, from an
+  Atmosphere account, always with a post saying what the app is and how to install it (bundle's
+  own likes link to https://bundle.pipobscure.com/). `--revoke` takes it back, post and all.
+  `search` and `listings` show how many accounts like each app, and `bundle likes` who, each
+  verified at its source. A new lexicon, `com.pipobscure.bundle.like`.
 
 ## 0.1.7
 

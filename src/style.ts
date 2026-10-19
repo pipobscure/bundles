@@ -152,3 +152,17 @@ export function bytes(size: number): string {
 export function plural(count: number, noun: string, many = `${noun}s`): string {
     return `${count} ${count === 1 ? noun : many}`;
 }
+
+/**
+ * Text someone else wrote, made safe to print on one line: control
+ * characters (escape sequences that could rewrite the terminal, line breaks
+ * that could pass for output of this tool's own) and the marks that reorder
+ * text right to left are dropped, and runs of whitespace become one space.
+ * An attestation's note is anyone's words, and is shown as such.
+ */
+export function untrusted(text: string): string {
+    return text
+        .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}

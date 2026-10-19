@@ -10,7 +10,7 @@ import { patientFetch } from './ratelimit.ts';
 import { STATES, message, wholeFileHash, type VerificationState } from './manifest.ts';
 import { checkIntegrity } from './integrity.ts';
 import { readParts, type Part } from './parts.ts';
-import { cached, formatAttester, parseAttester, stateDir, type Attester } from './attestation.ts';
+import { cached, formatAttester, parseAttester, stateDir, type Attester, type StrongRef } from './attestation.ts';
 import * as ZLIB from 'node:zlib';
 import { loadPolicy, type Policy, type Signer } from './policy.ts';
 import { isScope, scopeDir, pluginFile, linkFile, pluginsDir, labelFile, bundleRoot } from './scopes.ts';
@@ -77,6 +77,10 @@ const require = createRequire(import.meta.url);
  */
 export const SELF = {
     url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
+    /** The listing it publishes itself under, `@pipobscure.com/bundle`, by its DID's address: a handle can change hands. */
+    listing: 'at://did:plc:rwypz6edxmzyhob2k3rsl2fw/com.pipobscure.bundle.listing/bundle',
+    /** Its page, where a like of it sends people: an `nzip:` link would need bundle already. */
+    home: 'https://bundle.pipobscure.com/',
     identity: 'https://github.com/pipobscure/bundles/.github/workflows/publish.yml@refs/heads/main',
     issuer: 'https://token.actions.githubusercontent.com',
 } as const;
@@ -189,6 +193,9 @@ export interface Seen {
     handle?: string | undefined;
     kind?: string | undefined;
     verdict: 'good' | 'bad';
+    /** What the attester said about it, and the post they linked: for showing what is new. */
+    note?: string | undefined;
+    post?: StrongRef | undefined;
 }
 
 export interface InstallOptions {
@@ -1235,7 +1242,7 @@ function checkLink(record: InstallRecord, path: string): InstalledCheck {
 /** The attestations a review saw, as an install remembers them. */
 function seenIn(review: Review): Seen[] {
     return review.items.flatMap(({ evidence }) => evidence.type === 'attestation'
-        ? [{ did: evidence.did, handle: evidence.handle, kind: evidence.kind, verdict: evidence.verdict }]
+        ? [{ did: evidence.did, handle: evidence.handle, kind: evidence.kind, verdict: evidence.verdict, note: evidence.note, post: evidence.post }]
         : []);
 }
 
@@ -1771,7 +1778,7 @@ function put(bytes: Buffer, judged: Judged, { name, dir, file, scope, pkg, label
         attestedBy: attestedBy.length ? attestedBy : undefined,
         accepted: accept(accepted, chosen),
         seen: gathered.evidence.flatMap((each) => each.type === 'attestation'
-            ? [{ did: each.did, handle: each.handle, kind: each.kind, verdict: each.verdict }]
+            ? [{ did: each.did, handle: each.handle, kind: each.kind, verdict: each.verdict, note: each.note, post: each.post }]
             : []),
         sha256: digest(bytes),
         at: new Date().toISOString(),

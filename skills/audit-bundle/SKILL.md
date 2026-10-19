@@ -336,7 +336,9 @@ Work through it in this order:
    that is more than you can stand behind, recommend tighter requirements (`bundle suite
    update`), or permitting single bundles (`bundle attest --kind permitted <archive>`), which
    pins exact bytes. What is said of a bundle itself always wins over what is said of its
-   suite, so one bundle can be prohibited inside a permitted suite.
+   suite, so one bundle can be prohibited inside a permitted suite. Whoever attests can say
+   why with `--note` (and `--note-as-post`, or `--post` to link a write-up): suggest a one-line
+   note that states what the review covered, so people installing see it.
 
 The machine-readable verdict for a suite uses the same file. `mode` is `"suite"`, `bundle` is the
 suite as named, `sha256` is the suite's hash from `bundle suite show`, and `members` is one entry

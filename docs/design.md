@@ -307,6 +307,11 @@ advance: the record's `hash` field is indexed by Constellation, a backlink index
 whole network, and every DID it names is fetched and verified before it counts.
 [proposals/atproto-attestations.md](../proposals/atproto-attestations.md) has the details.
 
+An attestation can carry its context: a note in the attester's own words, and a link to a post,
+pinned by its CID, that explains it. Both are shown wherever the attestation is, a note with
+anything that could steer the terminal taken out, since it is anyone's words. Neither decides
+anything; what counts is still who attested which bytes, and how.
+
 ## Listings
 
 A listing is a record in the publisher's repository, keyed by the name the bundle installs
@@ -325,6 +330,14 @@ network allows: one pass over the backlinks, then one revision check per publish
 refetch only where a repository moved. Plugins are followed only for apps installed here.
 [proposals/atproto-listings.md](../proposals/atproto-listings.md) has the details, and what
 replaces Constellation once it stops scaling.
+
+**Likes** are records too (`com.pipobscure.bundle.like`), of an app's listing rather than of
+one release, so a star stays with the app; keyed by the hash of the listing's address, so an
+account likes an app once. Each comes with a post from the same account, with the app's
+install link, which is how a like is seen by people who don't use bundle. They are counted the
+way listings are found, through Constellation, by accounts rather than records, and each is
+verified at its source before `likes` shows it. They vouch for nothing.
+[proposals/likes.md](../proposals/likes.md) has the reasoning.
 
 ## Suites
 

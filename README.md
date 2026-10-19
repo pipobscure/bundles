@@ -240,6 +240,14 @@ or withdraw that. `bundle attest --as you.example --kind audited app.nzip` is on
 the browser, and the record lives in your own account. `bundle trust` keeps the cached
 attestations fresh for checks that can't reach the network.
 
+An attestation can say why: `--note` in your own words, `--post` linking a post that explains
+it, or `--note-as-post` to post the note as well. Whoever installs the archive sees both,
+next to the verdict they go with.
+
+★ And anyone can **like** an app: `bundle like @alice.example/tool` stars it, across its
+releases, with a post saying so and the app's install link. `bundle search` shows how many
+accounts like each app, and `bundle likes` who.
+
 ## Suites
 
 A suite is a set of listings installed together: apps, and plugins for them.
@@ -380,7 +388,9 @@ lists the commands.
 
 | Vouching | |
 |---|---|
-| [`attest`](docs/cli.md#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that |
+| [`attest`](docs/cli.md#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that — with a note and a post for context |
+| [`like`](docs/cli.md#like) | ★ like an app: a star for it, and a post saying so |
+| [`likes`](docs/cli.md#likes) | who likes an app |
 | [`lexicon`](docs/cli.md#lexicon) | show, check or publish the atproto lexicons attestations and listings are written in |
 
 | Publishing and finding | |

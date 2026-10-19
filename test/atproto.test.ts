@@ -7,18 +7,20 @@ import {
     CID, decode, encode, readCar, writeCar, verifyRecordProof, signingKey, formatMultikey, sign, verifySignature,
     pointKey, compressedPoint, treeStep, type Curve, type DidDocument, type Value,
 } from '../src/repo.ts';
-import { COLLECTION, stateDir, parseAttester, parseDuration, readProof, writeProof, type Attester } from '../src/attestation.ts';
+import { COLLECTION, stateDir, parseAttester, parseDuration, readProof, writeProof, postUrl, type Attester } from '../src/attestation.ts';
 import * as ATPROTO from '../src/atproto.ts';
 import { verifySync, wholeFileHash, STATES } from '../src/manifest.ts';
 import { open as openBundle } from '../src/provider.ts';
 import { main as launchMain } from '../src/launch.ts';
-import { main, UNDECIDED } from '../src/cli.ts';
-import { install, update, installed, records, warningsOf, acceptedOf, uninstall } from '../src/install.ts';
+import { main, UNDECIDED, showReview } from '../src/cli.ts';
+import { install, update, installed, records, warningsOf, acceptedOf, uninstall, SELF } from '../src/install.ts';
 import { selectable, type Review } from '../src/review.ts';
+import * as REVIEW from '../src/review.ts';
 import { loadPolicy } from '../src/policy.ts';
 import { oauthLogin } from '../src/oauth.ts';
 import { lexicons, authorityOf, checkLexicons, publishLexicons, SCHEMA_COLLECTION } from '../src/lexicon.ts';
 import * as LISTINGS from '../src/listing.ts';
+import * as LIKE from '../src/like.ts';
 import { LISTING, SUBJECT } from '../src/listing.ts';
 import { SUITE, SUITE_SUBJECT } from '../src/suite.ts';
 import * as SUITE_RECORD from '../src/suite.ts';
@@ -326,6 +328,15 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         const page = records.slice(from, from + Number(url.searchParams.get('limit') ?? 100));
         return json({ total: records.length, records: page, cursor: from + page.length < records.length ? String(from + page.length) : null });
     }
+    // How many accounts have such a record: each counted once.
+    if (url.origin === 'https://index.test' && url.pathname === '/links/count/distinct-dids') {
+        const target = url.searchParams.get('target')!;
+        const collection = url.searchParams.get('collection')!;
+        const field = url.searchParams.get('path')!.replace(/^\./, '');
+        const dids = network.filter((each) => [...each.records.entries()]
+            .some(([key, value]) => key.startsWith(`${collection}/`) && (value as Record<string, unknown>)[field] === target));
+        return json({ total: dids.length });
+    }
     if (url.origin === AUTH.origin) return authorizationServer(url, init);
     if (url.origin === 'https://plc.test') {
         const account = network.find((each) => `/${encodeURIComponent(each.did)}` === url.pathname);
@@ -387,6 +398,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         case '/xrpc/com.atproto.repo.putRecord': {
             if (!authorized || body['repo'] !== account.did) return json({ error: 'AuthRequired' }, 401);
             const key = `${String(body['collection'])}/${String(body['rkey'])}`;
+            account.records.set(key, body['record'] as Value);
+            return json({ uri: `at://${account.did}/${key}`, cid: CID.of(encode(body['record'] as Value)).toString() });
+        }
+        case '/xrpc/com.atproto.repo.createRecord': {
+            // The PDS picks the key, as a real one does for a post: a TID.
+            if (!authorized || body['repo'] !== account.did) return json({ error: 'AuthRequired' }, 401);
+            const key = `${String(body['collection'])}/3l${String(account.records.size).padStart(11, '2')}`;
             account.records.set(key, body['record'] as Value);
             return json({ uri: `at://${account.did}/${key}`, cid: CID.of(encode(body['record'] as Value)).toString() });
         }
@@ -1252,11 +1270,116 @@ test('bundle attest takes several archives under one sign-in, and checks them al
     assert.equal([...cal.records.keys()].filter((key) => key.startsWith(`${COLLECTION}/`)).length, 0);
 });
 
+test('a post is found by its link or its address, verified, and pinned to the version there now', async () => {
+    const kai = account();
+    const text = 'Reviewed the whole 0.1.7 diff: two new modules, nothing that reaches the network.';
+    kai.records.set('app.bsky.feed.post/3lpost00000001', { $type: 'app.bsky.feed.post', text, createdAt: new Date().toISOString() });
+    const uri = `at://${kai.did}/app.bsky.feed.post/3lpost00000001`;
+
+    const byAddress = await ATPROTO.resolvePost(uri);
+    assert.deepEqual({ uri: byAddress.uri, text: byAddress.text }, { uri, text });
+    assert.match(byAddress.cid, /^bafy/);
+    const byHandle = await ATPROTO.resolvePost(`at://${kai.handle}/app.bsky.feed.post/3lpost00000001`, { resolveTxt });
+    assert.equal(byHandle.uri, uri, 'a handle is resolved, and the address names the DID');
+    const byLink = await ATPROTO.resolvePost(`https://bsky.app/profile/${kai.handle}/post/3lpost00000001`, { resolveTxt });
+    assert.deepEqual(byLink, byAddress);
+    assert.equal(postUrl(uri), `https://bsky.app/profile/${kai.did}/post/3lpost00000001`);
+
+    await assert.rejects(ATPROTO.resolvePost(`at://${kai.did}/app.bsky.feed.post/3lnothing00000`), /there is no such post/);
+    await assert.rejects(ATPROTO.resolvePost('https://example.com/post/1'), /is not a post: give its at:\/\/ address/);
+});
+
+test('an attestation carries a note and a post for context, shown wherever it is, and deciding nothing', async () => {
+    const ivy = account();
+    const archive = await version();
+    const { hashAlg, hash } = wholeFileHash(archive)!;
+    const thread = 'Why we audited this: the release notes, and what we checked.';
+    ivy.records.set('app.bsky.feed.post/3lthread00000', { $type: 'app.bsky.feed.post', text: thread, createdAt: new Date().toISOString() });
+    const post = `at://${ivy.did}/app.bsky.feed.post/3lthread00000`;
+    // A note is anyone's words: what would move the cursor or start a line of
+    // its own is taken out before it is printed.
+    const note = 'Read every member.\u001b[2J\nNothing reaches the network.\u202e';
+
+    const io = { ...collector(), open: browser };
+    assert.equal(await main(['attest', '--as', ivy.did, '--kind', 'audited', '--note', note, '--post', postUrl(post), archive], io), 0, io.stderr.join('\n'));
+    assert.match(io.stderr.join('\n'), /signed in as did:plc:.* through OAuth \(attestations only\)/, 'no more than attestations, for a post that is linked');
+    const record = ivy.records.get(`${COLLECTION}/${hash}`) as Record<string, unknown>;
+    assert.equal(record['note'], note, 'kept as written');
+    assert.deepEqual(Object.keys(record['post'] as object).sort(), ['cid', 'uri']);
+    assert.equal((record['post'] as { uri: string }).uri, post);
+    assert.match(io.stdout.join('\n'), /note: "Read every member\.\[2J Nothing reaches the network\."\n  post: https:\/\/bsky\.app\/profile\//);
+
+    // As verify shows it, and as install's review does: the note on a line
+    // of its own, made safe; the post as a link.
+    await ATPROTO.fetchAttestation(ivy.did, hashAlg, hash);
+    const shown = collector();
+    assert.equal(await main(['verify', '--attester', ivy.did, archive], shown), 0, shown.stderr.join('\n'));
+    const out = shown.stdout.join('\n');
+    assert.match(out, /attested: .* as audited/);
+    assert.match(out, /note: "Read every member\.\[2J Nothing reaches the network\."/);
+    assert.ok(!/[\u0000-\u001f\u202e]/.test(out.replace(/\n/g, '')), 'no control characters, no reordering marks');
+    assert.match(out, new RegExp(`post: https://bsky\\.app/profile/${ivy.did}/post/3lthread00000`));
+    const json = collector();
+    await main(['verify', '--json', '--attester', ivy.did, archive], json);
+    const [attestation] = (JSON.parse(json.stdout.join('\n')) as { attestations: { note?: string; post?: { uri: string } }[] }).attestations;
+    assert.deepEqual([attestation!.note, attestation!.post?.uri], [note, post]);
+    const gathered = REVIEW.gatherSync(FS.readFileSync(archive), { candidates: [ivy.did] });
+    const evidence = gathered.evidence.find((each) => each.type === 'attestation') as { note?: string; post?: { uri: string } };
+    assert.deepEqual([evidence.note, evidence.post?.uri], [note, post]);
+    const review = collector();
+    showReview(REVIEW.judge(gathered, { policy: loadPolicy() }), { name: 'tool', url: 'https://dl.test/tool.nzip' }, review);
+    assert.match(review.stderr.join('\n'), /attested by .* as audited.*\n\s+note: "Read every member/);
+
+    // The note taken from the post, and the post linked: one request to
+    // fetch it, none to write anything but the attestation.
+    const second = await version();
+    const fromPost = { ...collector(), open: browser };
+    assert.equal(await main(['attest', '--as', ivy.did, '--post', post, '--note-from-post', second], fromPost), 0, fromPost.stderr.join('\n'));
+    assert.equal((ivy.records.get(`${COLLECTION}/${wholeFileHash(second)!.hash}`) as Record<string, unknown>)['note'], thread);
+
+    // The note posted too, and the post linked: the sign-in asks for posts as well.
+    const third = await version();
+    const posting = { ...collector(), open: browser };
+    const posts = () => [...ivy.records.keys()].filter((key) => key.startsWith('app.bsky.feed.post/'));
+    const before = posts();
+    assert.equal(await main(['attest', '--as', ivy.did, '--note', 'Rebuilt from the tag; same bytes.', '--note-as-post', third], posting), 0, posting.stderr.join('\n'));
+    assert.equal(AUTH.pushed.at(-1), `atproto repo:${COLLECTION} repo:app.bsky.feed.post?action=create&action=delete`);
+    const made = posts().filter((key) => !before.includes(key));
+    assert.equal(made.length, 1, 'one post');
+    assert.equal((ivy.records.get(made[0]!) as { text: string }).text, 'Rebuilt from the tag; same bytes.');
+    const linked = (ivy.records.get(`${COLLECTION}/${wholeFileHash(third)!.hash}`) as { post: { uri: string } }).post;
+    assert.equal(linked.uri, `at://${ivy.did}/${made[0]}`);
+    assert.match(posting.stderr.join('\n'), /posted the note: https:\/\/bsky\.app\/profile\//);
+
+    // When the attestation cannot be written, the post made for it goes again.
+    const fourth = await version();
+    THROTTLE.set('/xrpc/com.atproto.repo.putRecord', [new Response(JSON.stringify({ error: 'InvalidRequest', message: 'refused' }), { status: 400 })]);
+    const failing = { ...collector(), open: browser };
+    const count = posts().length;
+    assert.equal(await main(['attest', '--as', ivy.did, '--note', 'never shown', '--note-as-post', fourth], failing), 70);
+    assert.equal(posts().length, count, 'the post made for it was taken down');
+
+    // What does not make sense together, or does not fit, is refused before anyone signs in.
+    const refused = async (args: string[], pattern: RegExp) => {
+        const io2 = { ...collector(), open: () => assert.fail('nobody should be asked to sign in') };
+        const code = await main(['attest', '--as', ivy.did, ...args, fourth], io2);
+        assert.equal(code, 70);
+        assert.match(io2.stderr.join('\n'), pattern);
+    };
+    await refused(['--note-as-post'], /--note-as-post posts the note: give one with --note/);
+    await refused(['--note', 'x', '--note-as-post', '--post', post], /one or the other/);
+    await refused(['--note-from-post'], /name it with --post/);
+    await refused(['--note', 'x', '--post', post, '--note-from-post'], /one or the other/);
+    await refused(['--note', 'é'.repeat(301)], /the note is too long: it is 301 characters long/);
+    await refused(['--post', `at://${ivy.did}/app.bsky.feed.post/3lnothing00000`], /there is no such post/);
+    await refused(['--revoke', '--note', 'x'], /--revoke withdraws an attestation; it takes no note or post/);
+});
+
 // ---------------------------------------------------------------- lexicons ---
 
 test('the lexicons this package carries are where their NSIDs say, under the authority DNS needs', () => {
     const docs = lexicons();
-    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION, LISTING, SUITE]);
+    assert.deepEqual(docs.map((doc) => doc.id), [COLLECTION, LIKE.LIKE, LISTING, SUITE]);
     assert.equal(authorityOf(COLLECTION), 'bundle.pipobscure.com');
     assert.equal(docs[0]!.defs['main'] && (docs[0]!.defs['main'] as { type: string }).type, 'record');
 });
@@ -1276,30 +1399,30 @@ test('lexicon publish needs DNS to name the account, writes with lexicon-only ac
     assert.equal(session.how, `OAuth (repo:${SCHEMA_COLLECTION})`);
 
     // Nothing resolves to this account yet: refused, unless forced.
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority', 'no-authority', 'no-authority']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['no-authority', 'no-authority', 'no-authority', 'no-authority']);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /_lexicon\.bundle\.pipobscure\.com has no 'did=' TXT record yet/);
     dns.set('_lexicon.bundle.pipobscure.com', account().did);
     await assert.rejects(publishLexicons(session, { resolveTxt }), /names did:plc:.*, not did:plc:.* — publish from that account/);
 
     // Pointed at this account: unpublished, then published and current.
     dns.set('_lexicon.bundle.pipobscure.com', dana.did);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished', 'unpublished', 'unpublished']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['unpublished', 'unpublished', 'unpublished', 'unpublished']);
     const [written] = await publishLexicons(session, { resolveTxt });
     assert.equal(written!.uri, `at://${dana.did}/${SCHEMA_COLLECTION}/${COLLECTION}`);
     const record = dana.records.get(`${SCHEMA_COLLECTION}/${COLLECTION}`) as Record<string, unknown>;
     assert.equal(record['$type'], SCHEMA_COLLECTION);
     assert.equal(record['id'], COLLECTION);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current', 'current']);
 
     // Changed since: check says so, and publishing again replaces it — the
     // schemas listed once, and all of them written in one request.
     dana.records.set(`${SCHEMA_COLLECTION}/${COLLECTION}`, { ...record, description: 'an older version' });
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['different', 'current', 'current', 'current']);
     requests.length = 0;
     await publishLexicons(session, { resolveTxt });
     assert.deepEqual(requests.filter((line) => line.includes(`${dana.pds}/xrpc/`)).map((line) => line.slice(line.lastIndexOf('/') + 1)),
         ['com.atproto.repo.listRecords', 'com.atproto.repo.applyWrites']);
-    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current']);
+    assert.deepEqual((await checkLexicons({ resolveTxt })).map((each) => each.state), ['current', 'current', 'current', 'current']);
 });
 
 // ---------------------------------------------------------------- validate ---
@@ -1849,6 +1972,78 @@ test('bundle publish lists several under one sign-in, as one batch — from the 
     } finally {
         delete process.env['BUNDLE_ATPROTO_PASSWORD'];
     }
+});
+
+test('a like stars an app across its releases, always with a post, counted by account, and taken back with its post', async () => {
+    const pub = account();
+    const fan = account();
+    const other = account();
+    pub.records.set(`${LISTING}/starry`, listed('https://dl.test/starry.nzip', { title: 'Starry', description: 'draws the night sky in your terminal' }));
+    const listing = `at://${pub.did}/${LISTING}/starry`;
+    const posts = (who: { records: Map<string, Value> }) => [...who.records.entries()].filter(([key]) => key.startsWith('app.bsky.feed.post/'));
+
+    // Liked by the listing's address, the post saying what it is — the
+    // listing's own title and description — and how to install it, as a link.
+    const liked = { ...collector(), open: browser };
+    assert.equal(await main(['like', '--as', fan.did, `@${pub.did}/starry`], liked), 0, liked.stderr.join('\n'));
+    assert.equal(AUTH.pushed.at(-1), `atproto repo:${LIKE.LIKE} repo:app.bsky.feed.post?action=create&action=delete`);
+    const [[postKey, post]] = posts(fan) as [[string, { text: string; facets: { index: { byteStart: number; byteEnd: number }; features: { uri: string }[] }[] }]];
+    const link = `nzip:${pub.did}/starry`;
+    assert.equal(post.text, `🌳 I like Starry: draws the night sky in your terminal\n\n${link}`);
+    const { byteStart, byteEnd } = post.facets[0]!.index;
+    assert.equal(Buffer.from(post.text).subarray(byteStart, byteEnd).toString(), link, 'the link marked as one, where it is');
+    assert.equal(post.facets[0]!.features[0]!.uri, link);
+    const record = fan.records.get(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`) as { subject: string; post: { uri: string } };
+    assert.equal(record.subject, listing);
+    assert.equal(record.post.uri, `at://${fan.did}/${postKey}`);
+    assert.match(liked.stdout.join('\n'), /liked @did:plc:.*\/starry\n  post: https:\/\/bsky\.app\/profile\//);
+
+    // Once per account: liking it again changes nothing, and makes no second post.
+    const again = { ...collector(), open: browser };
+    assert.equal(await main(['like', '--as', fan.did, `at://${pub.did}/${LISTING}/starry`], again), 0);
+    assert.match(again.stdout.join('\n'), /already liked/);
+    assert.equal(posts(fan).length, 1);
+
+    // In one's own words: the note is the post, and the link still comes after it.
+    const worded = { ...collector(), open: browser };
+    assert.equal(await main(['like', '--as', other.did, '--note', 'Lovely at 2am.', `nzip:${pub.did}/starry`], worded), 0, worded.stderr.join('\n'));
+    assert.equal((posts(other)[0]![1] as { text: string }).text, `Lovely at 2am.\n\n${link}`);
+    const tooLong = { ...collector(), open: () => assert.fail('nobody should be asked to sign in') };
+    assert.equal(await main(['like', '--as', other.did, '--note', 'x'.repeat(290), `@${pub.did}/starry`], tooLong), 70);
+    assert.match(tooLong.stderr.join('\n'), /the note is too long for the post/);
+
+    // Counted by account: records an account writes besides its one like count for nothing.
+    for (let n = 0; n < 3; n++) fan.records.set(`${LIKE.LIKE}/extra${n}`, { $type: LIKE.LIKE, subject: listing, createdAt: new Date().toISOString() } as Value);
+    assert.equal(await LIKE.countLikes(listing, { index: INDEX }), 2);
+    const shown = collector();
+    assert.equal(await main(['likes', `@${pub.did}/starry`], shown), 0, shown.stderr.join('\n'));
+    const out = shown.stdout.join('\n');
+    assert.match(out, /: 2 likes/);
+    assert.match(out, /"Lovely at 2am\. nzip:did:plc:.*\/starry"/, 'each like with its post, verified at its source');
+    assert.equal(out.split('\n').filter((line) => line.startsWith('  ') && line.includes(`(${fan.did}),`)).length, 1, 'an account once');
+    const listed2 = collector();
+    assert.equal(await main(['listings', '--refresh', '--json'], listed2), 0, listed2.stderr.join('\n'));
+    const entry = (JSON.parse(listed2.stdout.join('\n')) as { name: string; did: string; likes?: number }[]).find((each) => each.did === pub.did && each.name === 'starry');
+    assert.equal(entry?.likes, 2, 'and listings count them');
+    const plain = collector();
+    assert.equal(await main(['listings'], plain), 0);
+    assert.match(plain.stdout.join('\n'), /\/starry +\[2 likes\] Starry — draws the night sky/);
+
+    // bundle's own listing is the one whose like links to its page: an nzip:
+    // link opens bundle, which whoever reads about it may not have yet.
+    const self = { listing: listing, home: 'https://bundle.pipobscure.com/' };
+    assert.equal(LIKE.likeLink(listing, pub.did, 'starry', self), 'https://bundle.pipobscure.com/');
+    assert.equal(LIKE.likeLink(`at://${other.did}/${LISTING}/starry`, other.did, 'starry', self), `nzip:${other.did}/starry`);
+    const own = LIKE.likePost({ uri: listing, record: { $type: LISTING, subject: SUBJECT, url: 'https://x.test/b.nzip', title: 'bundle', createdAt: '' }, name: 'bundle', link: self.home });
+    assert.equal(own.text, '🌳 I like bundle\n\nhttps://bundle.pipobscure.com/');
+    assert.equal(SELF.listing, 'at://did:plc:rwypz6edxmzyhob2k3rsl2fw/com.pipobscure.bundle.listing/bundle');
+
+    // Taken back: the like and the post it made.
+    const unliked = { ...collector(), open: browser };
+    assert.equal(await main(['like', '--as', fan.did, '--revoke', `@${pub.did}/starry`], unliked), 0, unliked.stderr.join('\n'));
+    assert.equal(fan.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`), false);
+    assert.equal(posts(fan).length, 0);
+    assert.match(unliked.stdout.join('\n'), /unliked/);
 });
 
 test('bundle publish, search, listings and unpublish, end to end', async () => {

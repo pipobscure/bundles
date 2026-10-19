@@ -44,9 +44,14 @@
           },
           "note": {
             "type": "string",
-            "description": "A short free-text note; informational only.",
+            "description": "Context for the attestation, in the attester's own words: why they vouch for it, or what is wrong with it. Informational only; shown with the attestation wherever it is shown.",
             "maxLength": 3000,
             "maxGraphemes": 300
+          },
+          "post": {
+            "type": "ref",
+            "ref": "com.atproto.repo.strongRef",
+            "description": "A post that gives the context for the attestation: the attester's own, or anyone's. Optional, and informational only; shown with the attestation, as a link. Pinned to the version it names by its CID."
           },
           "createdAt": {
             "type": "string",

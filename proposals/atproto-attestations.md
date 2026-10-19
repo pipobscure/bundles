@@ -288,6 +288,23 @@ hash, and checking one needs no index: the verifier knows exactly which record t
 Different shapes of one release (`.nzip`, a SEA, a plain archive) are different bytes and
 need one attestation each.
 
+## Context: a note, and a post
+
+An attestation can say why, in two ways, both optional:
+
+- **`note`**, up to 300 characters, in the record itself: the attester's own words.
+- **`post`**, a `com.atproto.repo.strongRef` to a post (an `at://` address and a CID): the
+  attester's own, or anyone's, such as a thread about a vulnerability. The CID pins the version
+  that was linked; `attest` fetches and verifies the post before linking it.
+
+`bundle attest --note-as-post` posts the note from the same account and links that post, and
+`--note-from-post` copies a linked post's text into the note, so the context still travels when
+the post cannot be fetched. Both are shown wherever the attestation is shown, and decide
+nothing: a verdict counts, or refuses, exactly as it would without them. A note is anyone's
+words, so it is printed quoted, with control characters and text-reordering marks taken out.
+A malformed `note` or `post` in someone's record is left out rather than taken to invalidate
+the attestation: what counts is the verdict over the hash, and that is unaffected.
+
 ## The lexicon
 
 [`lexicons/com/pipobscure/bundle/attestation.json`](../lexicons/com/pipobscure/bundle/attestation.json).

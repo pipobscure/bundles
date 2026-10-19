@@ -7,7 +7,10 @@ import { packageVersion } from './files.ts';
 import * as AUDIT from './audit.ts';
 import { message, wholeFileHash, STATES, type VerificationResult, type VerificationState } from './manifest.ts';
 import { systemRoot } from './scopes.ts';
-import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, cachedDids, type Attester } from './attestation.ts';
+import {
+    formatAttester, parseAttester, parseDuration, policyFromEnvironment, cachedDids, postUrl, noteTooLong,
+    type Attester, type StrongRef,
+} from './attestation.ts';
 
 // Re-exported because this is where a CLI consumer looks for it; it is defined
 // in the format layer so the `bundle` launcher can report an exit code without
@@ -15,7 +18,7 @@ import { formatAttester, parseAttester, parseDuration, policyFromEnvironment, ca
 export { STATES };
 import * as SKILLS from './skill.ts';
 import * as REVIEW from './review.ts';
-import { PLAIN, styleFor, bytes, plural, type Style, type Mark } from './style.ts';
+import { PLAIN, styleFor, bytes, plural, untrusted, type Style, type Mark } from './style.ts';
 import type { Validation, Seen } from './install.ts';
 
 // Argument parsing and reporting, and nothing else. Every command below is a
@@ -33,6 +36,8 @@ commands:
   audit     report what is about to be reviewed, and gate signing on the verdict
   verify    verify an archive and report its trust state
   attest    vouch for an archive from an atproto account, or withdraw that
+  like      like an app: a star for it, and a post saying so
+  likes     who likes an app
   publish   list an archive's URL under a name, so others can find and install it
   unpublish take a listing down again
   suite     write, check and publish a suite: listings installed together
@@ -60,9 +65,7 @@ commands:
 options:
   -h, --help            show this help; after a command, that command's
   -v, --version         print the version
-
-  install, update, installed, validate, uninstall and trust take --system:
-  the machine's layout, under one root, instead of the user's (see 'install').`;
+      --system          the machine's layout, under one root (see 'install')`;
 
 /** What `bundle <command> --help` prints: one command, what it does, and its options. */
 export const HELP: Record<string, string> = {
@@ -158,7 +161,13 @@ export const HELP: Record<string, string> = {
                         or, with --verdict bad, malware, vulnerable, …
       --verdict <v>     good (the default) to vouch for it, bad to warn
                         everyone who installs it against it
-      --note <text>     a short note kept with the attestation
+      --note <text>     context, in your own words: why you vouch for it, or
+                        what is wrong with it; 300 characters at most
+      --post <url | at://>  a post that gives the context, yours or anyone's,
+                        linked from the attestation: its bsky.app link or its
+                        at:// address
+      --note-as-post    also post the note from the account, and link that post
+      --note-from-post  take the note from the --post's text
       --revoke          withdraw the attestations instead
       --password-file <file>  use an app password from this file instead of
                         signing in — for CI, where there is no browser
@@ -176,7 +185,43 @@ export const HELP: Record<string, string> = {
 
   writes com.pipobscure.bundle.attestation/<hash> to the account's repository, naming
   the archive's whole-file hash — the hash a signature covers. The archive is
-  checked first: one whose bytes or signature do not hold together is refused.`,
+  checked first: one whose bytes or signature do not hold together is refused.
+
+  a note and a post give the attestation its context, and both are shown
+  wherever it is: to whoever installs the archive, by 'verify', and by
+  'validate' when it is new. They decide nothing. A post is fetched and
+  verified first, and the attestation pins the version there now. With
+  --note-as-post, the sign-in asks to create posts too, and a post made is
+  taken down again if the attestation cannot be written.`,
+    like: `like options:                       usage: like [options] <installed app | @account/name | nzip:link | at://>
+      --as <handle | did>  the account to like it from
+                        (default: BUNDLE_ATPROTO_IDENTIFIER)
+      --note <text>     what to say in the post, in your own words
+      --revoke          take the like back, and the post it made
+      --password-file <file>  an app password instead of signing in, for CI
+                        (BUNDLE_ATPROTO_PASSWORD works too)
+
+  likes an app — a star for it, that stays with it as it is released again —
+  from an Atmosphere account. A like is of the app's listing, so the app must
+  be published (see 'publish'); an app installed from one is named as it is
+  installed. An account likes an app once.
+
+  every like comes with a post from the same account: your --note, or else
+  '🌳 I like <title>: <description>' from the app's listing, and then the
+  app's nzip: link, so whoever reads it can install it in one click. The
+  sign-in asks to write likes and to create and delete posts, and nothing
+  else. --revoke takes the post down with the like.
+
+  likes decide nothing: nothing is installed or refused by them. 'search'
+  and 'listings' show how many accounts like each app, and 'likes' who.`,
+    likes: `likes options:                      usage: likes [options] <installed app | @account/name | nzip:link | at://>
+      --limit <n>       show at most this many (default: 25)
+      --json            print them as JSON
+
+  who likes an app: each like found through the backlink index the policy
+  names (see 'policy'), then fetched from its author's own PDS and verified,
+  with the post it made. Newest first. The count is of accounts, so one
+  account counts once however many records it writes.`,
     publish: `publish options:                    usage: publish [options] <name> <url | domain> [<name> <url | domain>]...
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
@@ -231,7 +276,10 @@ export const HELP: Record<string, string> = {
       --kind <kind>     attest: what is vouched for (permitted, prohibited, …)
       --verdict <good | bad>  attest: vouch for it, or warn against it
                         (default: good)
-      --note <text>     attest: a short note, for information
+      --note <text>     attest: context, in your own words
+      --post <url | at://>  attest: a post that gives the context, linked
+      --note-as-post    attest: also post the note, and link that post
+      --note-from-post  attest: take the note from the --post's text
       --revoke          attest: withdraw the account's attestation of it
 
   a suite is a set of listings installed together: 'bundle install
@@ -770,7 +818,10 @@ export const SUBCOMMAND_HELP: Record<string, Record<string, string>> = {
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --kind <kind>     what is vouched for: permitted, prohibited, …
       --verdict <good | bad>  vouch for it, or warn against it (default: good)
-      --note <text>     a short note, for information
+      --note <text>     context, in your own words; 300 characters at most
+      --post <url | at://>  a post that gives the context, linked from it
+      --note-as-post    also post the note from the account, and link that post
+      --note-from-post  take the note from the --post's text
       --revoke          withdraw the account's attestation of it
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
@@ -907,6 +958,16 @@ function attesterLines(o: Style, who: { did: string; handle?: string | undefined
     ];
 }
 
+// What an attester said about it beyond the verdict: their note, quoted and
+// made safe to print, since it is anyone's words; and the post they link, as
+// a link to open. Nothing when the attestation carries neither.
+function contextLines(o: Style, { note, post }: { note?: string | undefined; post?: StrongRef | undefined }): string[] {
+    return [
+        ...(note !== undefined && untrusted(note) ? [o.people ? `${o.dim('“')}${untrusted(note)}${o.dim('”')}` : `note: "${untrusted(note)}"`] : []),
+        ...(post ? [o.people ? o.cyan(untrusted(postUrl(post.uri))) : `post: ${untrusted(postUrl(post.uri))}`] : []),
+    ];
+}
+
 // An attester as a policy or a record writes one: `kind@did`, or a bare DID.
 function attesterSpecLines(o: Style, spec: string): string[] {
     const { subject, kind } = parseAttester(spec);
@@ -953,7 +1014,7 @@ export const UNDECIDED = 4;
  * table and the help in one place is what stops the two drifting apart.
  */
 export const COMMANDS: Record<string, (args: string[], io: Console) => number | Promise<number>> = {
-    create, sign, audit, verify: check, attest, publish, unpublish, suite, run, search, listings, install, parts, update, installed, validate, uninstall,
+    create, sign, audit, verify: check, attest, like, likes, publish, unpublish, suite, run, search, listings, install, parts, update, installed, validate, uninstall,
     node: nodeCommand, sea, trust, policy: policyCommand, lexicon, skill, shell, links,
 };
 
@@ -1213,6 +1274,7 @@ async function attest(args: string[], io: Console): Promise<number> {
     if (values.kind !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.kind)) throw new Error(`attest: '${values.kind}' is not a valid kind`);
     if (values.verdict !== 'good' && values.verdict !== 'bad') throw new Error(`attest: --verdict is good or bad, not '${values.verdict}'`);
     const verdict: 'good' | 'bad' = values.verdict;
+    const context = await attestationContext('attest', values, io);
 
     // Every archive is checked before anyone signs in, and one that does not
     // hold together stops the lot: a release is attested whole or not at all.
@@ -1247,7 +1309,7 @@ async function attest(args: string[], io: Console): Promise<number> {
     // One sign-in for everything named.
     const ATPROTO = await import('./atproto.ts');
     const { COLLECTION } = await import('./attestation.ts');
-    const session = await signIn('attest', values, io, `atproto repo:${COLLECTION}`);
+    const session = await signIn('attest', values, io, attestScope(COLLECTION, context));
     try {
         // All of them in one batch, not a request each: every request counts
         // against the account's rate limits.
@@ -1260,16 +1322,19 @@ async function attest(args: string[], io: Console): Promise<number> {
             }
         } else {
             const unique = [...new Map(checked.map((each) => [each.hash, each])).values()];
-            const written = await ATPROTO.attestAll(session, unique.map(({ hashAlg, hash }) => ({ hashAlg, hex: hash, kind: values.kind, verdict, note: values.note })));
+            const { written, post } = await writeAttestations(session, unique.map(({ hashAlg, hash }) => ({ hashAlg, hex: hash, kind: values.kind, verdict })), context);
+            if (context.publish && post) io.err(o.people ? o.attestation(`posted the note: ${o.cyan(postUrl(post.uri))}`) : `* posted the note: ${postUrl(post.uri)}`);
             for (const { archive, hashAlg, hash } of checked) {
                 const uri = written[unique.findIndex((each) => each.hash === hash)]!.uri;
                 if (o.people) {
                     io.out(o.attestation(`${verdict === 'bad' ? o.red(o.bold('marked bad')) : o.green('attested')} ${o.bold(archive)}${values.kind ? ` as ${values.kind}` : ''}`));
                     io.out(`   ${o.dim(`${hashAlg}:${hash}`)}`);
                     io.out(`   ${o.cyan(uri)}`);
+                    for (const line of contextLines(o, { note: context.note, post })) io.out(`   ${line}`);
                 } else {
                     io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} ${archive} (${hashAlg}:${hash}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
                     io.out(`  ${uri}`);
+                    for (const line of contextLines(o, { note: context.note, post })) io.out(`  ${line}`);
                 }
             }
         }
@@ -1277,6 +1342,171 @@ async function attest(args: string[], io: Console): Promise<number> {
         await session.end?.();
     }
     return 0;
+}
+
+// The listing a like is of: an app installed from its listing, as it is
+// installed; `@<handle or did>/<name>`; an nzip: link; or a listing's at://
+// address. With its install link, for the post: as the person named it when
+// that was by handle, otherwise by DID.
+async function likedListing(command: string, value: string): Promise<import('./like.ts').Likeable & { label: string }> {
+    const INSTALL = await import('./install.ts');
+    const LISTING = await import('./listing.ts');
+    let target = value;
+    const record = INSTALL.records()[value];
+    if (record && record.scope === undefined) {
+        target = INSTALL.sourceOf(record);
+        if (!LISTING.parseListingUri(target)) throw new Error(`${command}: ${value} was installed from ${target}, not from a listing, so there is no listing to like — likes are of published apps`);
+    } else if (/^nzip:/i.test(value)) {
+        target = (await import('./links.ts')).readLink(value).target;
+    }
+    const found = target.startsWith('@') ? await LISTING.resolveListing(target)
+        : LISTING.parseListingUri(target) ? await LISTING.followListing(target)
+        : undefined;
+    if (!found) throw new Error(`${command}: name an installed app, @<handle or did>/<name>, an nzip: link, or a listing's at:// address; '${value}' is none of those`);
+    const who = target.startsWith('@') ? target.slice(1, target.lastIndexOf('/')) : found.did;
+    const link = (await import('./like.ts')).likeLink(found.uri, who, found.name, INSTALL.SELF);
+    return { uri: found.uri, record: found.record, name: found.name, link, label: target.startsWith('@') ? target : value };
+}
+
+// Like an app, from an account: a like of its listing, and a post saying so.
+async function like(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.like });
+    if (positionals.length !== 1) throw new Error('like: name one app — as it is installed, @<handle or did>/<name>, an nzip: link, or an at:// address');
+    if (values.revoke && values.note !== undefined) throw new Error('like: --revoke takes a like back; it takes no note');
+    const LIKE = await import('./like.ts');
+    const listing = await likedListing('like', positionals[0]!);
+    // The post is made up once before anyone signs in, so a note that does not fit costs nothing.
+    if (!values.revoke) LIKE.likePost(listing, values.note);
+    const session = await signIn('like', values, io, `atproto repo:${LIKE.LIKE} repo:app.bsky.feed.post?action=create&action=delete`);
+    const { o } = styles(io);
+    try {
+        if (values.revoke) {
+            const gone = await LIKE.unlike(session, listing.uri);
+            io.out(o.people
+                ? gone ? `${o.bundle(o.bold(listing.label))}  ${o.dim('no longer liked, and the post is gone')}` : `${o.bundle(o.bold(listing.label))}  ${o.dim(`was not liked by ${session.did}`)}`
+                : gone ? `unliked ${listing.label}` : `${listing.label} was not liked by ${session.did}`);
+            return 0;
+        }
+        const liked = await LIKE.like(session, listing, { note: values.note });
+        const link = liked.post ? untrusted(postUrl(liked.post.uri)) : undefined;
+        if (o.people) {
+            io.out(liked.already ? `${o.bundle(o.bold(listing.label))}  ${o.dim('liked already')}` : `${o.green('★')} ${o.bundle(o.bold(listing.label))}  ${o.green('liked')}`);
+            if (link) io.out(`   ${o.cyan(link)}`);
+        } else {
+            io.out(`${liked.already ? 'already liked' : 'liked'} ${listing.label}`);
+            if (link) io.out(`  post: ${link}`);
+        }
+        return 0;
+    } finally {
+        await session.end?.();
+    }
+}
+
+// Who likes an app: found through the backlink index, each verified at its source.
+async function likes(args: string[], io: Console): Promise<number> {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.likes });
+    if (positionals.length !== 1) throw new Error('likes: name one app — as it is installed, @<handle or did>/<name>, an nzip: link, or an at:// address');
+    const limit = values.limit === undefined ? 25 : Number(values.limit);
+    if (!Number.isInteger(limit) || limit < 1) throw new Error(`likes: --limit is a number of likes, not '${values.limit}'`);
+    const index = (await import('./policy.ts')).loadPolicy().discovery;
+    if (!index) throw new Error("likes: likes are found through a backlink index, and the policy turns discovery off ('bundle policy')");
+    const LIKE = await import('./like.ts');
+    const listing = await likedListing('likes', positionals[0]!);
+    const [total, found] = await Promise.all([LIKE.countLikes(listing.uri, { index }), LIKE.likers(listing.uri, { index, limit })]);
+    if (values.json) {
+        io.out(JSON.stringify({ listing: listing.uri, total, likes: found }, null, 2));
+        return 0;
+    }
+    const { o } = styles(io);
+    io.out(o.people ? `${o.bundle(o.bold(listing.label))}  ${o.green(`★ ${total}`)}` : `${listing.label}: ${plural(total, 'like')}`);
+    for (const each of found) {
+        const who = each.handle ? `${untrusted(each.handle)} (${each.did})` : each.did;
+        if (o.people) {
+            io.out(`   ${o.bold(each.handle ? untrusted(each.handle) : each.did)}${each.handle ? `  ${o.dim(each.did)}` : ''}  ${o.dim(each.createdAt)}`);
+            if (each.text) io.out(`      ${o.dim('“')}${untrusted(each.text)}${o.dim('”')}`);
+            if (each.post) io.out(`      ${o.cyan(untrusted(postUrl(each.post.uri)))}`);
+        } else {
+            io.out(`  ${who}, ${each.createdAt}`);
+            if (each.text) io.out(`    "${untrusted(each.text)}"`);
+            if (each.post) io.out(`    ${untrusted(postUrl(each.post.uri))}`);
+        }
+    }
+    if (found.length < total && !values.json) io.err(styles(io).e.dim(`${found.length} shown of ${total}; --limit shows more`));
+    return 0;
+}
+
+/** The flags `attest` and `suite attest` give an attestation its context with. */
+interface ContextValues {
+    note?: string | undefined;
+    post?: string | undefined;
+    'note-as-post'?: boolean | undefined;
+    'note-from-post'?: boolean | undefined;
+    revoke?: boolean | undefined;
+}
+
+/** What an attestation is to say for itself, settled before anyone signs in. */
+interface AttestationContext {
+    note?: string | undefined;
+    post?: StrongRef | undefined;
+    /** Post the note from the attesting account, and link that post. */
+    publish: boolean;
+}
+
+// The note and the post an attestation carries: checked, and a post named
+// fetched and verified, before anyone signs in — so a typo, a note too long
+// or a post that is not there costs no sign-in, and writes nothing.
+async function attestationContext(command: string, values: ContextValues, io: Console): Promise<AttestationContext> {
+    const asPost = Boolean(values['note-as-post']);
+    const fromPost = Boolean(values['note-from-post']);
+    if (values.revoke) {
+        if (values.note !== undefined || values.post !== undefined || asPost || fromPost) throw new Error(`${command}: --revoke withdraws an attestation; it takes no note or post`);
+        return { publish: false };
+    }
+    if (asPost && values.note === undefined) throw new Error(`${command}: --note-as-post posts the note: give one with --note`);
+    if (asPost && values.post !== undefined) throw new Error(`${command}: --note-as-post makes the post; --post names one already made — one or the other`);
+    if (fromPost && values.post === undefined) throw new Error(`${command}: --note-from-post takes its note from a post: name it with --post`);
+    if (fromPost && values.note !== undefined) throw new Error(`${command}: --note-from-post takes the note from the post; --note gives one — one or the other`);
+    let note = values.note;
+    if (note !== undefined) {
+        if (!note.trim()) throw new Error(`${command}: --note is empty`);
+        const long = noteTooLong(note);
+        if (long) throw new Error(`${command}: the note is too long: ${long}`);
+    }
+    if (values.post === undefined) return { note, publish: asPost };
+
+    const ATPROTO = await import('./atproto.ts');
+    const found = await ATPROTO.resolvePost(values.post);
+    if (fromPost) {
+        if (!found.text?.trim()) throw new Error(`${command}: ${values.post} has no text to take as the note`);
+        const long = noteTooLong(found.text);
+        if (long) throw new Error(`${command}: the post's text is too long for a note (${long}): leave out --note-from-post, and the post is linked as it is`);
+        note = found.text;
+    }
+    const { e } = styles(io);
+    io.err(e.people ? e.attestation(`linking ${e.cyan(postUrl(found.uri))}`) : `* linking ${postUrl(found.uri)}`);
+    return { note, post: { uri: found.uri, cid: found.cid }, publish: false };
+}
+
+/** The scope an attesting command signs in for: attestations, and posts too when it is to post one. */
+function attestScope(collection: string, context: AttestationContext): string {
+    return context.publish ? `atproto repo:${collection} repo:app.bsky.feed.post?action=create&action=delete` : `atproto repo:${collection}`;
+}
+
+// Write attestations with their context, signed in: posting the note first
+// when asked, so the attestation can link it — and taking the post down again
+// when the attestations could not be written, so nothing is left pointing at
+// an attestation that is not there.
+async function writeAttestations(session: import('./atproto.ts').Session, attesting: Omit<import('./atproto.ts').Attesting, 'note' | 'post'>[],
+    context: AttestationContext): Promise<{ written: { uri: string }[]; post?: StrongRef | undefined }> {
+    const ATPROTO = await import('./atproto.ts');
+    const post = context.publish ? await ATPROTO.createPost(session, { text: context.note! }) : context.post;
+    try {
+        const written = await ATPROTO.attestAll(session, attesting.map((each) => ({ ...each, note: context.note, post })));
+        return { written, post };
+    } catch (err) {
+        if (context.publish && post) await ATPROTO.deletePost(session, post.uri).catch(() => {});
+        throw err;
+    }
 }
 
 /** The flags every command that takes an attestation policy accepts. */
@@ -1346,7 +1576,7 @@ export function report(res: VerificationResult, json: boolean, io: Console, arch
             attestations: res.attestations?.map((each) => ({
                 did: each.did, handle: each.handle, required: each.kind, kind: each.attested,
                 ok: each.ok, reason: each.reason, uri: each.uri, createdAt: each.createdAt,
-                checkedAt: each.checkedAt?.toISOString(),
+                checkedAt: each.checkedAt?.toISOString(), note: each.note, post: each.post,
             })),
             members: res.digests ? [...res.digests.keys()] : undefined,
             code: state.code,
@@ -1368,7 +1598,7 @@ export function report(res: VerificationResult, json: boolean, io: Console, arch
         if (res.hash) field('hash', o.dim(`${res.hashAlg}:${res.hash}`));
         for (const each of res.attestations ?? []) {
             const lines = attesterLines(o, { did: each.did, handle: each.handle, kind: each.ok ? each.attested ?? each.kind : each.kind });
-            if (each.ok) lines.push(...(each.createdAt ? [o.dim(`at ${each.createdAt}`)] : []));
+            if (each.ok) lines.push(...(each.createdAt ? [o.dim(`at ${each.createdAt}`)] : []), ...contextLines(o, each));
             else lines.push(o.red(each.reason ?? 'missing'));
             for (const line of marked(o, '   ', 'attestation', each.ok ? 'attested by' : o.red('missing'), lines)) io.out(line);
         }
@@ -1390,6 +1620,7 @@ export function report(res: VerificationResult, json: boolean, io: Console, arch
             io.out(each.ok
                 ? `  attested: ${who}${kind ? ` as ${kind}` : ''}${each.createdAt ? `, ${each.createdAt}` : ''}`
                 : `  missing:  ${who}${each.kind ? ` as ${each.kind}` : ''} — ${each.reason}`);
+            if (each.ok) for (const line of contextLines(PLAIN, each)) io.out(`            ${line}`);
         }
     }
 }
@@ -1855,6 +2086,7 @@ export function showReview(review: REVIEW.Review, about: { name: string; url: st
         } else {
             io.err(`  ${String(++n).padStart(2)} ${what} — ${item.known ?? 'new'}`);
         }
+        if (item.evidence.type === 'attestation') for (const line of contextLines(PLAIN, item.evidence)) io.err(`                 ${line}`);
     }
     if (!review.items.length) io.err('     nothing vouches for it');
     for (const note of review.notes) io.err(`  ! ${note}`);
@@ -1872,7 +2104,7 @@ function showReviewTo(review: REVIEW.Review, about: { name: string }, io: Consol
         const bad = evidence.type === 'attestation' && evidence.verdict === 'bad';
         const [mark, verb, lines]: [Mark, string, string[]] = evidence.type === 'signature' ? ['signature', 'signed by', signerLines(e, evidence.identity, evidence.issuer)]
             : evidence.type === 'certificate' ? ['signature', 'certificate', [...evidence.subject.split('\n'), ...(evidence.anchored ? [] : [e.yellow('not anchored')])]]
-            : ['attestation', bad ? e.red(e.bold('WARNING from')) : 'attested by', [...attesterLines(e, evidence), ...(evidence.createdAt ? [e.dim(`at ${evidence.createdAt}`)] : [])]];
+            : ['attestation', bad ? e.red(e.bold('WARNING from')) : 'attested by', [...attesterLines(e, evidence), ...(evidence.createdAt ? [e.dim(`at ${evidence.createdAt}`)] : []), ...contextLines(e, evidence)]];
         const standing = item.excluded ? (bad ? e.red('marked it bad') : e.dim(item.excluded)) : item.known ? e.green(item.known) : e.yellow('new — not accepted before');
         const block = marked(e, '      ', mark, verb, [...lines, standing]);
         // The number sits in the margin of the first line, where it can be found.
@@ -2348,7 +2580,7 @@ async function search(args: string[], io: Console): Promise<number> {
     const app = values.for !== undefined ? await appListing('search', values.for, !values.offline) : undefined;
     await freshIndex(values, io, app?.uri);
     const found = LISTING.search(text, undefined, { for: app?.uri });
-    printListings(found, Boolean(values.json), io, app);
+    printListings(found, Boolean(values.json), io, app, await likeCounts(found, values));
     if (!found.length && !values.json) io.err(styles(io).e.dim(`nothing listed${app ? ` for ${app.label}` : ''} matches '${text}'`));
     return 0;
 }
@@ -2360,7 +2592,7 @@ async function listings(args: string[], io: Console): Promise<number> {
     const app = values.for !== undefined ? await appListing('listings', values.for, !values.offline) : undefined;
     await freshIndex(values, io, app?.uri);
     const found = LISTING.listings(undefined, { for: app?.uri });
-    printListings(found, Boolean(values.json), io, app);
+    printListings(found, Boolean(values.json), io, app, await likeCounts(found, values));
     if (!found.length && !values.json) io.err(styles(io).e.dim(app ? `no plugins listed for ${app.label}` : 'nothing listed'));
     return 0;
 }
@@ -2430,10 +2662,34 @@ async function freshIndex(values: { refresh?: boolean | undefined; offline?: boo
     }
 }
 
-function printListings(found: import('./listing.ts').Listing[], json: boolean, io: Console, app?: { label: string; installed?: string | undefined } | undefined): void {
+// How many accounts like each of these listings, as the backlink index the
+// policy names counts them: all asked at once, a few at a time. Nothing with
+// --offline or with discovery turned off, and nothing for a listing the index
+// could not answer for — a count left out, never a search that fails.
+async function likeCounts(found: import('./listing.ts').Listing[], values: { offline?: boolean | undefined }): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (values.offline || !found.length) return counts;
+    const index = (await import('./policy.ts')).loadPolicy().discovery;
+    if (!index) return counts;
+    const LIKE = await import('./like.ts');
+    const queue = [...found];
+    await Promise.all(Array.from({ length: Math.min(8, queue.length) }, async () => {
+        for (let each = queue.shift(); each; each = queue.shift()) {
+            try {
+                counts.set(each.uri, await LIKE.countLikes(each.uri, { index }));
+            } catch {
+                // left out
+            }
+        }
+    }));
+    return counts;
+}
+
+function printListings(found: import('./listing.ts').Listing[], json: boolean, io: Console, app?: { label: string; installed?: string | undefined } | undefined,
+    likes: Map<string, number> = new Map()): void {
     if (json) {
-        io.out(JSON.stringify(found.map(({ install, did, handle, name, title, description, url, domain, createdAt, for: forApp }) => ({
-            install, did, handle, name, title, description, url, domain, for: forApp, createdAt,
+        io.out(JSON.stringify(found.map(({ install, did, handle, name, title, description, url, domain, createdAt, for: forApp, uri }) => ({
+            install, did, handle, name, title, description, url, domain, for: forApp, createdAt, likes: likes.get(uri),
         })), null, 2));
         return;
     }
@@ -2444,10 +2700,16 @@ function printListings(found: import('./listing.ts').Listing[], json: boolean, i
     const width = Math.max(0, ...found.map((each) => each.install.length));
     for (const each of found) {
         const about = [each.title && each.title !== each.name ? each.title : undefined, each.description].filter(Boolean).join(' — ');
+        const liked = likes.get(each.uri);
         // For people the name is what to copy, so it stands out, and the rest
         // steps back; the padding is computed on the plain name either way.
-        if (o.people) io.out(`${o.bundle(o.bold(each.install))}${about ? `${' '.repeat(width - each.install.length)}  ${o.dim(about)}` : ''}`);
-        else io.out(about ? `${each.install.padEnd(width)}  ${about}` : each.install);
+        if (o.people) {
+            const stars = liked ? `${o.green(`★ ${liked}`)}  ` : '';
+            io.out(`${o.bundle(o.bold(each.install))}${about || stars ? `${' '.repeat(width - each.install.length)}  ${stars}${o.dim(about)}` : ''}`);
+        } else {
+            const stars = liked ? `[${plural(liked, 'like')}] ` : '';
+            io.out(about || stars ? `${each.install.padEnd(width)}  ${stars}${about}` : each.install);
+        }
     }
 }
 
@@ -2784,10 +3046,10 @@ async function validate(args: string[], io: Console): Promise<number> {
             else io.out(name);
             const out = (lines: string[]) => { for (const line of lines) io.out(line); };
             for (const seen of each.added.filter((one) => one.verdict === 'bad')) {
-                out(marked(o, '   ', 'attestation', o.red(o.bold('WARNING from')), [...attesterLines(o, seen), o.red('has marked it bad since it was last checked')]));
+                out(marked(o, '   ', 'attestation', o.red(o.bold('WARNING from')), [...attesterLines(o, seen), o.red('has marked it bad since it was last checked'), ...contextLines(o, seen)]));
             }
             if (!values.quiet) {
-                for (const seen of each.added.filter((one) => one.verdict === 'good')) out(marked(o, '   ', 'attestation', `${o.green('new:')} attested by`, attesterLines(o, seen)));
+                for (const seen of each.added.filter((one) => one.verdict === 'good')) out(marked(o, '   ', 'attestation', `${o.green('new:')} attested by`, [...attesterLines(o, seen), ...contextLines(o, seen)]));
                 for (const seen of each.removed) out(marked(o, '   ', 'attestation', `${o.yellow('withdrawn:')}${seen.verdict === 'bad' ? ' a warning from' : ''}`, attesterLines(o, seen)));
                 for (const problem of each.problems) io.err(`   ${e.warn(`${problem} — the cache answered instead`)}`);
             }
@@ -2804,9 +3066,16 @@ async function validate(args: string[], io: Console): Promise<number> {
             continue;
         }
         if (each.check.state !== 'ok') io.out(`${name}: ${each.check.state.toUpperCase()} — ${each.check.reason}`);
-        for (const seen of each.added.filter((one) => one.verdict === 'bad')) io.out(`${name}: WARNING — ${who(seen)} has marked it bad since it was last checked`);
+        const context = (seen: Seen) => { for (const line of contextLines(PLAIN, seen)) io.out(`  ${line}`); };
+        for (const seen of each.added.filter((one) => one.verdict === 'bad')) {
+            io.out(`${name}: WARNING — ${who(seen)} has marked it bad since it was last checked`);
+            context(seen);
+        }
         if (!values.quiet) {
-            for (const seen of each.added.filter((one) => one.verdict === 'good')) io.out(`${name}: new — attested by ${who(seen)}`);
+            for (const seen of each.added.filter((one) => one.verdict === 'good')) {
+                io.out(`${name}: new — attested by ${who(seen)}`);
+                context(seen);
+            }
             for (const seen of each.removed) io.out(`${name}: withdrawn — ${who(seen)}${seen.verdict === 'bad' ? ' (a warning)' : ''}`);
             if (!attention && !each.added.length && !each.removed.length) io.out(`${name}: OK — nothing new`);
             for (const problem of each.problems) io.err(`! ${problem} — the cache answered instead`);
@@ -3023,6 +3292,7 @@ async function suite(args: string[], io: Console): Promise<number> {
         if (values.kind !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.kind)) throw new Error(`suite attest: '${values.kind}' is not a valid kind`);
         if (values.verdict !== 'good' && values.verdict !== 'bad') throw new Error(`suite attest: --verdict is good or bad, not '${values.verdict}'`);
         const verdict: 'good' | 'bad' = values.verdict;
+        const context = await attestationContext('suite attest', values, io);
         const { name, members } = rest[0] !== undefined ? await named(rest[0]) : SUITE.readSpec(file);
         if (!members.length) throw new Error(`suite attest: ${name} has no members`);
         const { hashAlg, hex } = SUITE.suiteHash({ members });
@@ -3040,7 +3310,7 @@ async function suite(args: string[], io: Console): Promise<number> {
             }
         }
         const { COLLECTION } = await import('./attestation.ts');
-        const session = await signIn('suite attest', values, io, `atproto repo:${COLLECTION}`);
+        const session = await signIn('suite attest', values, io, attestScope(COLLECTION, context));
         try {
             const ATPROTO = await import('./atproto.ts');
             if (values.revoke) {
@@ -3049,14 +3319,17 @@ async function suite(args: string[], io: Console): Promise<number> {
                     ? o.attestation(`withdrew suite ${o.bold(name)}  ${o.dim(`${hashAlg}:${hex}`)}`)
                     : `withdrew ${session.did}'s attestation of suite ${name} (${hashAlg}:${hex})`);
             } else {
-                const [written] = await ATPROTO.attestAll(session, [{ hashAlg, hex, kind: values.kind, verdict, note: values.note }]);
+                const { written: [written], post } = await writeAttestations(session, [{ hashAlg, hex, kind: values.kind, verdict }], context);
+                if (context.publish && post) io.err(o.people ? o.attestation(`posted the note: ${o.cyan(postUrl(post.uri))}`) : `* posted the note: ${postUrl(post.uri)}`);
                 if (o.people) {
                     io.out(o.attestation(`${verdict === 'bad' ? o.red(o.bold('marked bad')) : o.green('attested')} suite ${o.bold(name)}${values.kind ? ` as ${values.kind}` : ''}`));
                     io.out(`   ${o.dim(`${hashAlg}:${hex}`)}`);
                     io.out(`   ${o.cyan(written!.uri)}`);
+                    for (const line of contextLines(o, { note: context.note, post })) io.out(`   ${line}`);
                 } else {
                     io.out(`${verdict === 'bad' ? 'marked bad' : 'attested'} suite ${name} (${hashAlg}:${hex}) as ${session.did}${values.kind ? ` (${values.kind})` : ''}`);
                     io.out(`  ${written!.uri}`);
+                    for (const line of contextLines(o, { note: context.note, post })) io.out(`  ${line}`);
                 }
             }
         } finally {
@@ -3713,10 +3986,23 @@ export const OPTIONS = {
         from:            { type: 'string' },
         kind:            { type: 'string' },
         note:            { type: 'string' },
+        post:            { type: 'string' },
+        'note-as-post':  { type: 'boolean' },
+        'note-from-post': { type: 'boolean' },
         verdict:         { type: 'string', default: 'good' },
         'password-file': { type: 'string' },
         revoke:          { type: 'boolean' },
         root:            { type: 'string', short: 'r', multiple: true },
+    },
+    like: {
+        as:              { type: 'string' },
+        note:            { type: 'string' },
+        revoke:          { type: 'boolean' },
+        'password-file': { type: 'string' },
+    },
+    likes: {
+        limit: { type: 'string' },
+        json:  { type: 'boolean' },
     },
     publish: {
         as:              { type: 'string' },
@@ -3743,6 +4029,9 @@ export const OPTIONS = {
         kind:            { type: 'string' },
         verdict:         { type: 'string', default: 'good' },
         note:            { type: 'string' },
+        post:            { type: 'string' },
+        'note-as-post':  { type: 'boolean' },
+        'note-from-post': { type: 'boolean' },
         revoke:          { type: 'boolean' },
     },
     run: RUN_OPTIONS,

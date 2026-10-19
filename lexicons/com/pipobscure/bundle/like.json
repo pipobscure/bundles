@@ -1,0 +1,35 @@
+{
+  "lexicon": 1,
+  "id": "com.pipobscure.bundle.like",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "The repository's owner likes an app: a star for it, across its releases. It is of the app's listing (com.pipobscure.bundle.listing), and comes with a post from the same account saying so. The record key is the sha256 of the listing's at:// address in lowercase hex, so an account likes an app once. A like vouches for nothing; nothing installs or refuses by it.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "subject",
+          "createdAt"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "The at:// address of the listing of the app liked."
+          },
+          "post": {
+            "type": "ref",
+            "ref": "com.atproto.repo.strongRef",
+            "description": "The post that says so, from the same account."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the like was made, by the liker's own clock."
+          }
+        }
+      }
+    }
+  }
+}

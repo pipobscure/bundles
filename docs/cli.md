@@ -25,7 +25,9 @@ bundle --help                            bundle -v, --version
 
 | Vouching | |
 |---|---|
-| [`attest`](#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that |
+| [`attest`](#attest) | ✍️ vouch for archives from an atproto account, warn against them, or withdraw that — with a note and a post for context |
+| [`like`](#like) | ★ like an app: a star for it, and a post saying so |
+| [`likes`](#likes) | who likes an app |
 | [`lexicon`](#lexicon) | show, check or publish the atproto lexicons attestations and listings are written in |
 
 | Publishing and finding | |
@@ -450,6 +452,9 @@ bundle attest --as audit.example.com --kind audited app.nzip app app.unsigned.nz
 bundle attest --as scanner.example --verdict bad --kind malware app.nzip
 bundle attest --as audit.example.com --revoke app.nzip
 bundle attest --as pipobscure.com --kind published --from listings.json               # what publish --from lists
+bundle attest --as audit.example.com --kind audited --note 'Read every member of 2.1.' app.nzip
+bundle attest --as audit.example.com --kind audited --note 'Read every member of 2.1.' --note-as-post app.nzip
+bundle attest --as scanner.example --verdict bad --kind vulnerable --post https://bsky.app/profile/scanner.example/post/3l… app.nzip
 ```
 
 An attestation is an atproto record, in the attester's own repository, saying *I vouch for the
@@ -483,6 +488,26 @@ withdraw their attestation.
   attestations reach the local cache, verified, the next time something fetches them:
   [`trust`](#trust), [`verify --attester`](#verify), an install.
 
+**An attestation can say why.** Both parts are optional, and either or both can be given:
+
+- **`--note`** is context in your own words, kept in the attestation itself: why you vouch for
+  the file, or what is wrong with it. 300 characters at most.
+- **`--post`** links a post that gives the context: yours or anyone's, a thread, an advisory.
+  It takes the post's `https://bsky.app/profile/…/post/…` link or its `at://` address. The post
+  is fetched from its author's PDS and verified first, and the attestation pins the version there
+  now, by its CID.
+- **`--note-as-post`** posts the note from the same account too, and links that post. The
+  sign-in then asks to create (and, should the attestation fail, delete) posts as well as
+  attestations. A post made for an attestation that cannot be written is taken down again.
+- **`--note-from-post`** takes the note from the linked post's text, so the context travels with
+  the attestation even where the post cannot be fetched.
+
+The note and the post are shown wherever the attestation is: to whoever reviews the file in
+[`install`](#install) and [`update`](#update), by [`verify`](#verify), and by
+[`validate`](#validate) when the attestation is new. A note is anyone's words, so it is shown
+quoted, with anything that could steer the terminal taken out. Neither decides anything: an
+attestation counts, or refuses a file, exactly as it would without them.
+
 How attestations are used, and what they do and do not prove, is in [`install`](#install),
 [`verify`](#verify), the [policy](#policy) and
 [proposals/atproto-attestations.md](../proposals/atproto-attestations.md).
@@ -492,13 +517,66 @@ How attestations are used, and what they do and do not prove, is in [`install`](
 | `--as <handle or did>` | the account to attest as (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
 | `--kind <kind>` | what is being said: `published`, `audited`, `reproduced`, or with `--verdict bad`, `malware`, `vulnerable`, … |
 | `--verdict <good or bad>` | `good` (the default) vouches for the file; `bad` warns against it |
-| `--note <text>` | a short note kept with the attestation |
+| `--note <text>` | context, in your own words; 300 characters at most |
+| `--post <link or at://>` | a post that gives the context, linked from the attestation |
+| `--note-as-post` | also post the note from the account, and link that post |
+| `--note-from-post` | take the note from the `--post`'s text |
 | `--from <file>` | attest these too: the JSON file [`publish --from`](#publish) reads, each entry's archive fetched from its `url` or `domain` |
 | `--revoke` | withdraw your attestations of these archives instead |
 | `--password-file <file>` | use an app password from this file instead of signing in (`BUNDLE_ATPROTO_PASSWORD` works too). Never take a password as an argument. |
 | `-r, --root <file>` | an extra trusted root, for checking the archives first; repeatable |
 
 Different shapes of one release are different bytes. Attest each one you publish.
+
+### `like`
+
+```
+bundle like [options] <installed app | @account/name | nzip:link | at://>
+bundle like --as you.example @alice.example/tool
+bundle like --as you.example --note 'Saved my Sunday.' tool
+bundle like --as you.example --revoke tool
+```
+
+A like is a star for an app, from an Atmosphere (atproto) account. It is of the app's listing,
+not of one release, so it stays with the app as it is released again, and an account likes an
+app once. The app must be published (see [`publish`](#publish)). An app installed from its
+listing can be named as it is installed.
+
+**Every like comes with a post** from the same account: your `--note`, or else
+`🌳 I like <title>: <description>` from the app's listing, and then the app's `nzip:` link, so
+whoever reads it can install the app in one click. bundle itself is the one exception: its likes
+link to its page, https://bundle.pipobscure.com/, since an `nzip:` link opens bundle, and whoever
+reads about it may not have it yet. The sign-in asks to write likes and to create and delete
+posts, and nothing else. `--revoke` takes back the like and the post it made.
+
+What it writes is `at://<your DID>/com.pipobscure.bundle.like/<sha256 of the listing's address>`,
+naming the listing and the post. Likes decide nothing: nothing is installed or refused by them.
+[`search`](#search) and [`listings`](#listings) show how many accounts like each app, and
+[`likes`](#likes) who.
+
+| Option | |
+|---|---|
+| `--as <handle or did>` | the account to like it from (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
+| `--note <text>` | what the post says, in your own words, before the link |
+| `--revoke` | take the like back, and the post it made |
+| `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
+
+### `likes`
+
+```
+bundle likes [options] <installed app | @account/name | nzip:link | at://>
+bundle likes @alice.example/tool
+```
+
+Who likes an app, newest first, each with what their post says and a link to it. The likes are
+found through the backlink index the [policy](#policy) names (`discovery`), then each is fetched
+from its author's own PDS and verified. The count is of accounts, as the index keeps it, so one
+account counts once however many records it writes.
+
+| Option | |
+|---|---|
+| `--limit <n>` | show at most this many (default: 25) |
+| `--json` | print `{ listing, total, likes: [{ did, handle, createdAt, post, text }] }` |
 
 ### `lexicon`
 
@@ -808,7 +886,10 @@ Then it permits whole suites, or single bundles, from its own account, and prohi
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 | `--kind <kind>` | `attest`: what is vouched for: `permitted`, `prohibited`, … |
 | `--verdict <good or bad>` | `attest`: vouch for it, or warn against it (default: `good`) |
-| `--note <text>` | `attest`: a short note, for information |
+| `--note <text>` | `attest`: context, in your own words; 300 characters at most |
+| `--post <link or at://>` | `attest`: a post that gives the context, linked from the attestation |
+| `--note-as-post` | `attest`: also post the note from the account, and link that post |
+| `--note-from-post` | `attest`: take the note from the `--post`'s text |
 | `--revoke` | `attest`: withdraw the account's attestation of it |
 
 ### `search`
@@ -820,7 +901,7 @@ bundle search --json bled
 ```
 
 ```
-@pipobscure.com/bled   blink an LED
+@pipobscure.com/bled   ★ 12  blink an LED
 @alice.example/ledger  double-entry bookkeeping
 ```
 
@@ -854,12 +935,16 @@ into the app installed from the listing it names, with no `--for`.
 Nothing is installed from the index. `install` fetches the listing again, from the publisher's
 own PDS, and verifies it.
 
+**★ is how many accounts like the app** (see [`like`](#like)), as the backlink index counts
+them, asked for each listing shown. It is left out with `--offline`, when discovery is off, or
+when the index does not answer; a search never fails for want of it.
+
 | Option | |
 |---|---|
 | `--for <app>` | search the plugins listed for this app instead |
 | `--refresh` | sync first, however recent the index is |
 | `--offline` | answer from the index as it is, without the network |
-| `--json` | print `[{ install, did, handle, name, title, description, url, domain, for, createdAt }]` |
+| `--json` | print `[{ install, did, handle, name, title, description, url, domain, for, createdAt, likes }]` |
 
 ### `listings`
 
@@ -867,7 +952,8 @@ own PDS, and verifies it.
 bundle listings [options]
 ```
 
-Every listing in the index, by name, synced first exactly as for [`search`](#search).
+Every listing in the index, by name, synced first exactly as for [`search`](#search), with how
+many accounts like each.
 
 | Option | |
 |---|---|

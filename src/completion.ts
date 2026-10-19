@@ -48,6 +48,9 @@ const POSITIONALS: Record<string, Hint | ((positionals: string[]) => Hint | null
     update: 'installed', uninstall: 'installed', validate: 'installed',
     // A URL or a domain is anyone's guess; a listing is in the index.
     install: (positionals) => (positionals.length === 0 ? 'listed' : null),
+    // An app to like is named as it is listed, or as it is installed.
+    like: (positionals) => (positionals.length === 0 ? 'listed' : null),
+    likes: (positionals) => (positionals.length === 0 ? 'listed' : null),
     skill: 'skills',
     policy: (positionals) => (positionals.length === 0 ? ['show', 'init', 'check'] : positionals[0] === 'check' ? 'files' : null),
     lexicon: (positionals) => (positionals.length === 0 ? ['check', 'publish'] : null),

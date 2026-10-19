@@ -74,6 +74,16 @@ export interface Attestation {
     checkedAt?: Date | undefined;
     /** The record's address. */
     uri: string;
+    /** The attester's own words about it, when the record carries any: shown, never decisive. */
+    note?: string | undefined;
+    /** A post the attester links for context, when the record names one: shown, never decisive. */
+    post?: StrongRef | undefined;
+}
+
+/** A reference to one version of a record: its address, and its CID. */
+export interface StrongRef {
+    uri: string;
+    cid: string;
 }
 
 /** The outcome of checking a policy against the cache. */
@@ -95,8 +105,48 @@ export interface AttestationRecord {
     kind?: string | undefined;
     /** Absent means good. */
     verdict?: Verdict | undefined;
+    /** Context, in the attester's own words. */
     note?: string | undefined;
+    /** A post that gives the context. */
+    post?: StrongRef | undefined;
     createdAt: string;
+}
+
+/** The longest note the lexicon allows: 300 graphemes, and 3000 bytes. */
+export const NOTE_GRAPHEMES = 300;
+export const NOTE_BYTES = 3000;
+
+/** Why `note` is too long for an attestation, or undefined when it fits. */
+export function noteTooLong(note: string): string | undefined {
+    const graphemes = [...new Intl.Segmenter().segment(note)].length;
+    if (graphemes > NOTE_GRAPHEMES) return `it is ${graphemes} characters long, and an attestation's note holds ${NOTE_GRAPHEMES}`;
+    const bytes = Buffer.byteLength(note);
+    if (bytes > NOTE_BYTES) return `it is ${bytes} bytes long, and an attestation's note holds ${NOTE_BYTES}`;
+    return undefined;
+}
+
+/**
+ * Where a person opens the post `uri` names: a post of the Atmosphere's
+ * microblog (`app.bsky.feed.post`) on the web, as anyone would link it; any
+ * other record by its `at://` address.
+ */
+export function postUrl(uri: string): string {
+    const match = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/?#]+)$/.exec(uri);
+    return match ? `https://bsky.app/profile/${match[1]}/post/${match[2]}` : uri;
+}
+
+// What a record says beyond its verdict, as far as it says it in the shape the
+// lexicon gives: a field that is not, is left out rather than taken as
+// anything. It never decides anything, so it never refuses a record either.
+function contextOf(record: AttestationRecord): { note?: string; post?: StrongRef } {
+    const { note, post } = record as { note?: unknown; post?: unknown };
+    const context: { note?: string; post?: StrongRef } = {};
+    if (typeof note === 'string' && note.trim()) context.note = note;
+    if (post && typeof post === 'object') {
+        const { uri, cid } = post as { uri?: unknown; cid?: unknown };
+        if (typeof uri === 'string' && uri.startsWith('at://') && typeof cid === 'string' && cid) context.post = { uri, cid };
+    }
+    return context;
 }
 
 // ------------------------------------------------------------------- policy ---
@@ -404,7 +454,7 @@ function check(cache: string, { did, kind }: Attester, hashAlg: string, hex: str
     if (!read.ok) return fail(read.reason, { handle, checkedAt: proof.checkedAt });
     const { record } = read;
     const verdict: Verdict = record.verdict ?? 'good';
-    const extra = { handle, checkedAt: proof.checkedAt, attested: record.kind, createdAt: record.createdAt, verdict };
+    const extra = { handle, checkedAt: proof.checkedAt, attested: record.kind, createdAt: record.createdAt, verdict, ...contextOf(record) };
     if (want !== 'any' && verdict !== want) {
         return fail(want === 'good' ? `marked this file bad${record.kind ? ` (${record.kind})` : ''}` : 'vouches for this file', extra);
     }

@@ -113,7 +113,7 @@ function session(live: Live, options: OAuthOptions): Session {
         did: current.did,
         pds: current.pds,
         how: current.scope.split(' ').includes('transition:generic') ? 'OAuth'
-            : current.scope.includes(`repo:${COLLECTION}`) ? 'OAuth (attestations only)'
+            : current.scope.split(' ').filter((part) => part !== 'atproto').join(' ') === `repo:${COLLECTION}` ? 'OAuth (attestations only)'
             : `OAuth (${current.scope.split(' ').filter((part) => part !== 'atproto').join(', ')})`,
         request: async (url, init) => {
             const send = () => dpopFetch(url, {
