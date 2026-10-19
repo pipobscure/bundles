@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.2.0
 
 - **A plugin's listing installs into its app, and so does its `nzip:` link.** The listing
   names the app's listing, so `bundle install @alice.example/bled-gpio`, or a click on
