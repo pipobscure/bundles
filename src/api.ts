@@ -339,6 +339,10 @@ async function produce(
         }
     } catch (err) {
         if (temporary) {
+            // The build may still have a write in flight, which fails on the
+            // destroyed stream: that is the discarded file, and the error that
+            // matters is the one already thrown.
+            out.on('error', () => {});
             out.destroy();
             FS.rmSync(temporary, { force: true });
         }
