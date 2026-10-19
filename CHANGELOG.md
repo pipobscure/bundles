@@ -32,6 +32,12 @@ how to use it is in the [README](README.md) and [docs/](docs/).
   own likes link to https://bundle.pipobscure.com/). `--revoke` takes it back, post and all.
   `search` and `listings` show how many accounts like each app, and `bundle likes` who, each
   verified at its source. A new lexicon, `com.pipobscure.bundle.like`.
+- **bundle installs itself from its own listing**, `@pipobscure.com/bundle`, as any listed app
+  installs, so its updates follow the listing and it is found on the Atmosphere like one. The
+  listing only says where: the publish workflow's signature is still trusted
+  for the release URL alone. When the listing cannot be asked, `bundle install` says so and
+  fetches the release URL as before. An install made from the URL moves to the listing on the
+  first `update` that can ask it, and until then updates exactly as before.
 
 ## 0.1.7
 

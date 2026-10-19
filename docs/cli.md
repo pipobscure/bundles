@@ -978,7 +978,7 @@ bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into b
 bundle install @pipobscure.com/devtools         # a suite: every listing in it
 bundle install --window nzip:pipobscure.com/devtools   # what clicking that link runs
 bundle install --window 'nzip:alice.example/bled-gpio?for=bled'   # a plugin's link, saying its app
-bundle install                                  # this package, from its own release
+bundle install                                  # this package, from the release its listing names
 ```
 
 `curl | sh` with the dangerous parts removed. Nothing is executed to install it, and nothing
@@ -1257,7 +1257,11 @@ own (see [`@pipobscure/bundle/plugins`](api.md#plugins-pipobscurebundleplugins))
 running as a user of its own needs nothing set.
 
 **With neither, it installs this package itself**, from its own GitHub release, accepting
-the identity its [publish workflow](../.github/workflows/publish.yml) signs with. Downloading
+the identity its [publish workflow](../.github/workflows/publish.yml) signs with. Where the
+release is, bundle's own listing says, as any listed app's does: `@pipobscure.com/bundle`, which
+the install then follows. When the listing cannot be asked, it says so in one line and fetches
+the release URL instead. The listing only says where: the trust is with the release URL, so a
+listing that named somewhere else would get a question, not a trusted install. Downloading
 [`bundle.nzip`](https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip) and
 running its `install` (`node --experimental-vfs --vfs-load ./bundle.nzip install`) is
 therefore the whole bootstrap. It makes `nzip:` links open the installed bundle (see
@@ -1302,7 +1306,9 @@ are left as they are. Then every install is updated as below; naming a suite upd
 
 Asks each install's source where the archive is now: a domain's `nzip:` record, or the
 listing it was installed from, fetched and verified again. If the source cannot be asked, or a
-listing has been taken down, it says so and checks the URL it last named. Then it refetches,
+listing has been taken down, it says so and checks the URL it last named. bundle itself,
+installed from its release URL, moves to following its listing from the first update that can
+ask it, and says so once; until then it is checked as before. Then it refetches,
 as a conditional request with the ETag recorded last time. A server with nothing new answers `304` and nothing is downloaded. Identical bytes
 are not an update either. Something new is reviewed exactly as an [`install`](#install) is,
 against what has been accepted for it so far:
@@ -1776,7 +1782,8 @@ never kept: they are bound to a key that only ever exists in memory.
 | `BUNDLE_NODE_DIR` | where `node install` keeps the nodes it downloads, and where the launcher and the Windows association look for them |
 | `BUNDLE_NODE_MIRROR` | where `node install` downloads node from, instead of `https://nodejs.org/dist` |
 | `BUNDLE_SEA_THREAD` | set by an executable's main thread for its workers: what it verified and mounted. Not something to set yourself |
-| `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. |
+| `BUNDLE_SELF_SOURCE` | where `bundle install` (with no argument) fetches this package from: a mirror. Its publish workflow's identity is still the one accepted. A mirror has no listing, so the listing is not asked |
+| `BUNDLE_SELF_LISTING` | the `at://` address of the listing `bundle install` (with no argument) asks, instead of bundle's own. It only says where: the trust stays with the release URL. For tests |
 | `BUNDLE_NO_DESKTOP_SETUP` | do not register `.nzip` or its icon with the desktop, or touch `PATHEXT` on Windows. `BUNDLE_NO_WINDOWS_SETUP`, its old name, still works |
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file |
 | `BUNDLE_ATTESTATIONS` | the attestation cache directory |

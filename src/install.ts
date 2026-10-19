@@ -74,6 +74,13 @@ const require = createRequire(import.meta.url);
  * installed would not be worth having. It is trusted rather than required, so a
  * release signed some other way is a question rather than a refusal.
  * `BUNDLE_SELF_SOURCE` overrides the URL for a mirror; the trust goes with it.
+ *
+ * `listing` is this package's own listing, which `bundle install` asks first
+ * and an install follows from then on, as it would any listed app; it is said
+ * with the DID rather than the handle, since handles change hands. The listing
+ * only says *where*: the trust stays with the URL, so if it ever named another
+ * one, the release there would be a question rather than a trusted install.
+ * `home` is the project's page.
  */
 export const SELF = {
     url: 'https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip',
@@ -85,9 +92,26 @@ export const SELF = {
     issuer: 'https://token.actions.githubusercontent.com',
 } as const;
 
-/** The self-install target, with the environment's override applied. */
-export function self(): { url: string; identity: string; issuer: string } {
-    return { ...SELF, url: process.env['BUNDLE_SELF_SOURCE'] || SELF.url };
+/**
+ * The self-install target, with the environment's overrides applied. A mirror
+ * (`BUNDLE_SELF_SOURCE`) has no listing; `BUNDLE_SELF_LISTING` names one
+ * anyway — another listing to ask, which the tests point at a fake account.
+ */
+export function self(): { url: string; identity: string; issuer: string; listing?: string | undefined } {
+    const url = process.env['BUNDLE_SELF_SOURCE'] || SELF.url;
+    const listing = process.env['BUNDLE_SELF_LISTING'] || (url === SELF.url ? SELF.listing : undefined);
+    return { url, identity: SELF.identity, issuer: SELF.issuer, listing };
+}
+
+/**
+ * Whether an install is this package's own: an app installed from its release
+ * URL, or following its listing — whatever it ended up called.
+ */
+export function isSelf(record: InstallRecord): boolean {
+    if (record.scope !== undefined) return false;
+    const { url, listing } = self();
+    const source = sourceOf(record);
+    return record.url === SELF.url || record.url === url || source === SELF.listing || (listing !== undefined && source === listing);
 }
 
 /** What an installed archive is, and where it came from. */
@@ -790,18 +814,33 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
         log(`* ${previous.name}: linked to ${previous.link}, which is always as it is`);
         return [{ record: previous, state: 'unchanged' }];
     }
-    const source = sourceOf(previous);
+    let source = sourceOf(previous);
     let url = previous.url;
     if (!url) {
         log(`* ${previous.name}: installed from bytes, with no source to ask again`);
         return [{ record: previous, state: 'unchanged', hash: previous.hash }];
+    }
+    // This package's own install, made from its release URL, follows its
+    // listing from the first update that can ask it. Until then — not listed
+    // yet, or not reachable — it is checked as it always was, and nothing more
+    // is said. The URL keeps the trust, so moving costs nothing.
+    let located: { url: string } | undefined;
+    const listing = self().listing;
+    if (listing !== undefined && previous.scope === undefined && (source === SELF.url || source === self().url)) {
+        try {
+            located = await locate(listing, options, () => {});
+            log(`* ${previous.name}: follows ${listing} from now on`);
+            source = listing;
+        } catch {
+            // As before.
+        }
     }
     if (source !== previous.url) {
         // A source that cannot be asked, or a listing taken down, is not the
         // end of the install: the URL it last named is checked instead. The
         // bytes are verified either way, so falling back trusts nothing new.
         try {
-            const located = await locate(source, options, () => {});
+            located ??= await locate(source, options, () => {});
             if (located.url !== previous.url) log(`* ${previous.name}: ${source} now names ${located.url}`);
             url = located.url;
         } catch (err) {
@@ -829,7 +868,7 @@ async function updateOne(previous: InstallRecord, options: InstallOptions, log: 
         log(`  unchanged`);
         return [{ record, state: 'unchanged', hash: record.hash }, ...partResults(staged, record.name)];
     };
-    if (response.status === 304) return await unchanged(previous);
+    if (response.status === 304) return await unchanged(source === sourceOf(previous) ? previous : remember({ ...previous, source }));
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
 
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -1423,7 +1462,7 @@ export function uninstall(which?: string): Uninstalled {
     remove(record);
     delete all[name];
     // The links it opened have nothing to open them with now.
-    if (selfTrust(record.url).length) removeLinkHandler();
+    if (isSelf(record)) removeLinkHandler();
 
     const plugins: InstallRecord[] = [];
     let sharedWith: string[] = [];
@@ -1480,7 +1519,7 @@ function resolve(all: Record<string, InstallRecord>, which: string | undefined):
     const known = installed.length ? `installed: ${installed.sort().join(', ')}` : 'nothing is installed';
 
     if (which === undefined) {
-        const mine = installed.find((name) => all[name]!.url === self().url) ?? selfName();
+        const mine = installed.find((name) => isSelf(all[name]!)) ?? selfName();
         if (!all[mine]) throw new Error(`this package is not installed as '${mine}' — ${known}`);
         return mine;
     }

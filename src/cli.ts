@@ -496,7 +496,9 @@ export const HELP: Record<string, string> = {
   their own.
 
   with neither, this package installs itself from its own published release,
-  whose publish workflow's signature is accepted without asking — so running
+  which its listing, @pipobscure.com/bundle, names — or the release URL, when
+  the listing cannot be asked. The publish workflow's signature on the
+  release at that URL is accepted without asking — so running
   'install' from a downloaded bundle.nzip (node --experimental-vfs --vfs-load
   ./bundle.nzip install) leaves a signed 'bundle' on your PATH that
   'bundle update' keeps current, and makes nzip: links open it. The archive is named '.nzip', and the name it
@@ -539,7 +541,8 @@ export const HELP: Record<string, string> = {
   like an install, against what has been accepted for it so far: a new signer,
   or different attestations, is a question rather than a failure — publishers
   move, and auditors do not review every release. Only flags and the policy
-  make anything mandatory.
+  make anything mandatory. bundle itself, installed from its release URL,
+  follows its listing from the first update that can ask it.
       --system          the machine's installs (see 'install')
 
   an app with parts is followed by a line for each part that changed: added,
@@ -1768,19 +1771,20 @@ async function installWith(values: ReturnType<typeof parseInstall>['values'], po
         if (values.for === undefined) values = { ...values, for: linked };
     }
 
-    // With no URL, this package installs itself: the published release, signed
-    // by the workflow that publishes it. Running `install` from a downloaded bundle.nzip is
+    // With no URL, this package installs itself: the published release its
+    // listing names, signed by the workflow that publishes it. Running `install` from a downloaded bundle.nzip is
     // then the whole bootstrap — npm fetches it once, and what stays behind is
     // a signed archive that updates itself from its own releases.
     if (values.source !== undefined && (positionals[0] === undefined || !FS.existsSync(positionals[0]) || !FS.statSync(positionals[0]).isFile())) {
         throw new Error('install: --source is the URL a file stands for — give the file too');
     }
-    const target = positionals[0] ?? INSTALL.self().url;
+    let target = positionals[0] ?? INSTALL.self().url;
+    let located: import('./install.ts').Located | undefined;
     if (!positionals[0]) {
         // Already here: nothing to fetch — 'update' is what brings a newer one
         // — but the shell this is being run from may be new to it, so that
         // part is still offered. Switching shells is one 'bundle install'.
-        const existing = Object.values(INSTALL.records()).find((record) => record.url === target);
+        const existing = Object.values(INSTALL.records()).find(INSTALL.isSelf);
         const { o } = styles(io);
         if (existing && FS.existsSync(INSTALL.pathOf(existing))) {
             io.out(o.people
@@ -1789,16 +1793,31 @@ async function installWith(values: ReturnType<typeof parseInstall>['values'], po
             if (values.shell) await offerShellHook(io);
             return 0;
         }
+        // Its own listing says where the release is, as any listed app's
+        // does, and the install follows it from then on. One that cannot be
+        // asked is no reason not to install: the release URL is where it was
+        // before there was a listing, and the trust is with the URL either way.
+        const listing = INSTALL.self().listing;
+        if (listing !== undefined) {
+            try {
+                located = await (await import('./listing.ts')).followListing(listing);
+                target = listing;
+            } catch (err) {
+                io.err(styles(io).e.warn(`could not ask bundle's listing (${message(err)}) — installing from ${target} instead`));
+            }
+        }
         io.err(styles(io).e.note(`installing this package itself from ${target}`, 'bundle'));
     }
 
     try {
         const record = await INSTALL.install(values.source !== undefined ? { file: target, source: values.source } : target, {
-            roots: values.root ?? [], name: values.name, dir: values.dir, scope, linked: pageSaid,
+            // Installed from its listing, it is still called what it always was.
+            roots: values.root ?? [], name: values.name ?? (located ? INSTALL.selfName() : undefined), dir: values.dir, scope, linked: pageSaid,
             identity: values.identity, issuer: values.issuer,
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
             discover: values.discover,
             menu: values.menu === false ? false : undefined,
+            located,
             onReview: (review, about) => { showReview(review, about, io); window?.review(review, about); },
             decide: values.yes || !window ? decider(Boolean(values.yes), io) : window.decide,
             log: logger(io),
@@ -2821,7 +2840,7 @@ async function nodeCommand(args: string[], io: Console): Promise<number> {
 async function links(args: string[], io: Console): Promise<number> {
     const { values } = parseArgs({ args, options: OPTIONS.links });
     const INSTALL = await import('./install.ts');
-    const record = Object.values(INSTALL.records()).find((each) => each.scope === undefined && (each.url === INSTALL.SELF.url || each.url === INSTALL.self().url));
+    const record = Object.values(INSTALL.records()).find(INSTALL.isSelf);
     if (!record) throw new Error("links: bundle is not installed here — 'bundle install' installs it, and makes nzip: links open it");
     const archive = INSTALL.pathOf(record);
     const { o, e } = styles(io);
@@ -2865,8 +2884,7 @@ async function shell(args: string[], io: Console): Promise<number> {
 async function selfProgram(): Promise<import('./completion.ts').Program> {
     const COMPLETION = await import('./completion.ts');
     const INSTALL = await import('./install.ts');
-    const urls = [INSTALL.self().url, INSTALL.SELF.url];
-    const record = Object.values(INSTALL.records()).find((each) => urls.includes(each.url));
+    const record = Object.values(INSTALL.records()).find(INSTALL.isSelf);
     const name = record?.name ?? 'bundle';
     return process.platform === 'win32' && record
         ? COMPLETION.programAt(name, process.execPath, PATH.join(record.dir, record.name))

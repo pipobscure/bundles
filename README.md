@@ -60,8 +60,10 @@ node --experimental-vfs --vfs-load ./bundle.nzip install
 
 On Windows, `curl.exe -LO …` in PowerShell downloads it, and the second line is the same.
 
-The download runs once, to install the real thing: it fetches the latest release, checks its
-signature, and puts the signed `bundle` on your PATH, where `bundle update` keeps it current.
+The download runs once, to install the real thing: it asks bundle's own listing,
+`@pipobscure.com/bundle`, where the latest release is, fetches it, checks its signature, and
+puts the signed `bundle` on your PATH, where `bundle update` keeps it current by following that
+listing, as it would any app's.
 It makes `nzip:` links open bundle, so one click on an install link installs an app. It also
 offers to add Tab completion and a quiet daily re-check of your installs to your shell.
 Afterwards, `bundle --help`.

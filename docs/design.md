@@ -319,6 +319,12 @@ as, naming where to fetch it: a URL, or a domain whose `nzip:` TXT record names 
 hash and no version, so a release is still just whatever the URL serves next, and a listing
 vouches for nothing.
 
+bundle's own install follows a listing too: `bundle install` with no argument asks
+`@pipobscure.com/bundle`, said in the code by its DID. Its publish workflow's identity is
+trusted for the release URL alone, not for wherever the listing points, so the listing can move
+bundle's updates but not its trust. When it cannot be asked, the release URL is fetched as
+before.
+
 Every app's listing carries the same `subject`, the sha256 of the lexicon's NSID. That one
 value is what makes listings findable without a service of our own: Constellation indexes
 every field that parses as a URI, so asking what links to it enumerates every app listed. A

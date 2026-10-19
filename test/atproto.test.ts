@@ -1711,6 +1711,89 @@ test('install @account/name follows the listing, verified, and update follows it
     assert.equal(records()[named('listed')], undefined);
 });
 
+test('bundle installs itself from its own listing, or its release URL while the listing cannot be asked — and an update moves to the listing', async () => {
+    // A fake account stands in for pipobscure.com: BUNDLE_SELF_LISTING points
+    // the self-install at its listing, and BUNDLE_SELF_SOURCE the release URL
+    // at the download server here.
+    const { isSelf, self, SELF } = await import('../src/install.ts');
+    const pip = account();
+    const session = await ATPROTO.login(pip.did, pip.password);
+    const RELEASE = 'https://dl.test/self/bundle.nzip';
+    const LISTED = `at://${pip.did}/${LISTING}/bundle`;
+    process.env['BUNDLE_SELF_SOURCE'] = RELEASE;
+    process.env['BUNDLE_SELF_LISTING'] = LISTED;
+    try {
+        assert.deepEqual([self().url, self().listing], [RELEASE, LISTED]);
+        const v1 = await version();
+        await attestAs(pip, v1, 'published');
+        DOWNLOADS.set('/self/bundle.nzip', FS.readFileSync(v1));
+
+        // Not listed yet: one line says so, and the release URL is installed as it always was.
+        const unlisted = collector();
+        assert.equal(await main(['install', '--yes', '--no-shell'], unlisted), 0, unlisted.stderr.join('\n'));
+        assert.match(unlisted.stderr.join('\n'), /could not ask bundle's listing \(.*\) — installing from https:\/\/dl\.test\/self\/bundle\.nzip instead/);
+        const fromUrl = records()[named('bundle')]!;
+        assert.deepEqual([fromUrl.source, fromUrl.url], [RELEASE, RELEASE]);
+        assert.ok(isSelf(fromUrl));
+
+        // ...and an update says nothing more than it ever did.
+        const quiet: string[] = [];
+        const [still] = await update(named('bundle'), { log: (line) => quiet.push(line) });
+        assert.equal(still!.state, 'unchanged');
+        assert.deepEqual(quiet, [`* ${named('bundle')}: checking ${RELEASE}`, '  unchanged']);
+
+        // Listed: the next update follows the listing from then on, and says so once.
+        await LISTINGS.publish(session, { name: 'bundle', url: RELEASE });
+        const moving: string[] = [];
+        const [moved] = await update(named('bundle'), { log: (line) => moving.push(line) });
+        assert.equal(moved!.state, 'unchanged');
+        assert.ok(moving.includes(`* ${named('bundle')}: follows ${LISTED} from now on`), moving.join('\n'));
+        assert.equal(records()[named('bundle')]!.source, LISTED);
+        const settled: string[] = [];
+        await update(named('bundle'), { log: (line) => settled.push(line) });
+        assert.ok(!settled.some((line) => /follows/.test(line)), settled.join('\n'));
+
+        // Installed again, and already here: nothing is asked or fetched.
+        const before = requests.length;
+        const again = collector();
+        assert.equal(await main(['install', '--no-shell'], again), 0);
+        assert.match(again.stdout.join('\n'), /bundle(\.nzip)? is already installed/);
+        assert.equal(requests.length, before, 'nothing fetched');
+        assert.equal((await import('../src/install.ts')).uninstall().name, named('bundle'));
+
+        // With the listing there, the install is of the listing — called bundle,
+        // wherever the listing says the release is.
+        DOWNLOADS.set('/self/moved.nzip', FS.readFileSync(v1));
+        await LISTINGS.publish(session, { name: 'bundle', url: 'https://dl.test/self/moved.nzip' });
+        const listed = collector();
+        assert.equal(await main(['install', '--yes', '--no-shell'], listed), 0, listed.stderr.join('\n'));
+        assert.match(listed.stderr.join('\n'), new RegExp(`installing this package itself from ${LISTED}`));
+        assert.doesNotMatch(listed.stderr.join('\n'), /could not ask/);
+        const fromListing = records()[named('bundle')]!;
+        assert.deepEqual([fromListing.source, fromListing.url], [LISTED, 'https://dl.test/self/moved.nzip']);
+        assert.ok(isSelf(fromListing), 'found by its listing, whatever URL it names');
+        assert.equal((await import('../src/install.ts')).uninstall().name, named('bundle'));
+
+        // Either kind is this package's own; an app, a plugin, or a stranger's listing is not.
+        const like = (fields: Partial<Parameters<typeof isSelf>[0]>) => ({ ...fromListing, source: undefined, ...fields });
+        assert.ok(isSelf(like({ name: 'renamed', url: RELEASE })));
+        assert.ok(isSelf(like({ name: 'renamed', url: SELF.url })));
+        assert.ok(isSelf(like({ name: 'renamed', url: 'https://elsewhere.test/x.nzip', source: SELF.listing })));
+        assert.ok(isSelf(like({ name: 'renamed', url: 'https://elsewhere.test/x.nzip', source: LISTED })));
+        assert.ok(!isSelf(like({ name: 'tool', url: 'https://elsewhere.test/x.nzip', source: `at://${pip.did}/${LISTING}/tool` })));
+        assert.ok(!isSelf(like({ name: 'app:bundle', scope: 'app', url: RELEASE })));
+        await LISTINGS.unpublish(session, 'bundle');
+    } finally {
+        delete process.env['BUNDLE_SELF_SOURCE'];
+        delete process.env['BUNDLE_SELF_LISTING'];
+    }
+    // A mirror has no listing; without either, it is bundle's own.
+    process.env['BUNDLE_SELF_SOURCE'] = RELEASE;
+    assert.equal(self().listing, undefined);
+    delete process.env['BUNDLE_SELF_SOURCE'];
+    assert.equal(self().listing, SELF.listing);
+});
+
 test('a listing can name a domain, whose TXT record names the URL — and an install follows both', async () => {
     const dot = account();
     const session = await ATPROTO.login(dot.did, dot.password);
