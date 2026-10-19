@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.2.2
 
 - **Liking an app again counts.** `bundle like` no longer stops at "already liked": each like
   makes a post of its own, reviewed in your editor like the first (the comment lines say which
@@ -21,6 +21,8 @@ how to use it is in the [README](README.md) and [docs/](docs/).
 - The library's `like()` returns the new `count`, `unlike()` takes `all` and returns how many
   posts went and how many stay, and `putRecord()` takes an optional `swapRecord`, refusing with
   the code `SWAPPED` when the record changed.
+- **A signing that fails part way exits cleanly.** A write still in flight to the discarded
+  file could crash the process with a stream error after the real error was reported.
 
 ## 0.2.1
 
