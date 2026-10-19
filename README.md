@@ -81,7 +81,7 @@ bundle install @alice.example/tool              # from a name someone published
 **Or one click.** Once bundle is installed, an `nzip:` link on a page, such as
 `<a href="nzip:alice.example/tool">Install tool</a>`, opens bundle. It shows the same review
 and asks the same questions in a window, so people who never open a terminal can install apps
-too. `bundle publish` prints the link for what you publish.
+too. `bundle publish` prints the link for what you publish, plugins included.
 
 Before anything is put on your PATH, `bundle install` shows you what vouches for it:
 
@@ -276,11 +276,14 @@ name through ordinary `import`.
 
 ```sh
 bundle search --for bled gpio                         # plugins published for bled
-bundle install --for bled @alice.example/bled-gpio    # or from a URL or a domain
+bundle install @alice.example/bled-gpio               # its listing says it is for bled
+bundle install --for bled https://example.com/gpio.nzip   # or from a URL or a domain
 ```
 
 A plugin goes into a directory of the app's own, never onto your PATH. It is reviewed like
-any install, and it is removed with the app.
+any install, and it is removed with the app. A listed plugin knows its app, so it needs no
+`--for`, and its `nzip:` link installs it in one click, into the app you installed from its
+listing; if you have not, you are told how to install the app first.
 
 **Loading plugins in your app:**
 

@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from 'node:fs';
 import * as PATH from 'node:path';
-import { appleScriptHandler, desktopHandler, linkFor, targetOf, windowsHandlerCommand, windowsHandlerScript } from '../src/links.ts';
+import { appleScriptHandler, desktopHandler, linkFor, readLink, windowsHandlerCommand, windowsHandlerScript } from '../src/links.ts';
 import { ensureLinkHandler, linkHandlerProblems, removeLinkHandler, macLinksApp } from '../src/install.ts';
 import { scratch } from './helpers.ts';
 
 // nzip: links, which any page can make: read strictly, as a published name only.
 
 const did = 'did:plc:abcdefghijklmnopqrstuvwx';
+const targetOf = (link: string) => readLink(link).target;
 
 test('a link is a listing or suite by handle, DID or at:// address, and means what install takes', () => {
     assert.equal(targetOf('nzip:alice.example/devtools'), '@alice.example/devtools');
@@ -26,6 +27,27 @@ test('anything else is refused: URLs, domains, paths, options, extras', () => {
         'nzip:alice.example/dev%0Atools', 'nzip:%E0%A4%A', 'nzip:at://alice.example/com.x.y/z', `nzip:at://${did}/x/y`,
         'https://alice.example/devtools', 'nzip:did:plc:short/x',
     ]) assert.throws(() => targetOf(link), /link/, link);
+});
+
+test('a link may say which app a plugin goes in, as --for would, and nothing else', () => {
+    assert.deepEqual(readLink('nzip:alice.example/devtools'), { target: '@alice.example/devtools' });
+    assert.deepEqual(readLink('nzip:alice.example/bled-gpio?for=bled'), { target: '@alice.example/bled-gpio', for: 'bled' });
+    assert.deepEqual(readLink('nzip:alice.example/bled-gpio?for=@acme/editor'), { target: '@alice.example/bled-gpio', for: '@acme/editor' });
+    assert.deepEqual(readLink('nzip:alice.example/bled-gpio?for=%40pipobscure.com%2Fbled'), { target: '@alice.example/bled-gpio', for: '@pipobscure.com/bled' },
+        'decoded once, then checked');
+    assert.deepEqual(readLink(`nzip:alice.example/bled-gpio?for=@${did}/bled`), { target: '@alice.example/bled-gpio', for: `@${did}/bled` });
+    assert.deepEqual(readLink(`nzip:at://${did}/com.pipobscure.bundle.listing/bled-gpio?for=at://${did}/com.pipobscure.bundle.listing/bled`),
+        { target: `at://${did}/com.pipobscure.bundle.listing/bled-gpio`, for: `at://${did}/com.pipobscure.bundle.listing/bled` });
+
+    for (const link of [
+        'nzip:alice.example/bled-gpio?for=', 'nzip:alice.example/bled-gpio?for', 'nzip:alice.example/bled-gpio?', 'nzip:alice.example/bled-gpio?FOR=bled',
+        'nzip:alice.example/bled-gpio?for=bled&yes=1', 'nzip:alice.example/bled-gpio?for=bled&for=other', 'nzip:alice.example/bled-gpio?yes=1&for=bled',
+        'nzip:alice.example/bled-gpio?for=bled#x', 'nzip:alice.example/bled-gpio?for=bled?x', 'nzip:alice.example/bled-gpio?for=Bled',
+        'nzip:alice.example/bled-gpio?for=--yes', 'nzip:alice.example/bled-gpio?for=../etc', 'nzip:alice.example/bled-gpio?for=%2E%2E%2Fetc',
+        'nzip:alice.example/bled-gpio?for=bled%0A', 'nzip:alice.example/bled-gpio?for=%E0%A4%A', 'nzip:alice.example/bled-gpio?for=https://evil.example/x',
+        'nzip:alice.example/bled-gpio?for=~/x', 'nzip:alice.example/bled-gpio?for=@alice.example/a/b', `nzip:alice.example/bled-gpio?for=at://${did}/x.y.z/bled`,
+        `nzip:alice.example/bled-gpio?for=${'a'.repeat(215)}`, 'nzip:alice.example/bled-gpio%3Ffor=bled',
+    ]) assert.throws(() => readLink(link), /link/, link);
 });
 
 test('a link is written for what install takes', () => {

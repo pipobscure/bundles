@@ -594,7 +594,9 @@ replaces the listing, keeping when it was first listed.
   every request counts against the account's rate limits.
 - **A plugin is listed against its app.** With `--for`, the listing's `subject` is the
   `at://` address of the app's listing, not the concept hash. So it never appears among apps,
-  and `search --for` and `listings --for` find exactly that app's plugins. An app installed
+  and `search --for` and `listings --for` find exactly that app's plugins. It installs, and its
+  `nzip:` link works, with no `--for`: into the app installed from the listing it names, wherever
+  that is installed. An app installed
   from a URL or a domain has no listing for plugins to name, so its plugins can't be listed.
   They still install with `install --for`, from a URL or a domain.
 
@@ -846,7 +848,8 @@ start at all leaves the index as it was, and the search answers from that, sayin
 **Plugins are searched for one app at a time.** `--for` names the app: one installed from its
 listing, or `@<handle or did>/<name>`. The index follows the plugins of every app installed
 here from a listing, and of the one `--for` names. It asks the backlink index what links to each
-app's listing, so plugins for apps you don't have are never fetched.
+app's listing, so plugins for apps you don't have are never fetched. The first column installs a plugin as it is,
+into the app installed from the listing it names, with no `--for`.
 
 Nothing is installed from the index. `install` fetches the listing again, from the publisher's
 own PDS, and verifies it.
@@ -884,9 +887,11 @@ bundle install ./tool.nzip                      # a file, without the network
 bundle install --system https://ordner.fyi/bundles/suite/suite.nzip   # for the machine, with its parts
 bundle install tool.example.com                 # whatever its TXT record names, as `tool`
 bundle install @pipobscure.com/bled             # whatever that listing names, as `bled`
+bundle install @alice.example/bled-gpio         # a plugin's listing: into the scope of the app it names
 bundle install --for bled @alice.example/bled-gpio   # a plugin for bled, into bled's scope
 bundle install @pipobscure.com/devtools         # a suite: every listing in it
 bundle install --window nzip:pipobscure.com/devtools   # what clicking that link runs
+bundle install --window 'nzip:alice.example/bled-gpio?for=bled'   # a plugin's link, saying its app
 bundle install                                  # this package, from its own release
 ```
 
@@ -1030,9 +1035,21 @@ and answers the same questions.
   so a page cannot point bundle at an arbitrary download. A link carries no trust of its own.
   What it names is fetched, verified and reviewed as any install is, and what a suite requires
   of its members comes from the suite's signed record. Any page can make a link, so it is read
-  strictly: anything after the name, or anything that is not one of those forms, is refused
-  before anything is fetched. [`publish`](#publish) and [`suite publish`](#suite) print the link
-  for what they publish.
+  strictly: anything after the name but `?for=`, or anything that is not one of those forms, is
+  refused before anything is fetched. [`publish`](#publish) and [`suite publish`](#suite) print
+  the link for what they publish, a plugin's listing included.
+- **A link to a plugin's listing installs the plugin into its app**, as `bundle install` does
+  (see `--for` below): the app installed here from the listing the plugin's listing names. If
+  that app is not installed here, the window says so, with the app's own link to install it
+  first. A link may also say the app, `nzip:alice.example/bled-gpio?for=bled`, with what
+  `--for` takes that a page can know: a package name (`bled`, `@acme/editor`), or an app's
+  listing (`@<handle or did>/<name>`, or its `at://` address), percent-encoded or not. That is
+  one parameter, once: `for` with anything else, twice, empty, or in another form is refused.
+  It is only ever checked against the plugin's listing, never in place of it: when the listing
+  names an app installed here, the two must agree, as `--for` must. With `--for` given as well,
+  they must agree too, and neither wins. It places a plugin's listing and nothing else: on an
+  app's listing it is refused rather than turning the app into a plugin, and on a suite it is
+  refused, as `--for` is. The review, and the window's title and log, say which app it goes in.
 - **How each system hands it over**: the link is always passed as one argument, after `--`,
   never into a command line anything parses.
   - Linux: a hidden desktop entry, `$XDG_DATA_HOME/applications/bundle-nzip-links.desktop`, for
@@ -1079,14 +1096,18 @@ the app loads by package name, with `@pipobscure/bundle/plugins` (see [Plugins](
 `--for` takes the app as it is installed (`bled`), or as it is listed
 (`@pipobscure.com/bled`, or its `at://` address: the app installed here from that listing),
 either mapped to its package name, or that package name itself. A listing no installed app came
-from is refused: install the app first. The plugin goes into that app's **scope**: a directory of the app's own
+from is refused: install the app first. A plugin's listing needs no `--for` (see below). The plugin goes into that app's **scope**: a directory of the app's own
 (`~/.local/share/bundle/plugins/<scope>/`; see [Files and directories](#files-and-directories)),
 under the package name inside it. It is not made executable and is never on the PATH.
 
 It is reviewed like any install, under the policy's global rules and its `scopes` section for
 that app, never the app's own `apps` section, because a plugin's author is not the app's.
-A listing that says it is a plugin for an app (see [`publish`](#publish)) installs only with
-`--for`. If that app was installed from its listing, it installs only into that app's scope.
+A listing that says it is a plugin for an app (see [`publish`](#publish)) names the app's
+listing, so it installs into the scope of the app installed here from that listing, without
+`--for`, and `--for`, if given, must name that app. If no app here was installed from that
+listing, it is refused, saying how to install the app first; an app installed from a URL or a
+domain is named with `--for`, since then the person installing is the one who knows. If the app
+was installed from its listing more than once, as different packages, `--for` says which.
 Its record is `<scope>:<package>`, which `update`, `installed`, `validate` and `uninstall`
 take like any other name. What was typed to install it is kept beside it, and is the name
 `list()` tells the app it goes by. An update that carries another package name is refused, because it
@@ -1169,7 +1190,7 @@ shells, `bundle install` is all it takes.
 | `--no-discover` | do not ask the backlink index who has attested it |
 | `-r, --root <file>` | an extra trusted root certificate (PEM); repeatable |
 | `-n, --name <name>` | install under this name |
-| `--for <app>` | install a plugin for this app: an installed name, the listing it was installed from (`@<handle or did>/<name>`, or an `at://` address), or its package name |
+| `--for <app>` | install a plugin for this app: an installed name, the listing it was installed from (`@<handle or did>/<name>`, or an `at://` address), or its package name. A plugin's listing needs none |
 | `-d, --dir <dir>` | install here (default: `~/.local/bin`, or `%LOCALAPPDATA%\bundle\bin`) |
 | `--no-shell` | installing itself, do not offer to set up the shell |
 | `--no-menu` | give the app no entry in the desktop's applications, though it asks for one, nor on its updates |

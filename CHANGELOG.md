@@ -3,6 +3,21 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **A plugin's listing installs into its app, and so does its `nzip:` link.** The listing
+  names the app's listing, so `bundle install @alice.example/bled-gpio`, or a click on
+  `nzip:alice.example/bled-gpio`, puts it in the scope of the app installed here from that
+  listing, with no `--for`. Without that app here, it is refused, with the app's own
+  `install` and link to install it first; installed more than once as different packages,
+  `--for` says which. `--for` works as before, and still must name that app.
+- **A link can say which app a plugin is for:** `nzip:alice.example/bled-gpio?for=bled`,
+  taking what `--for` takes that a page can know (a package name, or an app's listing), read
+  strictly, and checked as `--for` is. It places a plugin's listing and nothing else; with
+  `--for` too, the two must agree. The window's title and log say which app it goes in.
+- **`bundle publish` prints the `nzip:` link for a plugin's listing too**, and the plain
+  `bundle install` that installs it; `search --for` says the first column installs as it is.
+
 ## 0.1.7
 
 - **Updating a running app works on Windows**, its parts included. Windows will not rename

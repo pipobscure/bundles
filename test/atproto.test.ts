@@ -1629,7 +1629,7 @@ test('a listing can name a domain, whose TXT record names the URL — and an ins
     (await import('../src/install.ts')).uninstall(named('viadns'));
 });
 
-test('a plugin is listed against its app: found with --for, never among apps, and installed only for that app', async () => {
+test('a plugin is listed against its app: found with --for, never among apps, and installed only into that app', async () => {
     const author = account();
     const extender = account();
     const app = await version();
@@ -1658,20 +1658,84 @@ test('a plugin is listed against its app: found with --for, never among apps, an
     await LISTINGS.syncIndex({ index: INDEX, path, resolveTxt });
     assert.ok(!requests.some((line) => line.startsWith(`GET ${extender.pds}/`)), 'the extender is not one of ours');
 
-    // Installed, the plugin needs --for, and goes in that app's scope.
-    await assert.rejects(install(`@${extender.did}/host-extra`, { decide: async (review) => selectable(review) }),
-        /is a plugin for .*: install it with --for/);
-    const host = await install(`@${author.did}/host-app`, { decide: async (review) => selectable(review) });
+    // Before its app is here, it has nowhere to go: the app first, and how.
+    const decide = async (review: Review) => selectable(review);
+    const first = new RegExp(`is a plugin for ${listedApp.uri.replace(/\./g, '\\.')}, which is not installed here: install the app first ` +
+        `\\('bundle install @${author.did}/host-app', or the link nzip:${author.did}/host-app\\)`);
+    await assert.rejects(install(`@${extender.did}/host-extra`, { decide }), first);
+    const early = collector();
+    assert.equal(await main(['install', '--yes', `nzip:${extender.did}/host-extra`], early), 70);
+    assert.match(early.stderr.join('\n'), first);
+
+    // Once it is, the plugin goes in that app's scope, named or not — and nowhere else.
+    const host = await install(`@${author.did}/host-app`, { decide });
     assert.equal(host.package, 'demo', 'the app knows itself by its package name');
-    await assert.rejects(install(`@${extender.did}/host-extra`, { scope: 'other-app', decide: async (review) => selectable(review) }),
+    await assert.rejects(install(`@${extender.did}/host-extra`, { scope: 'other-app', decide }),
         /whose plugins go in 'demo', not 'other-app'/);
-    const installedPlugin = await install(`@${extender.did}/host-extra`, { scope: 'demo', decide: async (review) => selectable(review) });
+    await assert.rejects(install(`@${extender.did}/host-extra`, { name: 'loose', decide }), /--name and --dir do not apply/);
+    const installedPlugin = await install(`@${extender.did}/host-extra`, { scope: 'demo', decide });
     assert.equal(installedPlugin.name, 'demo:demo');
     assert.equal(installedPlugin.label, `@${extender.did}/host-extra`, 'known by the listing as typed');
     assert.equal(installedPlugin.source, listedPlugin.uri);
 
     const { uninstall: remove } = await import('../src/install.ts');
     remove('demo:demo');
+    const lines: string[] = [];
+    const inferred = await install(`@${extender.did}/host-extra`, { decide, log: (line) => lines.push(line) });
+    assert.deepEqual({ name: inferred.name, scope: inferred.scope, dir: inferred.dir }, { name: 'demo:demo', scope: 'demo', dir: installedPlugin.dir });
+    assert.ok(lines.includes(`* @${extender.did}/host-extra is a plugin for ${host.name}, installed from ${listedApp.uri}: it goes in demo`), lines.join('\n'));
+    remove('demo:demo');
+
+    // A link to it does the same, and a link may say the app too, as --for
+    // would — but only to agree, and only for a plugin's listing.
+    for (const link of [`nzip:${extender.did}/host-extra`, `nzip:${extender.did}/host-extra?for=demo`, `nzip:${extender.did}/host-extra?for=@${author.did}/host-app`]) {
+        const io = collector();
+        assert.equal(await main(['install', '--yes', link], io), 0, io.stderr.join('\n'));
+        assert.match(io.stdout.join('\n'), /\(demo\) installed for demo, in /, link);
+        remove('demo:demo');
+    }
+    const elsewhere = collector();
+    assert.equal(await main(['install', '--yes', `nzip:${extender.did}/host-extra?for=other-app`], elsewhere), 70);
+    assert.match(elsewhere.stderr.join('\n'), /whose plugins go in 'demo', not 'other-app'/);
+    const disagree = collector();
+    assert.equal(await main(['install', '--yes', '--for', host.name, `nzip:${extender.did}/host-extra?for=other-app`], disagree), 70);
+    assert.match(disagree.stderr.join('\n'), /the link says for=other-app, which is 'other-app', and --for .* is 'demo': they must agree/);
+    const notPlugin = collector();
+    assert.equal(await main(['install', '--yes', `nzip:${author.did}/host-app?for=demo`], notPlugin), 70);
+    assert.match(notPlugin.stderr.join('\n'), /is not a plugin's listing: a link's for= says which app a plugin goes in, and nothing else/);
+    assert.equal(records()['demo:demo'], undefined, 'nothing installed');
+
+    // In a window, the window says where it goes.
+    process.env['BUNDLE_NO_BROWSER'] = '1';
+    try {
+        const io = collector();
+        const running = main(['install', '--window', '--yes', `nzip:${extender.did}/host-extra?for=demo`], io);
+        let url: string | undefined;
+        while (!(url = io.stderr.map((line) => /decisions are in a window: (\S+)/.exec(line)?.[1]).find(Boolean))) await new Promise((r) => setTimeout(r, 20));
+        const reader = (await realFetch(`${url}events`)).body!.getReader();
+        let text = '';
+        for (let chunk; !text.includes('"type":"done"') && !(chunk = await reader.read()).done;) text += Buffer.from(chunk.value!).toString('utf-8');
+        await reader.cancel();
+        assert.equal(await running, 0, `${io.stderr.join('\n')}\n${text}`);
+        assert.ok(text.includes(`"text":"Install @${extender.did}/host-extra for demo"`), text);
+        assert.ok(text.includes(`is a plugin for ${host.name}, installed from ${listedApp.uri}: it goes in demo`), text);
+        assert.match(text, /"type":"done","ok":true/);
+    } finally {
+        delete process.env['BUNDLE_NO_BROWSER'];
+    }
+    remove('demo:demo');
+
+    // Installed twice from its listing, as two packages: which one is the person's to say.
+    const renamed = await packaged('demo-two');
+    await attestAs(author, renamed, 'published');
+    DOWNLOADS.set('/plugins/host.nzip', FS.readFileSync(renamed));
+    const second = await install(`@${author.did}/host-app`, { name: 'host-two', decide });
+    assert.equal(second.package, 'demo-two');
+    await assert.rejects(install(`@${extender.did}/host-extra`, { decide }),
+        /installed here more than once as different packages \(.*: 'demo'; host-two: 'demo-two'\) — say which with --for/);
+    assert.equal((await install(`@${extender.did}/host-extra`, { scope: 'demo-two', decide })).name, 'demo-two:demo');
+    remove(second.name);
+    DOWNLOADS.set('/plugins/host.nzip', FS.readFileSync(app));
 
     // On the command line, --for takes the app as it is listed, too: by
     // @<handle or did>/<name>, or by its at:// address.
@@ -1681,9 +1745,20 @@ test('a plugin is listed against its app: found with --for, never among apps, an
         assert.match(io.stdout.join('\n'), /\(demo\) installed for demo, in /, app);
         remove('demo:demo');
     }
-    const elsewhere = collector();
-    assert.equal(await main(['install', '--yes', '--for', `@${extender.did}/not-installed-here`, `@${extender.did}/host-extra`], elsewhere), 70);
-    assert.match(elsewhere.stderr.join('\n'), /is at:\/\/.*not-installed-here, which no app installed here came from — install the app first/);
+    const unknown = collector();
+    assert.equal(await main(['install', '--yes', '--for', `@${extender.did}/not-installed-here`, `@${extender.did}/host-extra`], unknown), 70);
+    assert.match(unknown.stderr.join('\n'), /is at:\/\/.*not-installed-here, which no app installed here came from — install the app first/);
+
+    // Published, a plugin's listing is installed and linked to as an app's is: its listing says the app.
+    process.env['BUNDLE_ATPROTO_PASSWORD'] = extender.password;
+    try {
+        const published = collector();
+        assert.equal(await main(['publish', '--as', extender.did, '--for', `@${author.did}/host-app`, 'host-more', 'https://dl.test/plugins/extra.nzip'], published), 0,
+            published.stderr.join('\n'));
+        assert.match(published.stderr.join('\n'), new RegExp(`install it with: bundle install @${extender.did}/host-more\n  or link to it: nzip:${extender.did}/host-more`));
+    } finally {
+        delete process.env['BUNDLE_ATPROTO_PASSWORD'];
+    }
     remove(host.name);
 });
 
@@ -2124,8 +2199,12 @@ test('bundle suite add, validate, update, remove and publish a spec — and inst
     } finally {
         delete process.env['BUNDLE_ATPROTO_PASSWORD'];
     }
+    // A link to a suite installs the suite, and says nothing of where its members go.
+    const placed = collector();
+    assert.equal(await main(['install', '--yes', `nzip:${curator.did}/cli-kit?for=cli-host`], placed), 70);
+    assert.match(placed.stderr.join('\n'), /is a suite — its members say where each goes, so --name and --for do not apply/);
     const installing = collector();
-    assert.equal(await main(['install', '--yes', `@${curator.did}/cli-kit`], installing), 0, installing.stderr.join('\n'));
+    assert.equal(await main(['install', '--yes', `nzip:${curator.did}/cli-kit`], installing), 0, installing.stderr.join('\n'));
     assert.match(installing.stdout.join('\n'), /suite cli-kit: 2 installed/);
     assert.match(installing.stderr.join('\n'), /suite cli-kit expects its members to carry:\n +1 attested by published@/);
 

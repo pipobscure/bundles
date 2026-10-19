@@ -359,6 +359,10 @@ A plugin is a bundle an app loads by package name. The decisions that shape it:
 - **Scopes, not the PATH.** A plugin is for one app, so it lives in that app's directory,
   named after the app's package name, which survives renames and is known to the app at
   runtime.
+- **A listed plugin knows its app.** Its listing names the app's listing, so it goes into the
+  app installed here from that listing, with no `--for`, and an `nzip:` link to it installs it
+  in one click, as an app's does. A scope someone names must agree with it. Only for an app
+  installed some other way is the person naming the scope the one who knows.
 - **Checking at load is opt-in**, as it is for apps, except under a verifying runtime, which
   asked for nothing unverified to be mounted in its process.
 - **Judged as a plugin.** A plugin's author is not the app's, so nothing that describes the

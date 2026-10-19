@@ -181,7 +181,9 @@ export const HELP: Record<string, string> = {
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --for <app>       list it as a plugin for this app: an app installed from
-                        its listing, @<handle or did>/<name>, or an at:// address
+                        its listing, @<handle or did>/<name>, or an at:// address.
+                        It installs, and its nzip: link works, without --for:
+                        into that app, wherever it is installed from its listing
       --title <text>    a display name (default: the name); one listing only
       --description <text>  what it is, in a sentence or two; one listing only
       --from <file>     list these too: a JSON array of { "name", "url" or
@@ -320,7 +322,8 @@ export const HELP: Record<string, string> = {
       --for <app>       install a plugin for this app — an installed name, the
                         listing it was installed from (@<handle or did>/<name>,
                         or an at:// address), or its package name — into the
-                        app's scope rather than onto the PATH
+                        app's scope rather than onto the PATH. A plugin's
+                        listing needs none: its app's is the scope
   -d, --dir <dir>       where the command goes (default: ~/.local/bin, or
                         %LOCALAPPDATA%\\bundle\\bin; BUNDLE_INSTALL_DIR overrides).
                         On macOS and Linux it is a link to the archive, which
@@ -360,8 +363,12 @@ export const HELP: Record<string, string> = {
   verified exactly as a url's would be.
 
   an nzip: link — nzip:alice.example/devtools, what a page's install button
-  holds — is the listing or suite it names, and nothing else. Installing
-  bundle itself registers it to open such links, as 'install --window'.
+  holds — is the listing or suite it names, and nothing else, but for a
+  plugin's listing, '?for=<app>': taken as --for is, and only as an app's
+  listing (@<handle or did>/<name>, an at:// address) or a package name. With
+  --for too, the two must agree; and it places a plugin's listing, nothing
+  else. Installing bundle itself registers it to open such links, as
+  'install --window'.
 
   an app whose package.json asks for it ("bundle": { "app": { "title": … } })
   also gets an entry in the desktop's applications, for you only: a desktop
@@ -398,6 +405,13 @@ export const HELP: Record<string, string> = {
   update, installed, validate and uninstall take like any other name. It is
   also known by what was given to install it, as typed: that is what the app
   is told it is called.
+
+  a plugin's listing names its app's listing, so it needs no --for: it goes
+  into the scope of the app installed here from that listing, and --for, if
+  given, must name the same. The app not installed here from its listing is
+  refused, with how to install it first; an app installed some other way is
+  named with --for. Installed more than once, as different packages, it is
+  which one --for says.
 
   --for with a folder (./my-plugin, an absolute path, a file: URL) links it,
   for developing a plugin: the scope notes the folder, and the app loads the
@@ -1466,15 +1480,24 @@ async function install(args: string[], io: Console): Promise<number> {
         allowNegative: true,
         options: OPTIONS.install,
     });
-    // An nzip: link — what a page's install button opens — is the listing or suite it names.
-    if (positionals[0] !== undefined && /^nzip:/i.test(positionals[0])) positionals[0] = (await import('./links.ts')).targetOf(positionals[0]);
-    if (!values.window) return installWith(values, positionals, io);
+    // An nzip: link — what a page's install button opens — is the listing or
+    // suite it names, and for a plugin, maybe the app it goes in: taken as
+    // --for is, from a page rather than the person, so when both say, they
+    // must agree, and it may only place a plugin's listing.
+    let linked: string | undefined;
+    if (positionals[0] !== undefined && /^nzip:/i.test(positionals[0])) {
+        const link = (await import('./links.ts')).readLink(positionals[0]);
+        positionals[0] = link.target;
+        linked = link.for;
+    }
+    if (!values.window) return installWith(values, positionals, io, undefined, linked);
 
     // The decisions in a window: everything this says goes there as well, and
     // what it asks is asked there. How it ended is the window's last word.
     const WINDOW = await import('./window.ts');
     const target = positionals[0];
-    const window = await WINDOW.openWindow({ title: target ? `Install ${target}` : 'Install bundle' });
+    const into = values.for ?? linked;
+    const window = await WINDOW.openWindow({ title: target ? `Install ${target}${into !== undefined ? ` for ${into}` : ''}` : 'Install bundle' });
     io.err(styles(io).e.note(`the decisions are in a window: ${window.url}`));
     const lines: string[] = [];
     const tee: Console = {
@@ -1487,7 +1510,7 @@ async function install(args: string[], io: Console): Promise<number> {
     };
     let code = 70;
     try {
-        code = await installWith(values, positionals, tee, window);
+        code = await installWith(values, positionals, tee, window, linked);
         window.finish(code === 0, code === 0 ? `${target ?? 'bundle'} is installed` : code === UNDECIDED ? 'Nothing was installed' : 'It did not install', lines);
     } catch (err) {
         window.finish(false, 'It did not install', [message(err)]);
@@ -1500,11 +1523,19 @@ async function install(args: string[], io: Console): Promise<number> {
     return code;
 }
 
-async function installWith(values: ReturnType<typeof parseInstall>['values'], positionals: string[], io: Console, window?: import('./window.ts').DecisionWindow): Promise<number> {
+async function installWith(values: ReturnType<typeof parseInstall>['values'], positionals: string[], io: Console, window?: import('./window.ts').DecisionWindow, linked?: string): Promise<number> {
     const INSTALL = await import('./install.ts');
     const demands = await policy(values);
     if (values.for !== undefined && !positionals[0]) throw new Error('install: --for needs a plugin to install: a url, a domain, @account/name, or a folder to link');
-    const scope = values.for !== undefined ? await scopeFor(values.for, INSTALL) : undefined;
+    let scope = values.for !== undefined ? await scopeFor(values.for, INSTALL) : undefined;
+    // Said only by a page, it may only place a plugin's listing (see install()'s `linked`).
+    const pageSaid = linked !== undefined && values.for === undefined;
+    if (linked !== undefined) {
+        const said = await scopeFor(linked, INSTALL);
+        if (scope !== undefined && scope !== said) throw new Error(`install: the link says for=${linked}, which is '${said}', and --for ${values.for} is '${scope}': they must agree`);
+        scope ??= said;
+        if (values.for === undefined) values = { ...values, for: linked };
+    }
 
     // With no URL, this package installs itself: the published release, signed
     // by the workflow that publishes it. Running `install` from a downloaded bundle.nzip is
@@ -1532,7 +1563,7 @@ async function installWith(values: ReturnType<typeof parseInstall>['values'], po
 
     try {
         const record = await INSTALL.install(values.source !== undefined ? { file: target, source: values.source } : target, {
-            roots: values.root ?? [], name: values.name, dir: values.dir, scope,
+            roots: values.root ?? [], name: values.name, dir: values.dir, scope, linked: pageSaid,
             identity: values.identity, issuer: values.issuer,
             attesters: demands.attesters, quorum: demands.quorum, block: demands.block,
             discover: values.discover,
@@ -2168,19 +2199,19 @@ async function publish(args: string[], io: Console): Promise<number> {
         const written = await LISTING.publishAll(session, listings);
         const { o, e } = styles(io);
         for (const [i, { uri, replaced }] of written.entries()) {
-            const { name, for: app } = wanted[i]!;
-            const installed = app !== undefined ? apps.get(app)?.installed : undefined;
-            const command = `bundle install ${app !== undefined ? `--for ${installed ?? '<the app>'} ` : ''}@${session.handle ?? session.did}/${name}`;
+            // A plugin's listing names its app, so it installs, and links, like an app's: into that app, wherever it is installed.
+            const { name } = wanted[i]!;
+            const command = `bundle install @${session.handle ?? session.did}/${name}`;
             if (o.people) {
                 io.out(o.bundle(`${o.green(replaced ? 'updated' : 'published')} ${o.bold(name)}  ${o.dim(`as ${session.did}`)}`));
                 io.out(`   ${o.cyan(uri)}`);
                 io.err(`   ${e.dim('install it with:')} ${e.bold(command)}`);
-                if (app === undefined) io.err(`   ${e.dim('or link to it:  ')} ${e.bold(`nzip:${session.handle ?? session.did}/${name}`)}`);
+                io.err(`   ${e.dim('or link to it:  ')} ${e.bold(`nzip:${session.handle ?? session.did}/${name}`)}`);
             } else {
                 io.out(`${replaced ? 'updated' : 'published'} ${name} as ${session.did}`);
                 io.out(`  ${uri}`);
                 io.err(`  install it with: ${command}`);
-                if (app === undefined) io.err(`  or link to it: nzip:${session.handle ?? session.did}/${name}`);
+                io.err(`  or link to it: nzip:${session.handle ?? session.did}/${name}`);
             }
         }
     } finally {
@@ -2407,7 +2438,9 @@ function printListings(found: import('./listing.ts').Listing[], json: boolean, i
         return;
     }
     const { o, e } = styles(io);
-    if (app && found.length) io.err(e.note(`plugins for ${app.label}; install one with: bundle install --for ${app.installed ?? '<the app>'} <the first column>`, 'bundle'));
+    if (app && found.length) {
+        io.err(e.note(`plugins for ${app.label}; install one${app.installed !== undefined ? '' : ', once the app is installed here from its listing,'} with: bundle install <the first column>`, 'bundle'));
+    }
     const width = Math.max(0, ...found.map((each) => each.install.length));
     for (const each of found) {
         const about = [each.title && each.title !== each.name ? each.title : undefined, each.description].filter(Boolean).join(' — ');

@@ -321,16 +321,31 @@ instead of the concept hash every app's listing carries.
 ```console
 $ bundle publish --as alice.example --for @pipobscure.com/bled bled-gpio https://…/bled-gpio.nzip
 $ bundle search --for bled gpio
-$ bundle install --for bled @alice.example/bled-gpio
+$ bundle install @alice.example/bled-gpio
 ```
 
 - **Plugins never appear among apps.** The backlink index is asked what links to the concept
   hash for apps, and what links to an app's listing for its plugins.
 - **The index follows only the plugins of apps installed here** from a listing, plus the
   one `--for` names. Plugins for apps nobody here has are never fetched.
-- **A plugin listing installs only with `--for`.** If its app was installed from its
-  listing, it installs only into that app's scope. Otherwise the person naming the scope is
-  the one who knows.
+- **A plugin listing installs into its app's scope, with or without `--for`.** It names the
+  app's listing, so it goes into the app installed here from that listing, and a `--for`
+  given must name that app. If no app here came from that listing, it is refused, with how to
+  install the app first. An app installed some other way (from a URL or a domain) is named
+  with `--for`: then the person naming the scope is the one who knows. An app installed from
+  its listing more than once, as different packages, is also `--for`'s to pick.
+- **A link to a plugin's listing installs it too.** `nzip:alice.example/bled-gpio` is
+  `bundle install @alice.example/bled-gpio`, in a window, like any link. It may say the app,
+  `?for=bled`, with what `--for` takes that a page can know (a package name, or an app's
+  listing), read strictly, and checked against the listing exactly as `--for` is. It places
+  a plugin's listing and nothing else.
+
+  *First cut:* a plugin listing installed only with `--for`, to make the person say where it
+  went. But when its app was installed from its listing, `--for` could only ever name that
+  one scope; anything else was refused. Asking for it added nothing but a step, and it made
+  links to plugins impossible: a page cannot know what the app is called here, and a link that
+  installs differently from the command it stands for would be a second set of rules. Where
+  the listing does not settle it, `--for` is still required.
 - **An app installed from a URL or a domain has no listing for plugins to name.** It can
   still have plugins, installed with `--for` from a URL or a domain. They are just not
   listed or searchable.

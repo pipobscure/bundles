@@ -241,9 +241,17 @@ export interface InstallOptions {
     name?: string | undefined;
     /**
      * Install as a plugin for this scope — the package name of the app it is
-     * for — into that scope's directory, rather than onto the PATH.
+     * for — into that scope's directory, rather than onto the PATH. A plugin's
+     * listing needs none: it goes in the scope of the app installed here from
+     * the listing it names, and a scope given must be that one.
      */
     scope?: string | undefined;
+    /**
+     * `scope` came from a page — an `nzip:` link's `for=` — rather than from
+     * the person: it may only say where a plugin's listing goes, never make a
+     * plugin of anything else.
+     */
+    linked?: boolean | undefined;
     /**
      * Set the desktop up for `.nzip` files, for this user — see
      * `ensureDesktopSetup()`: on Windows the association, PATHEXT and the
@@ -400,12 +408,13 @@ export interface LocalArchive {
  */
 export async function install(target: string | LocalArchive, options: InstallOptions = {}): Promise<InstallRecord> {
     const log = options.log ?? (() => {});
-    const { scope } = options;
-    if (scope !== undefined) {
+    let { scope } = options;
+    const plugin = (scope: string) => {
         if (!isScope(scope)) throw new Error(`'${scope}' is not a scope: plugins are installed for an app by its package name`);
         if (options.name || options.dir) throw new Error('a plugin goes where its scope says, under its own package name: --name and --dir do not apply');
-    }
-    const dir = scope !== undefined ? scopeHome(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
+    };
+    if (scope !== undefined) plugin(scope);
+    let dir = scope !== undefined ? scopeHome(scope) : options.dir ? PATH.resolve(options.dir) : installDir();
     if (typeof target === 'string' && isFolder(target) && !isFile(target)) {
         if (scope === undefined) throw new Error(`${target} is a folder: a folder is only ever linked as a plugin, for development — with --for <app>`);
         return link(target, scope, log);
@@ -425,7 +434,16 @@ export async function install(target: string | LocalArchive, options: InstallOpt
     }
 
     const { source, url, name: named, app } = await locate(target, options, log);
-    if (app !== undefined) forApp(target, app, scope);
+    if (options.linked && app === undefined) {
+        throw new Error(`${target} is not a plugin's listing: a link's for= says which app a plugin goes in, and nothing else`);
+    }
+    // A plugin's listing goes in its app's scope, named or not.
+    if (app !== undefined && scope === undefined) {
+        plugin(scope = await forApp(target, app, scope, log));
+        dir = scopeHome(scope);
+    } else if (app !== undefined) {
+        await forApp(target, app, scope, log);
+    }
     log(`* fetching ${url}`);
     const response = await fetchFrom(url, { redirect: 'follow' });
     if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
@@ -572,15 +590,49 @@ export function labelOf(record: InstallRecord): string | undefined {
 
 // A listing that says it is a plugin for an app is installed as one, and for
 // that app: not onto the PATH, and not into the scope of some other app. Which
-// app a scope belongs to is only known for apps installed from their listing;
-// for any other, the person saying --for is the one who knows.
-function forApp(target: string, app: string, scope: string | undefined): void {
-    const host = Object.values(records()).find((record) => record.scope === undefined && sourceOf(record) === app);
-    if (scope === undefined) {
-        throw new Error(`${target} is a plugin for ${host ? `${host.name} (${app})` : app}: install it with --for${host ? ` ${host.name}` : ' <that app>'}`);
+// app a scope belongs to is only known for apps installed from their listing:
+// such an app is where the plugin goes, with or without --for, and --for must
+// name it. For any other, the person saying --for is the one who knows. What
+// it says is logged, so the review, wherever it is shown, says where it goes.
+async function forApp(target: string, app: string, scope: string | undefined, log: (line: string) => void): Promise<string> {
+    const hosts = Object.values(records()).filter((record) => record.scope === undefined && record.link === undefined && sourceOf(record) === app);
+    const scopes = new Map<string, string[]>();
+    for (const host of hosts) {
+        const pkg = appScope(host);
+        if (pkg !== undefined) scopes.set(pkg, [...scopes.get(pkg) ?? [], host.name]);
     }
-    if (host?.package !== undefined && host.package !== scope) {
-        throw new Error(`${target} is a plugin for ${host.name} (${app}), whose plugins go in '${host.package}', not '${scope}'`);
+    const names = hosts.map((host) => host.name).join(', ');
+    if (scope !== undefined) {
+        if (scopes.size && !scopes.has(scope)) {
+            throw new Error(`${target} is a plugin for ${names} (${app}), whose plugins go in '${[...scopes.keys()].join("' or '")}', not '${scope}'`);
+        }
+        if (scopes.has(scope)) log(`* ${target} is a plugin for ${scopes.get(scope)!.join(', ')}, installed from ${app}: it goes in ${scope}`);
+        return scope;
+    }
+    if (!hosts.length) {
+        const { parseListingUri } = await import('./listing.ts');
+        const listed = parseListingUri(app);
+        const install = listed ? `@${listed.did}/${listed.name}` : app;
+        throw new Error(`${target} is a plugin for ${app}, which is not installed here: install the app first ` +
+            `('bundle install ${install}', or the link ${LINKS.linkFor(install)}), then its plugins — or, for the app installed some other way, name it with --for`);
+    }
+    if (!scopes.size) throw new Error(`${target} is a plugin for ${names} (${app}), which carries no package name to install plugins for — name the scope with --for`);
+    if (scopes.size > 1) {
+        throw new Error(`${target} is a plugin for ${app}, installed here more than once as different packages (${[...scopes].map(([pkg, those]) => `${those.join(', ')}: '${pkg}'`).join('; ')}) — say which with --for`);
+    }
+    const [[pkg, those]] = [...scopes] as [[string, string[]]];
+    log(`* ${target} is a plugin for ${those.join(', ')}, installed from ${app}: it goes in ${pkg}`);
+    return pkg;
+}
+
+// The package name an installed app knows itself by, which is its plugins'
+// scope: as recorded, or, for older records, read from its archive.
+function appScope(app: InstallRecord): string | undefined {
+    if (app.package !== undefined) return app.package;
+    try {
+        return packageName(FS.readFileSync(pathOf(app)));
+    } catch {
+        return undefined;
     }
 }
 
