@@ -2067,8 +2067,10 @@ test('a like stars an app across its releases, always with a post, counted by ac
 
     // Liked by the listing's address, the post saying what it is — the
     // listing's own title and description — and how to install it, as a link.
-    const liked = { ...collector(), open: browser };
-    assert.equal(await main(['like', '--as', fan.did, `@${pub.did}/starry`], liked), 0, liked.stderr.join('\n'));
+    // With --yes, as proposed: no editor is opened.
+    const noEditor = () => assert.fail('no editor should be opened');
+    const liked = { ...collector(), open: browser, edit: noEditor };
+    assert.equal(await main(['like', '--as', fan.did, '--yes', `@${pub.did}/starry`], liked), 0, liked.stderr.join('\n'));
     assert.equal(AUTH.pushed.at(-1), `atproto repo:${LIKE.LIKE} repo:app.bsky.feed.post?action=create&action=delete`);
     const [[postKey, post]] = posts(fan) as [[string, { text: string; facets: { index: { byteStart: number; byteEnd: number }; features: { uri: string }[] }[] }]];
     const link = `nzip:${pub.did}/starry`;
@@ -2081,18 +2083,19 @@ test('a like stars an app across its releases, always with a post, counted by ac
     assert.equal(record.post.uri, `at://${fan.did}/${postKey}`);
     assert.match(liked.stdout.join('\n'), /liked @did:plc:.*\/starry\n  post: https:\/\/bsky\.app\/profile\//);
 
-    // Once per account: liking it again changes nothing, and makes no second post.
-    const again = { ...collector(), open: browser };
+    // Once per account: liking it again changes nothing, and makes no second
+    // post — nor opens an editor on one, nor signs in to find out.
+    const again = { ...collector(), open: () => assert.fail('nobody should be asked to sign in'), edit: noEditor };
     assert.equal(await main(['like', '--as', fan.did, `at://${pub.did}/${LISTING}/starry`], again), 0);
     assert.match(again.stdout.join('\n'), /already liked/);
     assert.equal(posts(fan).length, 1);
 
     // In one's own words: the note is the post, and the link still comes after it.
     const worded = { ...collector(), open: browser };
-    assert.equal(await main(['like', '--as', other.did, '--note', 'Lovely at 2am.', `nzip:${pub.did}/starry`], worded), 0, worded.stderr.join('\n'));
+    assert.equal(await main(['like', '--as', other.did, '-y', '--note', 'Lovely at 2am.', `nzip:${pub.did}/starry`], worded), 0, worded.stderr.join('\n'));
     assert.equal((posts(other)[0]![1] as { text: string }).text, `Lovely at 2am.\n\n${link}`);
     const tooLong = { ...collector(), open: () => assert.fail('nobody should be asked to sign in') };
-    assert.equal(await main(['like', '--as', other.did, '--note', 'x'.repeat(290), `@${pub.did}/starry`], tooLong), 70);
+    assert.equal(await main(['like', '--as', other.did, '--yes', '--note', 'x'.repeat(290), `@${pub.did}/starry`], tooLong), 70);
     assert.match(tooLong.stderr.join('\n'), /the note is too long for the post/);
 
     // Counted by account: records an account writes besides its one like count for nothing.
@@ -2122,11 +2125,99 @@ test('a like stars an app across its releases, always with a post, counted by ac
     assert.equal(SELF.listing, 'at://did:plc:rwypz6edxmzyhob2k3rsl2fw/com.pipobscure.bundle.listing/bundle');
 
     // Taken back: the like and the post it made.
-    const unliked = { ...collector(), open: browser };
+    const unliked = { ...collector(), open: browser, edit: noEditor };
     assert.equal(await main(['like', '--as', fan.did, '--revoke', `@${pub.did}/starry`], unliked), 0, unliked.stderr.join('\n'));
     assert.equal(fan.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`), false);
     assert.equal(posts(fan).length, 0);
     assert.match(unliked.stdout.join('\n'), /unliked/);
+});
+
+test("a like's post is read and settled in an editor first, like a commit message, before anyone signs in", async () => {
+    const pub = account();
+    pub.records.set(`${LISTING}/comet`, listed('https://dl.test/comet.nzip', { title: 'Comet', description: 'tails your logs' }));
+    const listing = `at://${pub.did}/${LISTING}/comet`;
+    const link = `nzip:${pub.did}/comet`;
+    const proposed = `🌳 I like Comet: tails your logs\n\n${link}`;
+    const posts = (who: { records: Map<string, Value> }) => [...who.records.entries()].filter(([key]) => key.startsWith('app.bsky.feed.post/'))
+        .map(([, value]) => value as { text: string; facets?: { index: { byteStart: number; byteEnd: number }; features: { uri: string }[] }[] });
+    const noSignIn = () => assert.fail('nobody should be asked to sign in');
+    const like = async (who: { did: string }, edit: ((file: string) => Promise<void>) | undefined, open: (url: string) => void = browser) => {
+        const io = { ...collector(), open, edit };
+        const code = await main(['like', '--as', who.did, `@${pub.did}/comet`], io);
+        return { code, ...io };
+    };
+
+    // Edited and saved: the text as edited is the post, the link marked where
+    // it now is. The file held the proposal and what saving does, was the
+    // person's alone to read, and is gone afterwards.
+    const ann = account();
+    let seen: { file: string; text: string; mode: number } | undefined;
+    const edited = await like(ann, async (file) => {
+        seen = { file, text: FS.readFileSync(file, 'utf-8'), mode: FS.statSync(file).mode & 0o777 };
+        FS.writeFileSync(file, `Try ${link} — it tails logs beautifully.   \n#cli\n# a comment, left out\n#\n\n`);
+    });
+    assert.equal(edited.code, 0, edited.stderr.join('\n'));
+    assert.ok(seen!.text.startsWith(`${proposed}\n`), 'the proposal first');
+    assert.match(seen!.text, new RegExp(`^# .*Comet.*from ${ann.did}`, 'm'), 'which account it posts from, and what it likes');
+    assert.match(seen!.text, /^# Save and close to post it.*close without saving to stop/m);
+    assert.match(seen!.text, /^# A post holds 300 characters/m);
+    if (process.platform !== 'win32') assert.equal(seen!.mode, 0o600);
+    assert.equal(FS.existsSync(PATH.dirname(seen!.file)), false, 'the file and its directory are gone');
+    const [post] = posts(ann);
+    assert.equal(post!.text, `Try ${link} — it tails logs beautifully.\n#cli`, 'comments and trailing whitespace stripped, the hashtag kept');
+    const { byteStart, byteEnd } = post!.facets![0]!.index;
+    assert.equal(byteStart, Buffer.byteLength('Try '));
+    assert.equal(Buffer.from(post!.text).subarray(byteStart, byteEnd).toString(), link);
+    assert.ok(ann.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`));
+
+    // Closed without saving: nothing is posted, nothing liked, and nobody signed in.
+    const bea = account();
+    const closed = await like(bea, async () => {}, noSignIn);
+    assert.equal(closed.code, 0, closed.stderr.join('\n'));
+    assert.match(closed.stderr.join('\n'), /nothing was liked: the post was not saved/);
+    assert.equal(posts(bea).length, 0);
+    assert.equal(bea.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`), false);
+
+    // Emptied — only comments left — stops too, as an empty commit message does.
+    const emptied = await like(bea, async (file) => { FS.writeFileSync(file, '# nothing\n\n  \n'); }, noSignIn);
+    assert.equal(emptied.code, 0);
+    assert.match(emptied.stderr.join('\n'), /nothing was liked: the post is empty/);
+    assert.equal(posts(bea).length, 0);
+
+    // The link taken out: posted as it stands, without a facet, and said so.
+    const cal = account();
+    const unlinked = await like(cal, async (file) => { FS.writeFileSync(file, 'Comet is lovely.\n'); });
+    assert.equal(unlinked.code, 0, unlinked.stderr.join('\n'));
+    assert.match(unlinked.stderr.join('\n'), /no longer has the link to .*comet, so it is posted without one/);
+    assert.deepEqual(posts(cal).map(({ text, facets }) => ({ text, facets })), [{ text: 'Comet is lovely.', facets: undefined }]);
+
+    // Too long: the editor opens again on the text as edited, saying how long
+    // it is; shortened, it is posted.
+    const dee = account();
+    const opened: string[] = [];
+    const long = `${'x'.repeat(320)} ${link}`;
+    const shortened = await like(dee, async (file) => {
+        const text = FS.readFileSync(file, 'utf-8');
+        opened.push(text);
+        FS.writeFileSync(file, opened.length === 1 ? long : `Short now. ${link}`);
+    });
+    assert.equal(shortened.code, 0, shortened.stderr.join('\n'));
+    assert.equal(opened.length, 2, 'reopened once');
+    assert.match(opened[1]!, /^# This post is too long: it is 3\d\d characters long, and a post holds 300/);
+    assert.ok(opened[1]!.includes(`\n${long}\n`), 'with the edit as it was left');
+    assert.deepEqual(posts(dee).map(({ text }) => text), [`Short now. ${link}`]);
+
+    // Nobody at a terminal, and no --yes: it stops, as a decision nobody made, before any sign-in.
+    const eve = account();
+    const nobody = await like(eve, undefined, noSignIn);
+    assert.equal(nobody.code, UNDECIDED);
+    assert.match(nobody.stderr.join('\n'), /run on a terminal to review it in your editor, or pass --yes to post it as it is/);
+    assert.match(nobody.stderr.join('\n'), /I like Comet: tails your logs/, 'showing what --yes would post');
+    assert.equal(posts(eve).length, 0);
+
+    // The library builds the post from any text, and marks the link only as a word of its own.
+    assert.deepEqual(LIKE.postOf(`${link}2 and ${link}.`, link).facets.map((facet) => (facet as { index: { byteStart: number } }).index.byteStart),
+        [Buffer.byteLength(`${link}2 and `)]);
 });
 
 test('bundle publish, search, listings and unpublish, end to end', async () => {

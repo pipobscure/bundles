@@ -247,8 +247,9 @@ it, or `--note-as-post` to post the note as well. Whoever installs the archive s
 next to the verdict they go with.
 
 ★ And anyone can **like** an app: `bundle like @alice.example/tool` stars it, across its
-releases, with a post saying so and the app's install link. `bundle search` shows how many
-accounts like each app, and `bundle likes` who.
+releases, with a post saying so and the app's install link, which you read and can change
+in your editor first, like a commit message. `bundle search` shows how many accounts like
+each app, and `bundle likes` who.
 
 ## Suites
 

@@ -197,6 +197,7 @@ export const HELP: Record<string, string> = {
       --as <handle | did>  the account to like it from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --note <text>     what to say in the post, in your own words
+  -y, --yes             post it as proposed, without opening an editor
       --revoke          take the like back, and the post it made
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
@@ -211,6 +212,13 @@ export const HELP: Record<string, string> = {
   app's nzip: link, so whoever reads it can install it in one click. The
   sign-in asks to write likes and to create and delete posts, and nothing
   else. --revoke takes the post down with the like.
+
+  the post is yours to read first, like a commit message: it opens in your
+  editor (BUNDLE_EDITOR, VISUAL or EDITOR, else vi), before anyone signs in.
+  Save and close to post it as it stands, the link wherever you put it;
+  close without saving, or empty it, and nothing is liked. Lines starting
+  '# ' are left out. Not on a terminal, it stops (exit 4) unless --yes posts
+  it as proposed. An app liked already opens no editor.
 
   likes decide nothing: nothing is installed or refused by them. 'search'
   and 'listings' show how many accounts like each app, and 'likes' who.`,
@@ -928,6 +936,11 @@ export interface Console {
     /** Open a URL for a person to sign in at (default: the system browser). */
     open?: ((url: string) => void) | undefined;
     /**
+     * Let a person edit `file` in their editor, resolving once they close it —
+     * present, as `ask` is, only when there is a person at a terminal.
+     */
+    edit?: ((file: string) => Promise<void>) | undefined;
+    /**
      * How each stream is formatted (see style.ts). Without it, both are plain:
      * the line-oriented text a script reads, which is what tests see too.
      */
@@ -1006,8 +1019,29 @@ const CONSOLE: Console = {
             }
         }
         : undefined,
+    edit: process.stdin.isTTY && process.stderr.isTTY ? editInEditor : undefined,
     style: { out: styleFor(process.stdout), err: styleFor(process.stderr) },
 };
+
+// The person's editor, started on `file` the way git starts one: through the
+// shell, so that an EDITOR of `code --wait` works, with the file as one
+// argument of its own — "$@", never pasted into the command — and the
+// terminal as its own. Its output goes to stderr, the terminal a person is
+// at, so a stdout that is piped somewhere gets none of it.
+async function editInEditor(file: string): Promise<void> {
+    const { spawn } = await import('node:child_process');
+    const windows = process.platform === 'win32';
+    const editor = [process.env['BUNDLE_EDITOR'], process.env['VISUAL'], process.env['EDITOR']].find((each) => each?.trim()) ?? (windows ? 'notepad' : 'vi');
+    // A Windows path cannot hold a quote, so quoting it is all cmd.exe needs.
+    const child = windows
+        ? spawn(`${editor} "${file}"`, { shell: true, stdio: ['inherit', process.stderr, 'inherit'] })
+        : spawn('/bin/sh', ['-c', `${editor} "$@"`, editor, file], { stdio: ['inherit', process.stderr, 'inherit'] });
+    const code = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', (status, signal) => resolve(signal ? null : status));
+    });
+    if (code !== 0) throw new Error(`the editor, '${editor}', ${code === null ? 'was stopped' : `exited with ${code}`}, so nothing was done`);
+}
 
 /** The exit code for an install or update that needs a decision nobody made, or that was declined. */
 export const UNDECIDED = 4;
@@ -1372,16 +1406,60 @@ async function likedListing(command: string, value: string): Promise<import('./l
 }
 
 // Like an app, from an account: a like of its listing, and a post saying so.
+// The post is the person's to read and change before it is made, the way a
+// commit message is: in their editor, unless --yes posts it as proposed. All
+// of that happens before anyone signs in, so stopping costs nothing.
 async function like(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.like });
     if (positionals.length !== 1) throw new Error('like: name one app — as it is installed, @<handle or did>/<name>, an nzip: link, or an at:// address');
     if (values.revoke && values.note !== undefined) throw new Error('like: --revoke takes a like back; it takes no note');
     const LIKE = await import('./like.ts');
     const listing = await likedListing('like', positionals[0]!);
-    // The post is made up once before anyone signs in, so a note that does not fit costs nothing.
-    if (!values.revoke) LIKE.likePost(listing, values.note);
+    const { o, e } = styles(io);
+    const liked = (already: boolean, post: StrongRef | undefined) => {
+        const link = post ? untrusted(postUrl(post.uri)) : undefined;
+        if (o.people) {
+            io.out(already ? `${o.bundle(o.bold(listing.label))}  ${o.dim('liked already')}` : `${o.green('★')} ${o.bundle(o.bold(listing.label))}  ${o.green('liked')}`);
+            if (link) io.out(`   ${o.cyan(link)}`);
+        } else {
+            io.out(`${already ? 'already liked' : 'liked'} ${listing.label}`);
+            if (link) io.out(`  post: ${link}`);
+        }
+        return 0;
+    };
+    let post: import('./like.ts').Post | undefined;
+    if (!values.revoke) {
+        // The post is made up first, so a note that does not fit costs nothing.
+        const proposed = LIKE.likePost(listing, values.note);
+        // Liked already, there is no post to review: the account's own like is
+        // a record anyone can read, by its DID.
+        const account = accountOf('like', values);
+        const did = account.startsWith('did:') ? account : (await (await import('./atproto.ts')).resolveHandle(account)).did;
+        const existing = await LIKE.ownLike(did, listing.uri);
+        if (existing) return liked(true, existing.post);
+        if (values.yes) {
+            post = proposed;
+        } else {
+            if (!io.edit) {
+                io.err(e.error(`like: liking ${listing.label} makes a post from ${account}, and nobody has read it`));
+                for (const line of proposed.text.split('\n')) io.err(`  ${e.dim('│')} ${untrusted(line)}`);
+                io.err(`  ${e.dim('run on a terminal to review it in your editor, or pass --yes to post it as it is')}`);
+                return UNDECIDED;
+            }
+            const text = await reviewPost(io.edit, proposed.text, { account, title: listing.record.title || listing.name, label: listing.label, link: listing.link });
+            if (text === null) {
+                io.err(e.people ? e.yellow('nothing was liked: the post was not saved') : 'nothing was liked: the post was not saved');
+                return 0;
+            }
+            if (text === '') {
+                io.err(e.people ? e.yellow('nothing was liked: the post is empty') : 'nothing was liked: the post is empty');
+                return 0;
+            }
+            post = LIKE.postOf(text, listing.link);
+            if (!post.facets.length) io.err(e.people ? e.yellow(`the post no longer has the link to ${listing.label}, so it is posted without one`) : `* the post no longer has the link to ${listing.label}, so it is posted without one`);
+        }
+    }
     const session = await signIn('like', values, io, `atproto repo:${LIKE.LIKE} repo:app.bsky.feed.post?action=create&action=delete`);
-    const { o } = styles(io);
     try {
         if (values.revoke) {
             const gone = await LIKE.unlike(session, listing.uri);
@@ -1390,18 +1468,54 @@ async function like(args: string[], io: Console): Promise<number> {
                 : gone ? `unliked ${listing.label}` : `${listing.label} was not liked by ${session.did}`);
             return 0;
         }
-        const liked = await LIKE.like(session, listing, { note: values.note });
-        const link = liked.post ? untrusted(postUrl(liked.post.uri)) : undefined;
-        if (o.people) {
-            io.out(liked.already ? `${o.bundle(o.bold(listing.label))}  ${o.dim('liked already')}` : `${o.green('★')} ${o.bundle(o.bold(listing.label))}  ${o.green('liked')}`);
-            if (link) io.out(`   ${o.cyan(link)}`);
-        } else {
-            io.out(`${liked.already ? 'already liked' : 'liked'} ${listing.label}`);
-            if (link) io.out(`  post: ${link}`);
-        }
-        return 0;
+        const done = await LIKE.like(session, listing, { post });
+        return liked(done.already, done.post);
     } finally {
         await session.end?.();
+    }
+}
+
+// What a like's post says, as the person settles it in their editor: the
+// proposed text, and under it, in comment lines, what saving it does. Saved
+// and closed, it is the post — the whole of it, the link too, wherever they
+// put it; closed without saving, null, and nothing happens. Comment lines are
+// '#' alone or '# ' and more, so that a line starting #nodejs stays, a
+// hashtag. Too long to post, the editor opens again on the text as they left
+// it, saying so. The file is the person's alone to read, in a directory of
+// its own, and gone afterwards however this ends.
+async function reviewPost(edit: (file: string) => Promise<void>, proposed: string, about: { account: string; title: string; label: string; link: string }): Promise<string | null> {
+    const OS = await import('node:os');
+    const LIKE = await import('./like.ts');
+    const dir = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-like-'));
+    const file = PATH.join(dir, 'POST.txt');
+    const guide = [
+        '',
+        // Each on one line, whatever the listing says, so none of it ends up in the post.
+        `# The post liking ${untrusted(about.title)} (${untrusted(about.label)}) makes, from ${untrusted(about.account)}.`,
+        '# Save and close to post it and like the app; close without saving to stop.',
+        `# A post holds ${LIKE.POST_GRAPHEMES} characters, the link included: ${about.link}`,
+        '# Wherever the link is, it is made a link. Lines starting with \'# \' are',
+        '# left out; a line starting #word is a hashtag, and stays.',
+    ].join('\n');
+    try {
+        let text = proposed;
+        let long: string | undefined;
+        for (;;) {
+            const content = `${long ? `# This post is too long: ${long}. Shorten it, then save and close.\n` : ''}${text}\n${guide}\n`;
+            // Written anew each time, so it is created 0600 again whatever the editor left.
+            FS.rmSync(file, { force: true });
+            FS.writeFileSync(file, content, { mode: 0o600, flag: 'wx' });
+            const before = FS.statSync(file, { bigint: true }).mtimeNs;
+            await edit(file);
+            const after = FS.existsSync(file) ? FS.readFileSync(file, 'utf-8') : '';
+            if (after === content && FS.statSync(file, { bigint: true }).mtimeNs === before) return null;
+            text = after.split(/\r?\n/).filter((line) => line !== '#' && !line.startsWith('# ')).map((line) => line.trimEnd()).join('\n').replace(/^\n+/, '').trimEnd();
+            if (!text) return '';
+            long = LIKE.postTooLong(text);
+            if (!long) return text;
+        }
+    } finally {
+        FS.rmSync(dir, { recursive: true, force: true });
     }
 }
 
@@ -2574,8 +2688,7 @@ function signedIn(session: { did: string; pds: string; how: string }, e: Style):
 // Sign in to write to an account's repository, with access to `scope` only
 // where the server supports that: an app password for CI, OAuth otherwise.
 async function signIn(command: string, values: { as?: string | undefined; 'password-file'?: string | undefined }, io: Console, scope: string) {
-    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
-    if (!identifier) throw new Error(`${command}: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER`);
+    const identifier = accountOf(command, values);
     // Never from an argument: a command line is visible to every process on
     // the machine, and ends up in shell history.
     const password = values['password-file']
@@ -2588,6 +2701,13 @@ async function signIn(command: string, values: { as?: string | undefined; 'passw
         : await OAUTH.oauthLogin(identifier, { log: logger(io), open: io.open, scope });
     io.err(signedIn(session, styles(io).e));
     return Object.assign(session, { handle: identifier.startsWith('did:') ? undefined : identifier.replace(/^@/, '').toLowerCase() });
+}
+
+// The account a command acts as: --as, else BUNDLE_ATPROTO_IDENTIFIER.
+function accountOf(command: string, values: { as?: string | undefined }): string {
+    const identifier = values.as ?? process.env['BUNDLE_ATPROTO_IDENTIFIER'];
+    if (!identifier) throw new Error(`${command}: say which account with --as <handle or did>, or BUNDLE_ATPROTO_IDENTIFIER`);
+    return identifier;
 }
 
 // Search the listings: the local index, synced first when it is stale.
@@ -4016,6 +4136,7 @@ export const OPTIONS = {
         as:              { type: 'string' },
         note:            { type: 'string' },
         revoke:          { type: 'boolean' },
+        yes:             { type: 'boolean', short: 'y' },
         'password-file': { type: 'string' },
     },
     likes: {

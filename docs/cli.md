@@ -534,6 +534,7 @@ Different shapes of one release are different bytes. Attest each one you publish
 bundle like [options] <installed app | @account/name | nzip:link | at://>
 bundle like --as you.example @alice.example/tool
 bundle like --as you.example --note 'Saved my Sunday.' tool
+bundle like --as you.example --yes tool
 bundle like --as you.example --revoke tool
 ```
 
@@ -549,6 +550,19 @@ link to its page, https://bundle.pipobscure.com/, since an `nzip:` link opens bu
 reads about it may not have it yet. The sign-in asks to write likes and to create and delete
 posts, and nothing else. `--revoke` takes back the like and the post it made.
 
+**You read the post before it is made**, the way you read a commit message: it opens in your
+editor (`BUNDLE_EDITOR`, else `VISUAL`, else `EDITOR`, else `vi`, or `notepad` on Windows,
+started through the shell so that `code --wait` works), under comment lines saying what it is,
+which account posts it, and which app it likes. Save and close, and it is posted as it stands:
+the whole text is yours, the link too, which is made a link wherever you put it — taken out, the
+post goes without one, and bundle says so. Close without saving, or leave nothing but comments,
+and nothing is liked. Lines that start with `# `, or are `#` alone, are left out; a line like
+`#nodejs` is a hashtag, and stays. A post over 300 characters opens the editor again, with your
+text as you left it and how long it is. All of this happens before signing in, so stopping costs
+nothing; an app the account likes already opens no editor. Not on a terminal, `like` stops with
+exit code 4 and the post it would make, unless `--yes` posts that as it is. `--revoke` opens no
+editor.
+
 What it writes is `at://<your DID>/com.pipobscure.bundle.like/<sha256 of the listing's address>`,
 naming the listing and the post. Likes decide nothing: nothing is installed or refused by them.
 [`search`](#search) and [`listings`](#listings) show how many accounts like each app, and
@@ -558,6 +572,7 @@ naming the listing and the post. Likes decide nothing: nothing is installed or r
 |---|---|
 | `--as <handle or did>` | the account to like it from (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
 | `--note <text>` | what the post says, in your own words, before the link |
+| `-y`, `--yes` | post it as proposed, without opening an editor (needed off a terminal) |
 | `--revoke` | take the like back, and the post it made |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 
@@ -1788,6 +1803,7 @@ never kept: they are bound to a key that only ever exists in memory.
 | `BUNDLE_POLICY` / `BUNDLE_SYSTEM_POLICY` | the user's and the machine's policy file |
 | `BUNDLE_ATTESTATIONS` | the attestation cache directory |
 | `BUNDLE_SIGSTORE_ROOT` | the sigstore trust root to check against, instead of the cache |
+| `BUNDLE_EDITOR` | the editor `like` opens its post in, before `VISUAL` and `EDITOR`; run through the shell, so it may carry arguments, like `code --wait` |
 | `BUNDLE_SHELL` | the shell `install` sets up and `shell` prints for, instead of detecting it |
 | `BUNDLE_POWERSHELL_PROFILE` | the PowerShell profile `install` adds its setup to, instead of asking PowerShell |
 | `BUNDLE_ATPROTO_IDENTIFIER` | the account `attest`, `publish`, `unpublish` and `lexicon publish` act as, without `--as` |

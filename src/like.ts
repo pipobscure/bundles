@@ -4,7 +4,7 @@ import {
     type NetworkOptions, type Session,
 } from './atproto.ts';
 import { claimedHandle, type Value } from './repo.ts';
-import { noteTooLong, type StrongRef } from './attestation.ts';
+import type { StrongRef } from './attestation.ts';
 import type { ListingRecord } from './listing.ts';
 
 // Likes: a star for an app, from anyone with an Atmosphere account.
@@ -39,7 +39,9 @@ export interface LikeRecord {
 }
 
 /** The longest post the Atmosphere's microblog takes, in characters. */
-const POST_GRAPHEMES = 300;
+export const POST_GRAPHEMES = 300;
+/** …and in bytes of UTF-8. */
+export const POST_BYTES = 3000;
 
 /** Where an account's like of the listing at `subject` is kept: the hash of the address. */
 export function likeKey(subject: string): string {
@@ -72,48 +74,80 @@ export function likeLink(uri: string, who: string, name: string, self: { listing
 }
 
 /**
- * The post a like makes: the person's own words if they give some, otherwise
- * a line saying what they like — the app's title and its description, as its
- * listing gives them — and then the app's install link, as a link. The
- * description is shortened to fit; the person's words are not, and too many of
- * them is an error.
+ * The post a like proposes: the person's own words if they give some,
+ * otherwise a line saying what they like — the app's title and its
+ * description, as its listing gives them — and then the app's install link,
+ * as a link. The description is shortened to fit; the person's words are not,
+ * and too many of them is an error.
  */
-export function likePost(listing: Likeable, note?: string | undefined): { text: string; facets: Record<string, unknown>[] } {
+export function likePost(listing: Likeable, note?: string | undefined): Post {
     const tail = `\n\n${listing.link}`;
-    const room = POST_GRAPHEMES - graphemes(tail);
     let head: string;
     if (note !== undefined) {
-        const long = noteTooLong(note);
-        if (long || graphemes(note) > room) throw new Error(`the note is too long for the post: ${long ?? `it is ${graphemes(note)} characters long, and with the link the post holds ${room}`}`);
+        const long = postTooLong(`${note}${tail}`);
+        if (long) throw new Error(`the note is too long for the post: with the link, ${long}`);
         head = note;
     } else {
         const title = listing.record.title || listing.name;
         head = `🌳 I like ${title}`;
         const description = listing.record.description?.trim();
-        if (description) head = shorten(`${head}: ${description}`, room);
+        if (description) head = shorten(`${head}: ${description}`, POST_GRAPHEMES - graphemes(tail));
     }
-    const text = `${head}${tail}`;
-    const byteStart = Buffer.byteLength(`${head}\n\n`);
-    return {
-        text,
-        facets: [{
+    return postOf(`${head}${tail}`, listing.link);
+}
+
+/** A post, as the Atmosphere's microblog takes one: its text, and where the links in it are. */
+export interface Post {
+    text: string;
+    facets: Record<string, unknown>[];
+}
+
+/**
+ * The post `text` makes, with `link` marked as a link wherever it stands in
+ * it, as a word of its own — the whole text is the person's, and they may
+ * have moved the link, or said it twice, or taken it out, which leaves no
+ * facets. Offsets are of UTF-8 bytes, as facets count them.
+ */
+export function postOf(text: string, link: string): Post {
+    const facets: Record<string, unknown>[] = [];
+    const word = /[\p{L}\p{N}_\-/]/u;
+    for (let at = text.indexOf(link); at !== -1; at = text.indexOf(link, at + link.length)) {
+        const end = at + link.length;
+        if ((at > 0 && word.test(text[at - 1]!)) || (end < text.length && word.test(text[end]!))) continue;
+        const byteStart = Buffer.byteLength(text.slice(0, at));
+        facets.push({
             $type: 'app.bsky.richtext.facet',
-            index: { byteStart, byteEnd: byteStart + Buffer.byteLength(listing.link) },
-            features: [{ $type: 'app.bsky.richtext.facet#link', uri: listing.link }],
-        }],
-    };
+            index: { byteStart, byteEnd: byteStart + Buffer.byteLength(link) },
+            features: [{ $type: 'app.bsky.richtext.facet#link', uri: link }],
+        });
+    }
+    return { text, facets };
+}
+
+/** Why `text` is too long for a post, or undefined when it fits. */
+export function postTooLong(text: string): string | undefined {
+    const count = graphemes(text);
+    if (count > POST_GRAPHEMES) return `it is ${count} characters long, and a post holds ${POST_GRAPHEMES}`;
+    const bytes = Buffer.byteLength(text);
+    if (bytes > POST_BYTES) return `it is ${bytes} bytes long, and a post holds ${POST_BYTES}`;
+    return undefined;
 }
 
 /**
  * Like the app listed at `listing`, from `session`'s account: the post first,
  * so the like can point at it, then the like; and the post taken down again
- * when the like cannot be written. An app liked already is left as it is.
+ * when the like cannot be written. The post is `post` — the text as the
+ * person settled it — or else the one `likePost()` proposes, with `note`. An
+ * app liked already is left as it is, and no post is made.
  */
-export async function like(session: Session, listing: Likeable, { note, ...options }: NetworkOptions & { note?: string | undefined } = {}): Promise<{ uri: string; post?: StrongRef | undefined; already: boolean }> {
+export async function like(session: Session, listing: Likeable, { note, post: given, ...options }: NetworkOptions & { note?: string | undefined; post?: Post | undefined } = {}): Promise<{ uri: string; post?: StrongRef | undefined; already: boolean }> {
     const key = likeKey(listing.uri);
     const existing = await ownLike(session.did, listing.uri, options);
     if (existing) return { uri: `at://${session.did}/${LIKE}/${key}`, post: existing.post, already: true };
-    const post = await createPost(session, likePost(listing, note), options);
+    const content = given ?? likePost(listing, note);
+    const long = postTooLong(content.text);
+    if (long) throw new Error(`the post is too long: ${long}`);
+    const post = await createPost(session, content, options);
     try {
         const now = (options.now ?? (() => new Date()))().toISOString();
         const written = await putRecord(session, LIKE, key, { $type: LIKE, subject: listing.uri, post, createdAt: now } satisfies LikeRecord as Record<string, unknown>, options);
@@ -133,8 +167,12 @@ export async function unlike(session: Session, subject: string, options: Network
     return true;
 }
 
-// An account's like of a listing, as its repository has it, verified.
-async function ownLike(did: string, subject: string, options: NetworkOptions): Promise<LikeRecord | null> {
+/**
+ * The account `did`'s like of the listing at `subject`, as its repository
+ * has it, verified; null when it has none. A read anyone can make, so asking
+ * needs no sign-in.
+ */
+export async function ownLike(did: string, subject: string, options: NetworkOptions = {}): Promise<LikeRecord | null> {
     const found = await getRecord(did, LIKE, likeKey(subject), options);
     return found ? readLike(found.value, subject) : null;
 }

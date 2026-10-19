@@ -3,6 +3,17 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **A like's post is yours to read first.** `bundle like` opens the post it would make in your
+  editor (`BUNDLE_EDITOR`, `VISUAL` or `EDITOR`, run through the shell as git runs one), before
+  signing in. Save and close to post it as it stands — the whole text, the link too, made a link
+  wherever you put it, or posted without one if you took it out; close without saving, or empty
+  it, and nothing is liked. A post too long opens the editor again, with your text. An app liked
+  already opens none. Off a terminal it stops with exit code 4, unless `--yes` (`-y`) posts it as
+  proposed. The library's `like()` takes the settled post as `post`; `postOf()` builds one from
+  any text and the link, and `ownLike()` reads an account's like without signing in.
+
 ## 0.2.0
 
 - **A plugin's listing installs into its app, and so does its `nzip:` link.** The listing
