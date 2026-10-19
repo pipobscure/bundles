@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.2.1
 
 - **A like's post is yours to read first.** `bundle like` opens the post it would make in your
   editor (`BUNDLE_EDITOR`, `VISUAL` or `EDITOR`, run through the shell as git runs one), before
