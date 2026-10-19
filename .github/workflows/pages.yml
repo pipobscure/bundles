@@ -1,0 +1,62 @@
+# Publishes site/, the project's page at https://bundle.pipobscure.com/, to
+# GitHub Pages, by hand.
+#
+# The site is deployed with each release, by the `pages` job in publish.yml, so
+# the page describes the version people download. This workflow is for a fix
+# to the page between releases: run it from Actions → Pages → Run workflow, and
+# it deploys site/ as it is on the branch you pick. The github-pages
+# environment only accepts main unless its settings say otherwise.
+#
+# The site is plain files: HTML, one stylesheet, one script, the icon. There is
+# no build step, so what is in site/ is exactly what is served. The custom
+# domain is set in Settings → Pages, with "Source: GitHub Actions"; site/CNAME
+# names it too.
+#
+# Every action is pinned to a full commit SHA, as in the other workflows: a
+# tag is a mutable pointer, and this project is about not trusting those.
+
+name: Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Shared with publish.yml's `pages` job: one deployment at a time, and never
+# cancel one half way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    name: Deploy site/ to GitHub Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      # Pages checks the deployment request against this job's OIDC token.
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      # site/ as it is: plain files, no build step.
+      - name: Upload site/ as the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

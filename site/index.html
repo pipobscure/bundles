@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src https://constellation.microcosm.blue; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>bundle: your Node app, one signed file</title>
+<meta name="description" content="Ship a Node.js app as one signed file, and install other people's apps knowing exactly what you are getting. Experimental; needs Node 26.11.1 or later.">
+<link rel="canonical" href="https://bundle.pipobscure.com/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="bundle: your Node app, one signed file">
+<meta property="og:description" content="Ship a Node.js app as one signed file, and install other people's apps knowing exactly what you are getting.">
+<meta property="og:url" content="https://bundle.pipobscure.com/">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f4ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1420" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="bundle.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="#main"><img src="bundle.svg" alt="" width="28" height="28"> bundle</a>
+    <nav aria-label="Sections">
+      <ul>
+        <li><a href="#why">Why</a></li>
+        <li><a href="#ship">Ship</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#vouch">Vouch</a></li>
+        <li><a href="#get">Get it</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="wrap">
+    <img class="logo" src="bundle.svg" alt="The bundle logo: a tree" width="112" height="112">
+    <h1>Your Node app, one signed file.</h1>
+    <p class="lede">Ship a Node.js app as one file with a signature over the whole thing, and
+      install other people's apps knowing exactly what you are getting. No <code>npm install</code>
+      on the other end. Node runs the app straight out of the file.</p>
+<pre class="code"><code><span class="c"># pack your app, sign it, and it is a program</span>
+bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip
+bundle sign app.unsigned.nzip
+./app.nzip</code></pre>
+    <p class="actions">
+      <a class="button" href="#get">Get it</a>
+      <a class="button ghost" href="https://github.com/pipobscure/bundles">Source on GitHub</a>
+    </p>
+    <p class="note"><strong>Experimental.</strong> It needs Node 26.11.1 or later, run with
+      <code>--experimental-vfs</code>. Everything here, Node's support included, is experimental.</p>
+    <p class="likes" id="likes" hidden></p>
+  </div>
+</section>
+
+<section id="why" class="band">
+  <div class="wrap">
+    <h2>What is actually running on that machine?</h2>
+    <p>When you publish version 1.4 of a Node tool, you think you shipped 1.4. What you actually
+      shipped is a recipe, and the user's machine cooks it.</p>
+    <ul class="points">
+      <li><strong>Decided at install time,</strong> not when you released.
+        <code>^1.2.0</code> means whatever the registry says today.</li>
+      <li><strong>Installing runs code.</strong> <code>postinstall</code> scripts run before
+        anyone has looked at anything.</li>
+      <li><strong>Nothing records it.</strong> Two installs of the same version can differ, and
+        nobody can tell you how.</li>
+      <li><strong>And it gets attacked.</strong> Hijacked maintainer accounts and self-spreading
+        install-script worms were both npm news in 2025.</li>
+    </ul>
+    <p>bundle freezes the whole tree into one file, decided once, when you release. It is a
+      real ZIP: every tool you have can open it, and <code>unzip -l</code> shows what is in it.
+      One signature covers the whole file, so changing one byte anywhere means it no longer
+      checks out. And since Node 26, <code>node --vfs-load</code> mounts the file and runs the app
+      inside, with nothing extracted to disk.</p>
+
+    <h3>What a signature proves, and what it does not</h3>
+    <div class="grid2">
+      <div class="card ok">
+        <h4>It proves where it came from</h4>
+        <p>The code is the code that was signed, by whoever holds that identity. With sigstore
+          that is your CI workflow or your login, and there is no key to keep or lose.</p>
+      </div>
+      <div class="card warn">
+        <h4>It does not prove it is safe</h4>
+        <p>Most npm compromises shipped correctly signed packages from real, hijacked accounts.
+          A signature would have confirmed they came from the real maintainer. That is why
+          review is a step of its own, and why other people can vouch for a file, or warn
+          against it.</p>
+      </div>
+    </div>
+
+    <h3>Compared with what you use today</h3>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="Comparison table">
+      <table>
+        <thead>
+          <tr><th scope="col"><span class="sr">Question</span></th><th scope="col">npm i -g</th><th scope="col">Docker</th><th scope="col">compiled binary</th><th scope="col">bundle</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Needs a registry at install</th><td>yes</td><td>yes</td><td>no</td><td class="us">no</td></tr>
+          <tr><th scope="row">Runs code to install</th><td>can</td><td>no</td><td>no</td><td class="us">no</td></tr>
+          <tr><th scope="row">Same bytes everywhere</th><td>no</td><td>yes</td><td>yes</td><td class="us">yes</td></tr>
+          <tr><th scope="row">Open it, see what is inside</th><td>sort of</td><td>with effort</td><td>no</td><td class="us">unzip</td></tr>
+          <tr><th scope="row">Checked before it runs</th><td>no</td><td>if you set it up</td><td>rarely</td><td class="us">yes, signed whole</td></tr>
+          <tr><th scope="row">Size</th><td>small</td><td>an OS</td><td>a runtime</td><td class="us">tiny, or a runtime</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">It does not replace npm. You still develop with npm. It changes what you hand
+      to the person at the other end.</p>
+  </div>
+</section>
+
+<section id="ship">
+  <div class="wrap">
+    <h2>Shipping your app: four steps</h2>
+    <p>In this order. Each one is a command, and the same files always make the same archive,
+      so anyone can rebuild yours and compare.</p>
+    <ol class="steps">
+      <li>
+        <h3><span class="n">1</span> Observe</h3>
+        <p>Run your app once, the way it is normally used, and write down every file it reads.
+          Dynamic <code>require</code>, data files and conditional imports are exactly what static
+          analysis misses, and exactly what a run reads.</p>
+<pre class="code"><code>BUNDLE_MANIFEST=app.manifest node --experimental-vfs -r @pipobscure/bundle/record --vfs-load=./app -- &lt;args&gt;</code></pre>
+      </li>
+      <li>
+        <h3><span class="n">2</span> Create</h3>
+        <p>Archive exactly those files. <code>--launcher</code> puts a short shell script in front
+          so it runs by name; it is decided here, so the review sees it.</p>
+<pre class="code"><code>bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip</code></pre>
+      </li>
+      <li>
+        <h3><span class="n">3</span> Audit</h3>
+        <p>Review it, against your last release if there is one. Read it yourself and approve it,
+          or let the audit skill that <code>bundle skill</code> installs for Claude Code read every
+          file. <code>bundle audit --check</code> refuses to go on without a clean verdict over
+          exactly these bytes.</p>
+<pre class="code"><code>bundle audit --baseline last-release.nzip app.unsigned.nzip</code></pre>
+      </li>
+      <li>
+        <h3><span class="n">4</span> Sign</h3>
+        <p>Only once the review came back clean. Signing uses sigstore by default: your CI's
+          identity, or a browser sign-in. Your own certificate authority works too.</p>
+<pre class="code"><code>bundle audit --check app.unsigned.nzip &amp;&amp; bundle sign app.unsigned.nzip   # -&gt; app.nzip</code></pre>
+      </li>
+    </ol>
+    <p>The result is a file you run by name, or a plain archive to mount. With
+      <code>bundle sea</code> it is a standalone executable with Node inside, which checks its own
+      signature before it runs anything. bundle itself ships this way: its release workflow
+      tests, audits, signs with the workflow's own identity, and publishes, with no secrets.</p>
+  </div>
+</section>
+
+<section id="install" class="band">
+  <div class="wrap">
+    <h2>Installing apps: see who vouches, then decide</h2>
+    <p><code>bundle install</code> takes a URL, a domain, or a name someone published. Before
+      anything is put on your PATH, it shows you what vouches for what it fetched:</p>
+<pre class="code"><code>$ bundle install @alice.example/tool
+* tool: sha256:3f1a… (signed)
+   1 signed by   https://github.com/acme/tool/.github/workflows/release.yml@refs/heads/main — new
+   2 attested by audit.acme.com (did:web:audit.acme.com) as audited — trusted by policy
+     WARNING     scanner.example (did:plc:…) as malware — marked it bad
+* tool: … accept which? numbers (1,2), 'all', or Enter to decline:</code></pre>
+    <ul class="points">
+      <li><strong>Nothing runs to install it.</strong> The file is fetched, checked, and moved into
+        place. No install scripts.</li>
+      <li><strong>You decide whom to trust, once.</strong> Anyone your policy trusts goes through
+        without a question. Anyone new is your call, and your answer is remembered for updates.</li>
+      <li><strong>Broken or tampered files never land.</strong> Archives that do not verify are
+        refused outright.</li>
+      <li><strong>Updates follow the publisher,</strong> and a quiet check at shell start tells you
+        when someone has flagged something you installed.</li>
+      <li><strong>Or one click.</strong> An <code>nzip:</code> link on a page opens bundle, with the
+        same review in a window.</li>
+    </ul>
+    <p class="note"><strong>Running an app by name does not check it,</strong> because a
+      <code>#!</code> launcher has no way to. <code>bundle run app.nzip</code> runs it through the
+      verifying mount, and a standalone executable checks itself every time.</p>
+  </div>
+</section>
+
+<section id="vouch">
+  <div class="wrap">
+    <h2>Who vouches for this file?</h2>
+    <div class="grid3">
+      <div class="card">
+        <h3>Signatures</h3>
+        <p>Say who built it. With sigstore that is your CI workflow or your login.</p>
+      </div>
+      <div class="card">
+        <h3>Attestations</h3>
+        <p>Anyone can vouch for a file ("I audited this", "I rebuilt it and got the same bytes")
+          or warn against it, from their own account.</p>
+      </div>
+      <div class="card">
+        <h3>Your policy</h3>
+        <p>Whom you trust, what you require, and whose warnings stop an install.</p>
+      </div>
+    </div>
+
+    <h3>On the Atmosphere</h3>
+    <p>Attestations, listings and suites are records in people's own Atmosphere (atproto)
+      accounts, with any provider. Everyone writes only to their own account: the publisher says
+      where the file is, a curator says what goes together, and an auditor, a scanner or your IT
+      department says what they think of it. You hold the policy that decides whose word counts.</p>
+    <ul class="points">
+      <li><strong>No registry to run,</strong> and nothing in the middle to compromise. An open
+        backlink index only says whom to ask; every record is fetched from its owner and checked
+        against their key.</li>
+      <li><strong>Publish under your handle.</strong> A listing points at your release URL, such as a
+        GitHub release, and a new version is just a new release. People
+        <code>bundle search</code> for it and install it by name.</li>
+      <li><strong>Attestations are checked offline,</strong> from a cache that
+        <code>bundle trust</code> keeps fresh.</li>
+    </ul>
+<pre class="code"><code>bundle publish --as you.example --description 'what it does' tool https://github.com/you/tool/releases/latest/download/tool.nzip
+bundle attest --as you.example --kind audited app.nzip</code></pre>
+    <p class="small">You do not need an account to use bundle. Install by URL or domain, sign with
+      sigstore or your own CA. Accounts are only for publishing names and attestations.</p>
+  </div>
+</section>
+
+<section id="suites" class="band">
+  <div class="wrap">
+    <h2>Suites and plugins</h2>
+    <div class="grid2">
+      <div>
+        <h3>A whole toolset, one question</h3>
+        <p>A suite names apps and plugins that go together, and what each must carry: a signer,
+          attesters. <code>bundle install @you.example/devtools</code> installs them all, and asks
+          you once whom to accept.</p>
+        <p>The suite vouches for nothing: each member is reviewed on its own. Updates follow it as
+          members are added and taken out. An IT department can permit a whole suite with one
+          attestation, and still permit or prohibit single bundles in it.</p>
+      </div>
+      <div>
+        <h3>Plugins that are signed bundles too</h3>
+        <p>Apps can take plugins that are bundles: signed, installed per app, reviewed like any
+          install, and removed with the app. They load through ordinary <code>import</code>.</p>
+<pre class="code"><code>import { use } from '@pipobscure/bundle/plugins';
+
+use('bled');
+const gpio = await import('@alice/bled-gpio');</code></pre>
+        <p>A plugin can never replace something your app already has, and it gets your app's own
+          modules. You can require that plugins are audited as they load.</p>
+      </div>
+    </div>
+    <p>And when one product is many archives, such as services, web apps and drivers, the app
+      pins every part by hash. Sign the app, and you have signed exactly those bytes; installing
+      it installs all of them, or none.</p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="wrap">
+    <h2>What this is not</h2>
+    <ul class="points">
+      <li><strong>Not stable yet.</strong> It needs Node 26.11.1 or later with
+        <code>--experimental-vfs</code>, and both sides are experimental.</li>
+      <li><strong>Not a sandbox.</strong> Checked code runs with full access to your machine, like
+        any Node program.</li>
+      <li><strong>Not proof of safety.</strong> A signature says who built it, not that it is
+        harmless. That is what review and attestations are for.</li>
+      <li><strong>Not checked when run by name.</strong> Use <code>bundle run</code> or a standalone
+        executable when you want the check every time.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="get" class="band get">
+  <div class="wrap">
+    <h2>Get it</h2>
+    <p>Download <a href="https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip"><code>bundle.nzip</code></a>
+      from the <a href="https://github.com/pipobscure/bundles/releases/latest">latest release</a>,
+      and run its <code>install</code> with Node 26.11.1 or later:</p>
+<pre class="code copyable"><code>curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip
+node --experimental-vfs --vfs-load ./bundle.nzip install</code></pre>
+    <p>On Windows, <code>curl.exe -LO …</code> in PowerShell downloads it, and the second line is
+      the same. That run fetches the latest release, checks its signature, and puts the signed
+      <code>bundle</code> on your PATH, where <code>bundle update</code> keeps it current. The
+      <code>bundle</code> command is itself a bundle: <code>bundle verify</code> tells you who
+      signed it. Then <code>bundle --help</code>.</p>
+    <p>For the library and the plugin loader: <code>npm install @pipobscure/bundle</code>.</p>
+    <ul class="links">
+      <li><a href="https://github.com/pipobscure/bundles">Source and README</a> on GitHub</li>
+      <li><a href="https://github.com/pipobscure/bundles/blob/main/docs/cli.md">Command reference</a>: every command and option</li>
+      <li><a href="https://github.com/pipobscure/bundles/blob/main/docs/api.md">API reference</a>: the library and the plugin loader</li>
+      <li><a href="https://github.com/pipobscure/bundles/blob/main/docs/design.md">How it works</a>: the format, what is signed, the trust model</li>
+      <li><a href="https://www.npmjs.com/package/@pipobscure/bundle">@pipobscure/bundle</a> on npm</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p><img src="bundle.svg" alt="" width="20" height="20"> bundle, by Philipp Dunkel
+      (@pipobscure.com on the Atmosphere).
+      Licensed under the <a href="https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12">EUPL-1.2</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

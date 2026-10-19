@@ -23,6 +23,7 @@
 #                    latest — the CLI for anyone with node and nothing else —
 #                    and policy.schema.json, the JSON Schema for policy files,
 #                    which `bundle policy init` points new files at by version
+#   6. pages         site/, the project's page, deployed to GitHub Pages
 #
 # There is no npm token. npm trusts this workflow file by name, configured on
 # the package's npm settings page (Trusted Publisher: GitHub Actions,
@@ -332,3 +333,50 @@ jobs:
           gh release create "v$VERSION" bundle.nzip cli.audit.json policy.schema.json suite.schema.json \
             --target "$TARGET" --title "v$VERSION" --notes-file notes.md --latest
 
+
+  # The project's page, site/, deployed to GitHub Pages with each release, so
+  # it describes the version people download. Only once the GitHub release
+  # exists, and from the commit that was released.
+  #
+  # Its own job for the same reason github-release is: the only one that holds
+  # pages: write, and it never holds contents: write or runs the audit. Its
+  # id-token is what Pages checks the deployment against, and nothing here
+  # signs or publishes with it. Fixes to the page between releases go out
+  # through pages.yml, by hand.
+  pages:
+    name: GitHub Pages
+    needs: [check, github-release]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Shared with pages.yml: one deployment at a time, never cancelled half way.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The commit that was released, not whatever main points at by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      # site/ as it is: plain files, no build step.
+      - name: Upload site/ as the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

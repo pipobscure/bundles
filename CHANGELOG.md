@@ -17,6 +17,10 @@ how to use it is in the [README](README.md) and [docs/](docs/).
   `--for` too, the two must agree. The window's title and log say which app it goes in.
 - **`bundle publish` prints the `nzip:` link for a plugin's listing too**, and the plain
   `bundle install` that installs it; `search --for` says the first column installs as it is.
+- **A page for the project**, at [bundle.pipobscure.com](https://bundle.pipobscure.com/): what
+  bundle is, why, and how to get it. It lives in `site/`, plain HTML and CSS with no build
+  step, and is deployed to GitHub Pages with each release by the publish workflow;
+  `pages.yml` deploys it by hand for a fix between releases.
 
 ## 0.1.7
 

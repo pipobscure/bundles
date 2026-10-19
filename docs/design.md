@@ -580,3 +580,11 @@ sigstore with the workflow's OIDC identity, publish through npm trusted publishi
 action pinned to a commit SHA. It runs whenever CI passes on `main` and does nothing unless
 `package.json` names a version npm does not have yet: bumping the version *is* the release.
 There is no npm token anywhere; npm trusts that workflow file by name.
+
+**The project's page**, [bundle.pipobscure.com](https://bundle.pipobscure.com/), is `site/`:
+plain HTML, one stylesheet and one small script, with no build step, so what is in the folder is
+what is served. It is deployed to GitHub Pages with each release, by the `pages` job at the end
+of the publish workflow, from the commit that was released, so the page describes the version
+people download. A fix to the page between releases goes out by hand, through
+[`.github/workflows/pages.yml`](../.github/workflows/pages.yml). To look at it locally, serve the
+folder with any static server, for example `npx http-server site`.
