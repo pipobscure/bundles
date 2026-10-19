@@ -339,10 +339,12 @@ replaces Constellation once it stops scaling.
 
 **Likes** are records too (`com.pipobscure.bundle.like`), of an app's listing rather than of
 one release, so a star stays with the app; keyed by the hash of the listing's address, so an
-account likes an app once. Each comes with a post from the same account, with the app's
-install link, which is how a like is seen by people who don't use bundle. They are counted the
-way listings are found, through Constellation, by accounts rather than records, and each is
-verified at its source before `likes` shows it. They vouch for nothing.
+account has one like of an app, and liking again counts on it. Each like comes with a post from
+the same account, with the app's install link, which is how a like is seen by people who don't
+use bundle; the record lists them. They are counted the way listings are found, through
+Constellation, by accounts rather than records or likes, and each is verified at its source,
+with its count, before `likes` shows it. Unliking leaves the posts up unless asked to take them
+down too. They vouch for nothing.
 [proposals/likes.md](../proposals/likes.md) has the reasoning.
 
 ## Suites

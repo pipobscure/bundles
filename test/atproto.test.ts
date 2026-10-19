@@ -168,6 +168,10 @@ const DOWN = new Set<string>();
  */
 const THROTTLE = new Map<string, Response[]>();
 const throttled: { path: string; dpop?: string | undefined }[] = [];
+/** What happens in a repository just before a putRecord into it, once each: another machine writing meanwhile. */
+const MEANWHILE: ((account: Account) => void)[] = [];
+/** Keys the PDS gives the records it names, as a real one gives TIDs: never the same twice. */
+let created = 0;
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -398,13 +402,21 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         case '/xrpc/com.atproto.repo.putRecord': {
             if (!authorized || body['repo'] !== account.did) return json({ error: 'AuthRequired' }, 401);
             const key = `${String(body['collection'])}/${String(body['rkey'])}`;
+            MEANWHILE.shift()?.(account);
+            // Compare and swap, as a real PDS does: over the record by its CID,
+            // or, null, over no record at all.
+            if ('swapRecord' in body) {
+                const current = account.records.get(key);
+                const cid = current === undefined ? null : CID.of(encode(current)).toString();
+                if (body['swapRecord'] !== cid) return json({ error: 'InvalidSwap', message: `Record was at ${String(cid)}` }, 400);
+            }
             account.records.set(key, body['record'] as Value);
             return json({ uri: `at://${account.did}/${key}`, cid: CID.of(encode(body['record'] as Value)).toString() });
         }
         case '/xrpc/com.atproto.repo.createRecord': {
             // The PDS picks the key, as a real one does for a post: a TID.
             if (!authorized || body['repo'] !== account.did) return json({ error: 'AuthRequired' }, 401);
-            const key = `${String(body['collection'])}/3l${String(account.records.size).padStart(11, '2')}`;
+            const key = `${String(body['collection'])}/3l${String(created++).padStart(11, '2')}`;
             account.records.set(key, body['record'] as Value);
             return json({ uri: `at://${account.did}/${key}`, cid: CID.of(encode(body['record'] as Value)).toString() });
         }
@@ -2057,7 +2069,7 @@ test('bundle publish lists several under one sign-in, as one batch — from the 
     }
 });
 
-test('a like stars an app across its releases, always with a post, counted by account, and taken back with its post', async () => {
+test('a like stars an app across its releases, always with a post, counted by account, and taken back leaving its posts up', async () => {
     const pub = account();
     const fan = account();
     const other = account();
@@ -2078,17 +2090,25 @@ test('a like stars an app across its releases, always with a post, counted by ac
     const { byteStart, byteEnd } = post.facets[0]!.index;
     assert.equal(Buffer.from(post.text).subarray(byteStart, byteEnd).toString(), link, 'the link marked as one, where it is');
     assert.equal(post.facets[0]!.features[0]!.uri, link);
-    const record = fan.records.get(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`) as { subject: string; post: { uri: string } };
+    const key = `${LIKE.LIKE}/${LIKE.likeKey(listing)}`;
+    const record = fan.records.get(key) as { subject: string; count: number; posts: { uri: string }[]; post?: unknown; createdAt: string; updatedAt: string };
     assert.equal(record.subject, listing);
-    assert.equal(record.post.uri, `at://${fan.did}/${postKey}`);
+    assert.equal(record.count, 1);
+    assert.deepEqual(record.posts.map(({ uri }) => uri), [`at://${fan.did}/${postKey}`]);
+    assert.equal('post' in record, false, 'the one post is in posts, not post');
+    assert.equal(record.updatedAt, record.createdAt);
     assert.match(liked.stdout.join('\n'), /liked @did:plc:.*\/starry\n  post: https:\/\/bsky\.app\/profile\//);
 
-    // Once per account: liking it again changes nothing, and makes no second
-    // post — nor opens an editor on one, nor signs in to find out.
-    const again = { ...collector(), open: () => assert.fail('nobody should be asked to sign in'), edit: noEditor };
-    assert.equal(await main(['like', '--as', fan.did, `at://${pub.did}/${LISTING}/starry`], again), 0);
-    assert.match(again.stdout.join('\n'), /already liked/);
-    assert.equal(posts(fan).length, 1);
+    // Liked again: one record still, counting on, with a post of its own.
+    const again = { ...collector(), open: browser, edit: noEditor };
+    assert.equal(await main(['like', '--as', fan.did, '--yes', `at://${pub.did}/${LISTING}/starry`], again), 0, again.stderr.join('\n'));
+    assert.match(again.stdout.join('\n'), /liked at:\/\/.*\/starry again: 2 likes from this account\n  post: https:\/\/bsky\.app\/profile\//);
+    assert.equal(posts(fan).length, 2);
+    const twice = fan.records.get(key) as typeof record;
+    assert.equal(twice.count, 2);
+    assert.deepEqual(twice.posts.map(({ uri }) => uri), posts(fan).map(([each]) => `at://${fan.did}/${each}`), 'both posts, oldest first');
+    assert.equal(twice.createdAt, record.createdAt, 'created at the first like');
+    assert.equal([...fan.records.keys()].filter((each) => each.startsWith(`${LIKE.LIKE}/`)).length, 1);
 
     // In one's own words: the note is the post, and the link still comes after it.
     const worded = { ...collector(), open: browser };
@@ -2098,19 +2118,30 @@ test('a like stars an app across its releases, always with a post, counted by ac
     assert.equal(await main(['like', '--as', other.did, '--yes', '--note', 'x'.repeat(290), `@${pub.did}/starry`], tooLong), 70);
     assert.match(tooLong.stderr.join('\n'), /the note is too long for the post/);
 
-    // Counted by account: records an account writes besides its one like count for nothing.
+    // Counted by account: liking again, or records an account writes besides
+    // its one like, count for nothing.
     for (let n = 0; n < 3; n++) fan.records.set(`${LIKE.LIKE}/extra${n}`, { $type: LIKE.LIKE, subject: listing, createdAt: new Date().toISOString() } as Value);
     assert.equal(await LIKE.countLikes(listing, { index: INDEX }), 2);
     const shown = collector();
     assert.equal(await main(['likes', `@${pub.did}/starry`], shown), 0, shown.stderr.join('\n'));
     const out = shown.stdout.join('\n');
-    assert.match(out, /: 2 likes/);
+    assert.match(out, /: 2 likes; 3 in all, counting each like\n/, 'accounts, and how often those shown liked it');
     assert.match(out, /"Lovely at 2am\. nzip:did:plc:.*\/starry"/, 'each like with its post, verified at its source');
     assert.equal(out.split('\n').filter((line) => line.startsWith('  ') && line.includes(`(${fan.did}),`)).length, 1, 'an account once');
+    assert.match(out, new RegExp(`\\(${fan.did}\\), [^\\n]*, 2 likes\\n {4}"🌳 I like Starry[^\\n]*\\n {4}https://bsky\\.app/[^\\n]*\\n {4}and 1 earlier post$`, 'm'), 'with its count, its latest post, and how many came before');
+    assert.doesNotMatch(out, new RegExp(`\\(${other.did}\\), [^\\n]*likes`), 'a count of one goes unsaid');
+    const json = collector();
+    assert.equal(await main(['likes', '--json', `@${pub.did}/starry`], json), 0, json.stderr.join('\n'));
+    const given = JSON.parse(json.stdout.join('\n')) as { total: number; likes: { did: string; count: number; posts: { uri: string }[]; post: { uri: string } }[] };
+    assert.equal(given.total, 2);
+    const fans = given.likes.find((each) => each.did === fan.did)!;
+    assert.equal(fans.count, 2);
+    assert.equal(fans.posts.length, 2);
+    assert.equal(fans.post.uri, fans.posts[1]!.uri, 'post is the latest, as before');
     const listed2 = collector();
     assert.equal(await main(['listings', '--refresh', '--json'], listed2), 0, listed2.stderr.join('\n'));
     const entry = (JSON.parse(listed2.stdout.join('\n')) as { name: string; did: string; likes?: number }[]).find((each) => each.did === pub.did && each.name === 'starry');
-    assert.equal(entry?.likes, 2, 'and listings count them');
+    assert.equal(entry?.likes, 2, 'and listings count accounts, not likes');
     const plain = collector();
     assert.equal(await main(['listings'], plain), 0);
     assert.match(plain.stdout.join('\n'), /\/starry +\[2 likes\] Starry — draws the night sky/);
@@ -2124,12 +2155,107 @@ test('a like stars an app across its releases, always with a post, counted by ac
     assert.equal(own.text, '🌳 I like bundle\n\nhttps://bundle.pipobscure.com/');
     assert.equal(SELF.listing, 'at://did:plc:rwypz6edxmzyhob2k3rsl2fw/com.pipobscure.bundle.listing/bundle');
 
-    // Taken back: the like and the post it made.
+    // Taken back: the like goes, and the posts it made stay up, as posts.
     const unliked = { ...collector(), open: browser, edit: noEditor };
     assert.equal(await main(['like', '--as', fan.did, '--revoke', `@${pub.did}/starry`], unliked), 0, unliked.stderr.join('\n'));
-    assert.equal(fan.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`), false);
-    assert.equal(posts(fan).length, 0);
-    assert.match(unliked.stdout.join('\n'), /unliked/);
+    assert.equal(fan.records.has(key), false);
+    assert.equal(posts(fan).length, 2);
+    assert.match(unliked.stdout.join('\n'), /unliked .*starry; 2 posts stay up/);
+    assert.match(unliked.stderr.join('\n'), /--revoke --all takes them down too/);
+});
+
+test('liking again counts on one record, over the one read, and --revoke --all takes down its own posts', async () => {
+    const pub = account();
+    pub.records.set(`${LISTING}/lumen`, listed('https://dl.test/lumen.nzip', { title: 'Lumen', description: 'lights up your diffs' }));
+    const listing = `at://${pub.did}/${LISTING}/lumen`;
+    const key = `${LIKE.LIKE}/${LIKE.likeKey(listing)}`;
+    const posts = (who: { records: Map<string, Value> }) => [...who.records.keys()].filter((each) => each.startsWith('app.bsky.feed.post/'));
+    const yes = async (who: { did: string }, ...flags: string[]) => {
+        const io = { ...collector(), open: browser, edit: () => assert.fail('no editor should be opened') };
+        const code = await main(['like', '--as', who.did, '--yes', ...flags, `@${pub.did}/lumen`], io);
+        return { code, ...io };
+    };
+    type Like = { count: number; posts: { uri: string; cid: string }[]; post?: unknown; createdAt: string; updatedAt: string };
+
+    // A like as 0.2.0 and 0.2.1 wrote it, one post and no count, reads as
+    // counted once; liked again, it is written in the shape it has now.
+    const old = account();
+    old.records.set('app.bsky.feed.post/3kold', { $type: 'app.bsky.feed.post', text: 'I like Lumen', createdAt: '2026-09-01T00:00:00.000Z' } as Value);
+    const oldPost = { uri: `at://${old.did}/app.bsky.feed.post/3kold`, cid: CID.of(encode(old.records.get('app.bsky.feed.post/3kold')!)).toString() };
+    old.records.set(key, { $type: LIKE.LIKE, subject: listing, post: oldPost, createdAt: '2026-09-01T00:00:00.000Z' } as Value);
+    assert.deepEqual(await LIKE.ownLike(old.did, listing), { $type: LIKE.LIKE, subject: listing, count: 1, posts: [oldPost], createdAt: '2026-09-01T00:00:00.000Z' });
+    const upgraded = await yes(old);
+    assert.equal(upgraded.code, 0, upgraded.stderr.join('\n'));
+    const now = old.records.get(key) as Like;
+    assert.equal(now.count, 2);
+    assert.deepEqual(now.posts.map(({ uri }) => uri), [oldPost.uri, ...posts(old).filter((each) => !each.endsWith('3kold')).map((each) => `at://${old.did}/${each}`)]);
+    assert.equal('post' in now, false, 'post is dropped once posts has it');
+    assert.equal(now.createdAt, '2026-09-01T00:00:00.000Z');
+    assert.ok(now.updatedAt > now.createdAt);
+
+    // A field that is not what the lexicon says is dropped, never a reason to refuse the like.
+    const ref = { uri: `at://${old.did}/app.bsky.feed.post/3k1`, cid: oldPost.cid };
+    assert.deepEqual(LIKE.readLike({ $type: LIKE.LIKE, subject: listing, count: 'many', posts: [{ uri: 1 }, ref, 'x'], post: 5, createdAt: 3 } as unknown as Value, listing),
+        { $type: LIKE.LIKE, subject: listing, count: 1, posts: [ref], createdAt: '' });
+    assert.equal(LIKE.readLike({ $type: LIKE.LIKE, subject: listing, count: 0, posts: [ref, oldPost], createdAt: '' } as unknown as Value, listing)!.count, 2, 'never fewer than its posts');
+    assert.equal(LIKE.readLike({ $type: LIKE.LIKE, subject: listing, count: 7, posts: {}, createdAt: '' } as unknown as Value, listing)!.count, 7);
+
+    // Another machine liking meanwhile: the write over the like as it was read
+    // is refused, so it is read again and written once more, and neither like is lost.
+    const fan = account();
+    assert.equal((await yes(fan)).code, 0);
+    const elsewhere = { uri: `at://${fan.did}/app.bsky.feed.post/3kelsewhere`, cid: oldPost.cid };
+    MEANWHILE.push((repo) => {
+        const was = repo.records.get(key) as Like;
+        repo.records.set(key, { ...was, count: was.count + 1, posts: [...was.posts, elsewhere] } as unknown as Value);
+    });
+    const raced = await yes(fan);
+    assert.equal(raced.code, 0, raced.stderr.join('\n'));
+    assert.equal(MEANWHILE.length, 0);
+    const counted = fan.records.get(key) as Like;
+    assert.equal(counted.count, 3);
+    assert.deepEqual(counted.posts.map(({ uri }) => uri), [...posts(fan).slice(0, 1), elsewhere.uri.slice(`at://${fan.did}/`.length), ...posts(fan).slice(1)].map((each) => `at://${fan.did}/${each}`));
+    assert.match(raced.stdout.join('\n'), /again: 3 likes from this account/);
+
+    // Refused twice, it gives up: the post just made is taken down again, and
+    // the like is as the other machine left it.
+    const before = posts(fan);
+    MEANWHILE.push((repo) => { repo.records.set(key, { ...(repo.records.get(key) as Like), updatedAt: 'one' } as unknown as Value); });
+    MEANWHILE.push((repo) => { repo.records.set(key, { ...(repo.records.get(key) as Like), updatedAt: 'two' } as unknown as Value); });
+    const lost = await yes(fan);
+    assert.equal(lost.code, 70);
+    assert.match(lost.stderr.join('\n'), /changed while it was being written/);
+    assert.deepEqual(posts(fan), before, 'the new post is gone again');
+    assert.equal((fan.records.get(key) as Like).updatedAt, 'two');
+    assert.equal((fan.records.get(key) as Like).count, 3);
+
+    // A like from scratch is written over no like at all: one made meanwhile is not overwritten.
+    const fresh = account();
+    MEANWHILE.push((repo) => { repo.records.set(key, { $type: LIKE.LIKE, subject: listing, count: 1, posts: [], createdAt: '2026-10-01T00:00:00.000Z' } as Value); });
+    assert.equal((await yes(fresh)).code, 0);
+    assert.equal((fresh.records.get(key) as Like).count, 2);
+
+    // --all goes with --revoke, and alone it is refused before anyone signs in.
+    const alone = { ...collector(), open: () => assert.fail('nobody should be asked to sign in') };
+    assert.equal(await main(['like', '--as', fan.did, '--all', `@${pub.did}/lumen`], alone), 70);
+    assert.match(alone.stderr.join('\n'), /--all goes with --revoke/);
+
+    // --revoke --all: the like goes, and so does every post it lists in the
+    // account's own repository; one it lists in anyone else's is never touched.
+    const theirs = `app.bsky.feed.post/3ktheirs`;
+    pub.records.set(theirs, { $type: 'app.bsky.feed.post', text: 'not yours', createdAt: '2026-10-01T00:00:00.000Z' } as Value);
+    const listedPosts = (fan.records.get(key) as Like).posts;
+    fan.records.set(key, { ...(fan.records.get(key) as Like), posts: [...listedPosts, { uri: `at://${pub.did}/${theirs}`, cid: oldPost.cid }] } as unknown as Value);
+    fan.records.set('app.bsky.feed.post/3kunlisted', { $type: 'app.bsky.feed.post', text: 'not a like', createdAt: '2026-10-01T00:00:00.000Z' } as Value);
+    const all = { ...collector(), open: browser, edit: () => assert.fail('--revoke opens no editor') };
+    assert.equal(await main(['like', '--as', fan.did, '--revoke', '--all', `@${pub.did}/lumen`], all), 0, all.stderr.join('\n'));
+    assert.equal(fan.records.has(key), false);
+    assert.deepEqual(posts(fan), ['app.bsky.feed.post/3kunlisted'], 'its own posts are gone, and only those it listed');
+    assert.ok(pub.records.has(theirs), "another account's post is untouched");
+    // Its own three are taken down — the one the other machine named too, as
+    // a PDS takes down a record that is not there — and the one not its own stays up.
+    assert.match(all.stdout.join('\n'), /unliked .*lumen; 3 posts taken down, 1 post stays up/);
+    assert.doesNotMatch(all.stderr.join('\n'), /--revoke --all/);
 });
 
 test("a like's post is read and settled in an editor first, like a commit message, before anyone signs in", async () => {
@@ -2169,6 +2295,28 @@ test("a like's post is read and settled in an editor first, like a commit messag
     assert.equal(byteStart, Buffer.byteLength('Try '));
     assert.equal(Buffer.from(post!.text).subarray(byteStart, byteEnd).toString(), link);
     assert.ok(ann.records.has(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`));
+    assert.doesNotMatch(seen!.text, /like of it from this account/, 'a first like says nothing of the kind');
+
+    // Liked again: the editor opens again, as for the first, and says which
+    // like this is; saved, it is posted too, and the like counts on.
+    let again = '';
+    const second = await like(ann, async (file) => {
+        again = FS.readFileSync(file, 'utf-8');
+        FS.writeFileSync(file, `Still lovely. ${link}\n`);
+    });
+    assert.equal(second.code, 0, second.stderr.join('\n'));
+    assert.ok(again.startsWith(`${proposed}\n`));
+    assert.match(again, /^# It is the 2nd like of it from this account, with a post of its own/m);
+    assert.deepEqual(posts(ann).map(({ text }) => text), [post!.text, `Still lovely. ${link}`]);
+    const counted = ann.records.get(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`) as { count: number; posts: unknown[] };
+    assert.equal(counted.count, 2);
+    assert.equal(counted.posts.length, 2);
+    assert.match(second.stdout.join('\n'), /again: 2 likes from this account/);
+    // Closed without saving, a like again is no like either.
+    const third = await like(ann, async () => {}, () => assert.fail('nobody should be asked to sign in'));
+    assert.equal(third.code, 0);
+    assert.equal(posts(ann).length, 2);
+    assert.equal((ann.records.get(`${LIKE.LIKE}/${LIKE.likeKey(listing)}`) as { count: number }).count, 2);
 
     // Closed without saving: nothing is posted, nothing liked, and nobody signed in.
     const bea = account();

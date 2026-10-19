@@ -198,27 +198,31 @@ export const HELP: Record<string, string> = {
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
       --note <text>     what to say in the post, in your own words
   -y, --yes             post it as proposed, without opening an editor
-      --revoke          take the like back, and the post it made
+      --revoke          take the like back; its posts stay up, as posts
+      --all             with --revoke, take its posts down too
       --password-file <file>  an app password instead of signing in, for CI
                         (BUNDLE_ATPROTO_PASSWORD works too)
 
   likes an app — a star for it, that stays with it as it is released again —
   from an Atmosphere account. A like is of the app's listing, so the app must
   be published (see 'publish'); an app installed from one is named as it is
-  installed. An account likes an app once.
+  installed. An account has one like of an app, and liking it again counts
+  on it: each like makes a post of its own, and the like lists them.
 
   every like comes with a post from the same account: your --note, or else
   '🌳 I like <title>: <description>' from the app's listing, and then the
   app's nzip: link, so whoever reads it can install it in one click. The
   sign-in asks to write likes and to create and delete posts, and nothing
-  else. --revoke takes the post down with the like.
+  else. --revoke takes the like back and leaves its posts up; --revoke --all
+  takes down the ones in your own repository too.
 
   the post is yours to read first, like a commit message: it opens in your
   editor (BUNDLE_EDITOR, VISUAL or EDITOR, else vi), before anyone signs in.
   Save and close to post it as it stands, the link wherever you put it;
   close without saving, or empty it, and nothing is liked. Lines starting
   '# ' are left out. Not on a terminal, it stops (exit 4) unless --yes posts
-  it as proposed. An app liked already opens no editor.
+  it as proposed. Liked already, the editor says which like this is.
+  --revoke opens no editor.
 
   likes decide nothing: nothing is installed or refused by them. 'search'
   and 'listings' show how many accounts like each app, and 'likes' who.`,
@@ -228,8 +232,9 @@ export const HELP: Record<string, string> = {
 
   who likes an app: each like found through the backlink index the policy
   names (see 'policy'), then fetched from its author's own PDS and verified,
-  with the post it made. Newest first. The count is of accounts, so one
-  account counts once however many records it writes.`,
+  with how many times it liked the app, and its latest post, and how many
+  earlier ones there are. The latest like first. The count at the top is of
+  accounts, so one account counts once however often it likes the app.`,
     publish: `publish options:                    usage: publish [options] <name> <url | domain> [<name> <url | domain>]...
       --as <handle | did>  the account to publish from
                         (default: BUNDLE_ATPROTO_IDENTIFIER)
@@ -1413,17 +1418,18 @@ async function like(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.like });
     if (positionals.length !== 1) throw new Error('like: name one app — as it is installed, @<handle or did>/<name>, an nzip: link, or an at:// address');
     if (values.revoke && values.note !== undefined) throw new Error('like: --revoke takes a like back; it takes no note');
+    if (values.all && !values.revoke) throw new Error('like: --all goes with --revoke, and takes down the like\'s posts with it');
     const LIKE = await import('./like.ts');
     const listing = await likedListing('like', positionals[0]!);
     const { o, e } = styles(io);
-    const liked = (already: boolean, post: StrongRef | undefined) => {
-        const link = post ? untrusted(postUrl(post.uri)) : undefined;
+    const liked = (count: number, post: StrongRef) => {
+        const link = untrusted(postUrl(post.uri));
         if (o.people) {
-            io.out(already ? `${o.bundle(o.bold(listing.label))}  ${o.dim('liked already')}` : `${o.green('★')} ${o.bundle(o.bold(listing.label))}  ${o.green('liked')}`);
-            if (link) io.out(`   ${o.cyan(link)}`);
+            io.out(`${o.green('★')} ${o.bundle(o.bold(listing.label))}  ${o.green(count > 1 ? `liked again: ${plural(count, 'like')} from this account` : 'liked')}`);
+            io.out(`   ${o.cyan(link)}`);
         } else {
-            io.out(`${already ? 'already liked' : 'liked'} ${listing.label}`);
-            if (link) io.out(`  post: ${link}`);
+            io.out(count > 1 ? `liked ${listing.label} again: ${plural(count, 'like')} from this account` : `liked ${listing.label}`);
+            io.out(`  post: ${link}`);
         }
         return 0;
     };
@@ -1431,12 +1437,7 @@ async function like(args: string[], io: Console): Promise<number> {
     if (!values.revoke) {
         // The post is made up first, so a note that does not fit costs nothing.
         const proposed = LIKE.likePost(listing, values.note);
-        // Liked already, there is no post to review: the account's own like is
-        // a record anyone can read, by its DID.
         const account = accountOf('like', values);
-        const did = account.startsWith('did:') ? account : (await (await import('./atproto.ts')).resolveHandle(account)).did;
-        const existing = await LIKE.ownLike(did, listing.uri);
-        if (existing) return liked(true, existing.post);
         if (values.yes) {
             post = proposed;
         } else {
@@ -1446,7 +1447,11 @@ async function like(args: string[], io: Console): Promise<number> {
                 io.err(`  ${e.dim('run on a terminal to review it in your editor, or pass --yes to post it as it is')}`);
                 return UNDECIDED;
             }
-            const text = await reviewPost(io.edit, proposed.text, { account, title: listing.record.title || listing.name, label: listing.label, link: listing.link });
+            // Liked already, the editor says which like this is: the account's
+            // own like is a record anyone can read, by its DID.
+            const did = account.startsWith('did:') ? account : (await (await import('./atproto.ts')).resolveHandle(account)).did;
+            const nth = ((await LIKE.ownLike(did, listing.uri))?.count ?? 0) + 1;
+            const text = await reviewPost(io.edit, proposed.text, { account, title: listing.record.title || listing.name, label: listing.label, link: listing.link, nth });
             if (text === null) {
                 io.err(e.people ? e.yellow('nothing was liked: the post was not saved') : 'nothing was liked: the post was not saved');
                 return 0;
@@ -1462,14 +1467,24 @@ async function like(args: string[], io: Console): Promise<number> {
     const session = await signIn('like', values, io, `atproto repo:${LIKE.LIKE} repo:app.bsky.feed.post?action=create&action=delete`);
     try {
         if (values.revoke) {
-            const gone = await LIKE.unlike(session, listing.uri);
+            // The like goes; its posts are posts, and stay up unless --all takes them down too.
+            const gone = await LIKE.unlike(session, listing.uri, { all: values.all });
+            if (!gone) {
+                io.out(o.people ? `${o.bundle(o.bold(listing.label))}  ${o.dim(`was not liked by ${session.did}`)}` : `${listing.label} was not liked by ${session.did}`);
+                return 0;
+            }
+            const said = [
+                ...gone.removed ? [`${plural(gone.removed, 'post')} taken down`] : [],
+                ...gone.kept ? [`${plural(gone.kept, 'post')} ${gone.kept === 1 ? 'stays' : 'stay'} up`] : [],
+            ].join(', ');
             io.out(o.people
-                ? gone ? `${o.bundle(o.bold(listing.label))}  ${o.dim('no longer liked, and the post is gone')}` : `${o.bundle(o.bold(listing.label))}  ${o.dim(`was not liked by ${session.did}`)}`
-                : gone ? `unliked ${listing.label}` : `${listing.label} was not liked by ${session.did}`);
+                ? `${o.bundle(o.bold(listing.label))}  ${o.dim(`no longer liked${said ? `; ${said}` : ''}`)}`
+                : `unliked ${listing.label}${said ? `; ${said}` : ''}`);
+            if (gone.kept && !values.all) io.err(styles(io).e.dim(`--revoke --all takes ${gone.kept === 1 ? 'it' : 'them'} down too`));
             return 0;
         }
         const done = await LIKE.like(session, listing, { post });
-        return liked(done.already, done.post);
+        return liked(done.count, done.post);
     } finally {
         await session.end?.();
     }
@@ -1483,7 +1498,7 @@ async function like(args: string[], io: Console): Promise<number> {
 // hashtag. Too long to post, the editor opens again on the text as they left
 // it, saying so. The file is the person's alone to read, in a directory of
 // its own, and gone afterwards however this ends.
-async function reviewPost(edit: (file: string) => Promise<void>, proposed: string, about: { account: string; title: string; label: string; link: string }): Promise<string | null> {
+async function reviewPost(edit: (file: string) => Promise<void>, proposed: string, about: { account: string; title: string; label: string; link: string; nth: number }): Promise<string | null> {
     const OS = await import('node:os');
     const LIKE = await import('./like.ts');
     const dir = FS.mkdtempSync(PATH.join(OS.tmpdir(), 'bundle-like-'));
@@ -1492,6 +1507,7 @@ async function reviewPost(edit: (file: string) => Promise<void>, proposed: strin
         '',
         // Each on one line, whatever the listing says, so none of it ends up in the post.
         `# The post liking ${untrusted(about.title)} (${untrusted(about.label)}) makes, from ${untrusted(about.account)}.`,
+        ...about.nth > 1 ? [`# It is the ${ordinal(about.nth)} like of it from this account, with a post of its own; the others stay as they are.`] : [],
         '# Save and close to post it and like the app; close without saving to stop.',
         `# A post holds ${LIKE.POST_GRAPHEMES} characters, the link included: ${about.link}`,
         '# Wherever the link is, it is made a link. Lines starting with \'# \' are',
@@ -1519,6 +1535,13 @@ async function reviewPost(edit: (file: string) => Promise<void>, proposed: strin
     }
 }
 
+// 1st, 2nd, 3rd, 4th, …, 11th, 12th, 13th, …, 21st.
+function ordinal(n: number): string {
+    const tens = n % 100;
+    const suffix = tens >= 11 && tens <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+    return `${n}${suffix}`;
+}
+
 // Who likes an app: found through the backlink index, each verified at its source.
 async function likes(args: string[], io: Console): Promise<number> {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: OPTIONS.likes });
@@ -1535,17 +1558,27 @@ async function likes(args: string[], io: Console): Promise<number> {
         return 0;
     }
     const { o } = styles(io);
-    io.out(o.people ? `${o.bundle(o.bold(listing.label))}  ${o.green(`★ ${total}`)}` : `${listing.label}: ${plural(total, 'like')}`);
+    // The count is of accounts, as the index has it; how often those shown
+    // liked it is theirs, verified, and said when it is more.
+    const counted = found.reduce((sum, each) => sum + each.count, 0);
+    const often = counted > found.length ? `${counted} ${found.length < total ? `from the ${found.length} shown` : 'in all'}, counting each like` : '';
+    io.out(o.people
+        ? `${o.bundle(o.bold(listing.label))}  ${o.green(`★ ${total}`)}${often ? `  ${o.dim(often)}` : ''}`
+        : `${listing.label}: ${plural(total, 'like')}${often ? `; ${often}` : ''}`);
     for (const each of found) {
         const who = each.handle ? `${untrusted(each.handle)} (${each.did})` : each.did;
+        const when = each.updatedAt ?? each.createdAt;
+        const earlier = each.posts.length - 1;
         if (o.people) {
-            io.out(`   ${o.bold(each.handle ? untrusted(each.handle) : each.did)}${each.handle ? `  ${o.dim(each.did)}` : ''}  ${o.dim(each.createdAt)}`);
+            io.out(`   ${o.bold(each.handle ? untrusted(each.handle) : each.did)}${each.handle ? `  ${o.dim(each.did)}` : ''}  ${o.dim(when)}${each.count > 1 ? `  ${o.green(plural(each.count, 'like'))}` : ''}`);
             if (each.text) io.out(`      ${o.dim('“')}${untrusted(each.text)}${o.dim('”')}`);
             if (each.post) io.out(`      ${o.cyan(untrusted(postUrl(each.post.uri)))}`);
+            if (earlier > 0) io.out(`      ${o.dim(`and ${plural(earlier, 'earlier post')}`)}`);
         } else {
-            io.out(`  ${who}, ${each.createdAt}`);
+            io.out(`  ${who}, ${when}${each.count > 1 ? `, ${plural(each.count, 'like')}` : ''}`);
             if (each.text) io.out(`    "${untrusted(each.text)}"`);
             if (each.post) io.out(`    ${untrusted(postUrl(each.post.uri))}`);
+            if (earlier > 0) io.out(`    and ${plural(earlier, 'earlier post')}`);
         }
     }
     if (found.length < total && !values.json) io.err(styles(io).e.dim(`${found.length} shown of ${total}; --limit shows more`));
@@ -4136,6 +4169,7 @@ export const OPTIONS = {
         as:              { type: 'string' },
         note:            { type: 'string' },
         revoke:          { type: 'boolean' },
+        all:             { type: 'boolean' },
         yes:             { type: 'boolean', short: 'y' },
         'password-file': { type: 'string' },
     },

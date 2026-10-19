@@ -248,8 +248,8 @@ next to the verdict they go with.
 
 ★ And anyone can **like** an app: `bundle like @alice.example/tool` stars it, across its
 releases, with a post saying so and the app's install link, which you read and can change
-in your editor first, like a commit message. `bundle search` shows how many accounts like
-each app, and `bundle likes` who.
+in your editor first, like a commit message. Liking it again counts, with a post of its own.
+`bundle search` shows how many accounts like each app, and `bundle likes` who, and how often.
 
 ## Suites
 

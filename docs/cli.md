@@ -536,19 +536,30 @@ bundle like --as you.example @alice.example/tool
 bundle like --as you.example --note 'Saved my Sunday.' tool
 bundle like --as you.example --yes tool
 bundle like --as you.example --revoke tool
+bundle like --as you.example --revoke --all tool
 ```
 
 A like is a star for an app, from an Atmosphere (atproto) account. It is of the app's listing,
-not of one release, so it stays with the app as it is released again, and an account likes an
-app once. The app must be published (see [`publish`](#publish)). An app installed from its
-listing can be named as it is installed.
+not of one release, so it stays with the app as it is released again. The app must be published
+(see [`publish`](#publish)). An app installed from its listing can be named as it is installed.
+
+**Liking again is fine.** An account has one like of an app, and each time it likes it again,
+that like counts one more and lists the new post, so a second like is a second recommendation to
+the people who follow you, not a second star. It is reviewed in your editor like the first.
+Two machines liking at once lose neither like: each writes over the like as it read it, and one
+that finds it changed meanwhile reads it again.
 
 **Every like comes with a post** from the same account: your `--note`, or else
 `🌳 I like <title>: <description>` from the app's listing, and then the app's `nzip:` link, so
 whoever reads it can install the app in one click. bundle itself is the one exception: its likes
 link to its page, https://bundle.pipobscure.com/, since an `nzip:` link opens bundle, and whoever
 reads about it may not have it yet. The sign-in asks to write likes and to create and delete
-posts, and nothing else. `--revoke` takes back the like and the post it made.
+posts, and nothing else.
+
+**`--revoke` takes the like back and leaves its posts up**: they are ordinary posts, and say what
+they said; bundle says how many stay. `--revoke --all` takes down every post the like lists that
+is in your own repository too, as far as it can, and says how many went. A post in anyone else's
+repository is never touched, and `--all` without `--revoke` is refused before signing in.
 
 **You read the post before it is made**, the way you read a commit message: it opens in your
 editor (`BUNDLE_EDITOR`, else `VISUAL`, else `EDITOR`, else `vi`, or `notepad` on Windows,
@@ -559,21 +570,34 @@ post goes without one, and bundle says so. Close without saving, or leave nothin
 and nothing is liked. Lines that start with `# `, or are `#` alone, are left out; a line like
 `#nodejs` is a hashtag, and stays. A post over 300 characters opens the editor again, with your
 text as you left it and how long it is. All of this happens before signing in, so stopping costs
-nothing; an app the account likes already opens no editor. Not on a terminal, `like` stops with
-exit code 4 and the post it would make, unless `--yes` posts that as it is. `--revoke` opens no
-editor.
+nothing. Liking again, the comment lines say which like of the app from this account it is. Not
+on a terminal, `like` stops with exit code 4 and the post it would make, unless `--yes` posts
+that as it is. `--revoke` opens no editor.
 
-What it writes is `at://<your DID>/com.pipobscure.bundle.like/<sha256 of the listing's address>`,
-naming the listing and the post. Likes decide nothing: nothing is installed or refused by them.
-[`search`](#search) and [`listings`](#listings) show how many accounts like each app, and
-[`likes`](#likes) who.
+What it writes is `at://<your DID>/com.pipobscure.bundle.like/<sha256 of the listing's address>`:
+
+```json
+{ "$type": "com.pipobscure.bundle.like",
+  "subject": "at://<publisher>/com.pipobscure.bundle.listing/tool",
+  "count": 3,
+  "posts": [{ "uri": "at://<your DID>/app.bsky.feed.post/…", "cid": "…" }, …],
+  "createdAt": "<the first like>", "updatedAt": "<the latest>" }
+```
+
+`posts` is oldest first, and keeps the newest 100; `count` counts on past them, and
+`--revoke --all` can take down only the posts listed. A like written by 0.2.0 or 0.2.1 has one
+`post` and no `count`; it reads as liked once, with that post, and is written in the shape above
+when liked again. Likes decide nothing: nothing is installed or refused by them.
+[`search`](#search) and [`listings`](#listings) show how many accounts like each app, however
+often each has liked it, and [`likes`](#likes) who, and how often.
 
 | Option | |
 |---|---|
 | `--as <handle or did>` | the account to like it from (default: `BUNDLE_ATPROTO_IDENTIFIER`) |
 | `--note <text>` | what the post says, in your own words, before the link |
 | `-y`, `--yes` | post it as proposed, without opening an editor (needed off a terminal) |
-| `--revoke` | take the like back, and the post it made |
+| `--revoke` | take the like back; its posts stay up, as posts |
+| `--all` | with `--revoke`, take down the like's posts in your own repository too |
 | `--password-file <file>` | an app password instead of signing in, for CI (`BUNDLE_ATPROTO_PASSWORD` works too) |
 
 ### `likes`
@@ -583,15 +607,18 @@ bundle likes [options] <installed app | @account/name | nzip:link | at://>
 bundle likes @alice.example/tool
 ```
 
-Who likes an app, newest first, each with what their post says and a link to it. The likes are
-found through the backlink index the [policy](#policy) names (`discovery`), then each is fetched
-from its author's own PDS and verified. The count is of accounts, as the index keeps it, so one
-account counts once however many records it writes.
+Who likes an app, the latest like first: each account with how many times it has liked the app
+(said when it is more than once), what its latest post says and a link to it, and how many
+earlier posts there are. The likes are found through the backlink index the [policy](#policy)
+names (`discovery`), then each is fetched from its author's own PDS and verified. The count at
+the top is of accounts, as the index keeps it, so one account counts once however often it likes
+the app, or however many records it writes; when those shown liked more often than that, how
+often is said beside it.
 
 | Option | |
 |---|---|
 | `--limit <n>` | show at most this many (default: 25) |
-| `--json` | print `{ listing, total, likes: [{ did, handle, createdAt, post, text }] }` |
+| `--json` | print `{ listing, total, likes: [{ did, handle, createdAt, updatedAt, count, posts, post, text }] }`: `total` is accounts, `posts` oldest first, `post` the latest of them, and `text` its text |
 
 ### `lexicon`
 

@@ -3,6 +3,25 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
+## Unreleased
+
+- **Liking an app again counts.** `bundle like` no longer stops at "already liked": each like
+  makes a post of its own, reviewed in your editor like the first (the comment lines say which
+  like it is), and the account's one like record counts it and lists the post. The record is
+  now `{ subject, count, posts, createdAt, updatedAt }`, `posts` oldest first and the newest 100
+  of them; it is written over the like as it was read (`swapRecord`), read again once if another
+  machine liked meanwhile, and the new post taken down again if it still cannot be written. A
+  like written by 0.2.0–0.2.1, with one `post`, reads as liked once, and is written in the new
+  shape when liked again; the lexicon describes both. The ★ in `search` and `listings` still
+  counts accounts. `bundle likes` shows each account's count, its latest post, and how many
+  earlier ones there are, and `--json` gives `count`, `posts` and, as before, `post` (the latest).
+- **`bundle like --revoke` leaves the posts up.** It takes back the like and says how many posts
+  stay; `--revoke --all` takes down the ones in your own repository too, and never touches anyone
+  else's. `--all` alone is refused before signing in.
+- The library's `like()` returns the new `count`, `unlike()` takes `all` and returns how many
+  posts went and how many stay, and `putRecord()` takes an optional `swapRecord`, refusing with
+  the code `SWAPPED` when the record changed.
+
 ## 0.2.1
 
 - **A like's post is yours to read first.** `bundle like` opens the post it would make in your

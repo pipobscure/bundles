@@ -859,10 +859,27 @@ export async function getRecord(did: string, collection: string, rkey: string, o
     return proof.record ? { cid: proof.record.cid.toString(), value: proof.record.value } : null;
 }
 
-/** Write a record into the session's own repository, at a key of the caller's choosing. */
-export async function putRecord(session: Session, collection: string, rkey: string, record: Record<string, unknown>, options: NetworkOptions = {}): Promise<{ uri: string; cid: string }> {
-    const written = await xrpcPost(session.pds, 'com.atproto.repo.putRecord',
-        { repo: session.did, collection, rkey, record }, session, options) as { uri?: string; cid?: string };
+/** What `putRecord()` throws when `swapRecord` no longer holds: the record changed meanwhile. */
+export const SWAPPED = 'ERR_BUNDLE_RECORD_SWAPPED';
+
+/**
+ * Write a record into the session's own repository, at a key of the caller's
+ * choosing. With `swapRecord`, only over the record as it was read: its CID,
+ * or null for none there yet. Anything else there by then — a write from
+ * another machine — refuses it, with the code `SWAPPED`, and nothing is lost.
+ */
+export async function putRecord(session: Session, collection: string, rkey: string, record: Record<string, unknown>,
+    { swapRecord, ...options }: NetworkOptions & { swapRecord?: string | null | undefined } = {}): Promise<{ uri: string; cid: string }> {
+    let written: { uri?: string; cid?: string };
+    try {
+        written = await xrpcPost(session.pds, 'com.atproto.repo.putRecord',
+            { repo: session.did, collection, rkey, record, ...(swapRecord !== undefined ? { swapRecord } : {}) }, session, options) as { uri?: string; cid?: string };
+    } catch (err) {
+        if (swapRecord !== undefined && (err as { xrpc?: string }).xrpc === 'InvalidSwap') {
+            throw Object.assign(new Error(`at://${session.did}/${collection}/${rkey} changed while it was being written`), { code: SWAPPED, cause: err });
+        }
+        throw err;
+    }
     return { uri: written.uri ?? `at://${session.did}/${collection}/${rkey}`, cid: written.cid ?? '' };
 }
 
@@ -910,7 +927,11 @@ async function xrpcPost(pds: string, method: string, body: unknown, session: Ses
     const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
     const url = `${pds}/xrpc/${method}`;
     const response = session ? await session.request(url, init) : await net(options)(url, init);
-    if (!response.ok) throw new Error(`${method} at ${pds}: ${(await errorOf(response)).text}`);
+    if (!response.ok) {
+        // The XRPC error's name goes with it, for the callers that act on one.
+        const error = await errorOf(response);
+        throw Object.assign(new Error(`${method} at ${pds}: ${error.text}`), { xrpc: error.name });
+    }
     const text = await response.text();
     return text ? JSON.parse(text) as unknown : {};
 }

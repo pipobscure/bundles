@@ -1,6 +1,6 @@
 import * as CRYPTO from 'node:crypto';
 import {
-    createPost, deletePost, getRecord, putRecord, deleteRecord, backlinkDistinctCount, backlinks, fetchDidDocument,
+    createPost, deletePost, getRecord, putRecord, deleteRecord, backlinkDistinctCount, backlinks, fetchDidDocument, SWAPPED,
     type NetworkOptions, type Session,
 } from './atproto.ts';
 import { claimedHandle, type Value } from './repo.ts';
@@ -11,19 +11,22 @@ import type { ListingRecord } from './listing.ts';
 //
 //   at://<did>/com.pipobscure.bundle.like/<sha256 of the listing's address>
 //   { "subject": "at://<publisher>/com.pipobscure.bundle.listing/bled",
-//     "post": { "uri": "at://<did>/app.bsky.feed.post/…", "cid": "…" }, … }
+//     "count": 2,
+//     "posts": [{ "uri": "at://<did>/app.bsky.feed.post/…", "cid": "…" }, …], … }
 //
 // A like is of an app's listing, not of one release, so it stays with the app
 // as it is released again. Its key is the hash of what it likes, so an account
-// likes an app once, and unliking finds it again. And it always comes with a
-// post, from the same account, saying so: what the app is, the person's own
-// words if they give some, and the app's `nzip:` link, so that whoever reads
-// it can install it in one click.
+// has one like of an app, and unliking finds it again. Liking again counts on
+// that one record. And each like comes with a post, from the same account,
+// saying so: what the app is, the person's own words if they give some, and
+// the app's `nzip:` link, so that whoever reads it can install it in one
+// click. The record lists those posts, the newest hundred.
 //
 // Likes vouch for nothing, and nothing installs or refuses by them. They are
 // counted the way listings are found, through a backlink index — by the
-// accounts that like an app, so one account writing many records counts once —
-// and `likers()` fetches each from its author's PDS and verifies it.
+// accounts that like an app, so one account liking often, or writing many
+// records, counts once — and `likers()` fetches each from its author's PDS and
+// verifies it, with how often it liked.
 
 /** The collection a like is a record in. */
 export const LIKE = 'com.pipobscure.bundle.like';
@@ -33,10 +36,18 @@ export interface LikeRecord {
     $type: typeof LIKE;
     /** The `at://` address of the app's listing. */
     subject: string;
-    /** The post that says so. */
-    post?: StrongRef | undefined;
+    /** How many times the account has liked it: one for each post, and on past the posts kept. */
+    count: number;
+    /** The posts that say so, oldest first: the newest `KEPT_POSTS` of them. */
+    posts: StrongRef[];
+    /** The first like. */
     createdAt: string;
+    /** The latest. */
+    updatedAt?: string | undefined;
 }
+
+/** How many of its posts a like lists; `count` counts on past them. */
+export const KEPT_POSTS = 100;
 
 /** The longest post the Atmosphere's microblog takes, in characters. */
 export const POST_GRAPHEMES = 300;
@@ -134,37 +145,69 @@ export function postTooLong(text: string): string | undefined {
 }
 
 /**
- * Like the app listed at `listing`, from `session`'s account: the post first,
- * so the like can point at it, then the like; and the post taken down again
- * when the like cannot be written. The post is `post` — the text as the
- * person settled it — or else the one `likePost()` proposes, with `note`. An
- * app liked already is left as it is, and no post is made.
+ * Like the app listed at `listing`, from `session`'s account, once more: the
+ * post first, so the like can point at it, then the like, counting one more
+ * and listing the post. The like is written over the one read, by its CID, so
+ * a like from another machine meanwhile is not lost: that refused, it is read
+ * again and written once more. The post is taken down again when the like
+ * cannot be written. The post is `post` — the text as the person settled it —
+ * or else the one `likePost()` proposes, with `note`.
  */
-export async function like(session: Session, listing: Likeable, { note, post: given, ...options }: NetworkOptions & { note?: string | undefined; post?: Post | undefined } = {}): Promise<{ uri: string; post?: StrongRef | undefined; already: boolean }> {
+export async function like(session: Session, listing: Likeable, { note, post: given, ...options }: NetworkOptions & { note?: string | undefined; post?: Post | undefined } = {}): Promise<{ uri: string; post: StrongRef; count: number }> {
     const key = likeKey(listing.uri);
-    const existing = await ownLike(session.did, listing.uri, options);
-    if (existing) return { uri: `at://${session.did}/${LIKE}/${key}`, post: existing.post, already: true };
     const content = given ?? likePost(listing, note);
     const long = postTooLong(content.text);
     if (long) throw new Error(`the post is too long: ${long}`);
     const post = await createPost(session, content, options);
     try {
-        const now = (options.now ?? (() => new Date()))().toISOString();
-        const written = await putRecord(session, LIKE, key, { $type: LIKE, subject: listing.uri, post, createdAt: now } satisfies LikeRecord as Record<string, unknown>, options);
-        return { uri: written.uri, post, already: false };
+        for (let tries = 1; ; tries++) {
+            const found = await getRecord(session.did, LIKE, key, options);
+            const was = found ? readLike(found.value, listing.uri) : null;
+            const now = (options.now ?? (() => new Date()))().toISOString();
+            const record: LikeRecord = {
+                $type: LIKE, subject: listing.uri, count: (was?.count ?? 0) + 1,
+                posts: [...was?.posts ?? [], post].slice(-KEPT_POSTS), createdAt: was?.createdAt || now, updatedAt: now,
+            };
+            try {
+                const written = await putRecord(session, LIKE, key, record as unknown as Record<string, unknown>, { ...options, swapRecord: found?.cid ?? null });
+                return { uri: written.uri, post, count: record.count };
+            } catch (err) {
+                if (tries < 2 && (err as { code?: string }).code === SWAPPED) continue;
+                throw err;
+            }
+        }
     } catch (err) {
         await deletePost(session, post.uri, options).catch(() => {});
         throw err;
     }
 }
 
-/** Take back a like of the listing at `subject`, and the post it made. False when there was none. */
-export async function unlike(session: Session, subject: string, options: NetworkOptions = {}): Promise<boolean> {
+/**
+ * Take back a like of the listing at `subject`: the record goes, and the
+ * posts it made stay up, as posts — unless `all`, when each of them in the
+ * account's own repository is taken down too, as far as it can be. Null when
+ * there was no like; otherwise how many posts are gone and how many stay.
+ */
+export async function unlike(session: Session, subject: string, { all, ...options }: NetworkOptions & { all?: boolean | undefined } = {}): Promise<{ removed: number; kept: number } | null> {
     const existing = await ownLike(session.did, subject, options);
-    if (!existing) return false;
+    if (!existing) return null;
     await deleteRecord(session, LIKE, likeKey(subject), options);
-    if (existing.post?.uri.startsWith(`at://${session.did}/`)) await deletePost(session, existing.post.uri, options).catch(() => {});
-    return true;
+    let removed = 0;
+    if (all) {
+        // Only posts, and only the account's own: a like can list anything, and
+        // what is anyone else's is never touched.
+        const own = `at://${session.did}/app.bsky.feed.post/`;
+        for (const post of existing.posts) {
+            if (!post.uri.startsWith(own) || post.uri.slice(own.length).includes('/')) continue;
+            try {
+                await deletePost(session, post.uri, options);
+                removed++;
+            } catch {
+                // Best effort: one post that will not go is still one that stays up, and is counted so.
+            }
+        }
+    }
+    return { removed, kept: existing.posts.length - removed };
 }
 
 /**
@@ -177,13 +220,32 @@ export async function ownLike(did: string, subject: string, options: NetworkOpti
     return found ? readLike(found.value, subject) : null;
 }
 
-/** A like, if `value` is one of `subject`, in the shape the lexicon gives. */
+/**
+ * A like, if `value` is one of `subject`, in the shape the lexicon gives. A
+ * field that is not what the lexicon says is dropped, never a reason to
+ * refuse the like. A like written by 0.2.0 or 0.2.1 has one `post` and no
+ * count, and reads as a like counted once, with that post.
+ */
 export function readLike(value: Value, subject: string): LikeRecord | null {
-    const record = value as Partial<LikeRecord> | null;
-    if (!record || typeof record !== 'object' || record.$type !== LIKE || record.subject !== subject) return null;
-    const post = record.post && typeof record.post === 'object' && typeof record.post.uri === 'string' && typeof record.post.cid === 'string'
-        ? { uri: record.post.uri, cid: record.post.cid } : undefined;
-    return { $type: LIKE, subject, post, createdAt: typeof record.createdAt === 'string' ? record.createdAt : '' };
+    const record = value as Record<string, unknown> | null;
+    if (!record || typeof record !== 'object' || record['$type'] !== LIKE || record['subject'] !== subject) return null;
+    const posts = (Array.isArray(record['posts']) ? record['posts'] as unknown[] : []).map(strongRef).filter((each) => each !== undefined);
+    const legacy = strongRef(record['post']);
+    if (legacy && !posts.some((each) => each.uri === legacy.uri)) posts.unshift(legacy);
+    const count = record['count'];
+    const read: LikeRecord = {
+        $type: LIKE, subject,
+        count: Math.max(typeof count === 'number' && Number.isSafeInteger(count) && count >= 1 ? count : 1, posts.length),
+        posts: posts.slice(-KEPT_POSTS),
+        createdAt: typeof record['createdAt'] === 'string' ? record['createdAt'] : '',
+    };
+    if (typeof record['updatedAt'] === 'string') read.updatedAt = record['updatedAt'];
+    return read;
+}
+
+function strongRef(value: unknown): StrongRef | undefined {
+    const ref = value as Partial<StrongRef> | null;
+    return ref && typeof ref === 'object' && typeof ref.uri === 'string' && typeof ref.cid === 'string' ? { uri: ref.uri, cid: ref.cid } : undefined;
 }
 
 /**
@@ -200,17 +262,26 @@ export interface Liker {
     did: string;
     /** The handle its DID document claims, for display only. */
     handle?: string | undefined;
+    /** Its first like of the app. */
     createdAt: string;
+    /** Its latest, when it has liked more than once. */
+    updatedAt?: string | undefined;
+    /** How many times it has liked the app. */
+    count: number;
+    /** Its posts saying so, oldest first, as its like lists them. */
+    posts: StrongRef[];
+    /** The latest of them. */
     post?: StrongRef | undefined;
-    /** The post's text, when it could be fetched. */
+    /** The latest post's text, when it could be fetched. */
     text?: string | undefined;
 }
 
 /**
- * The accounts that like the app listed at `subject`, newest first, up to
- * `limit`: found through the backlink index, then each like fetched from its
- * author's own PDS and verified, and its post read. A like that does not check
- * out, or is not at the key a like of this app is kept at, is left out.
+ * The accounts that like the app listed at `subject`, the latest like first,
+ * up to `limit`: found through the backlink index, then each like fetched from
+ * its author's own PDS and verified, and its latest post read. A like that
+ * does not check out, or is not at the key a like of this app is kept at, is
+ * left out.
  */
 export async function likers(subject: string, { index, limit = 25, ...options }: NetworkOptions & { index: string; limit?: number | undefined }): Promise<Liker[]> {
     const seen = new Set<string>();
@@ -224,15 +295,20 @@ export async function likers(subject: string, { index, limit = 25, ...options }:
             const read = record ? readLike(record.value, subject) : null;
             if (!read) continue;
             const doc = await fetchDidDocument(link.did, options);
-            const liker: Liker = { did: link.did, handle: claimedHandle(doc) ?? undefined, createdAt: read.createdAt, post: read.post };
-            if (read.post) liker.text = await postText(read.post, options);
+            const post = read.posts.at(-1);
+            const liker: Liker = {
+                did: link.did, handle: claimedHandle(doc) ?? undefined, createdAt: read.createdAt, updatedAt: read.updatedAt,
+                count: read.count, posts: read.posts, post,
+            };
+            if (post) liker.text = await postText(post, options);
             found.push(liker);
         } catch {
             // One account that cannot be asked is not the others' problem.
         }
         if (found.length >= limit) break;
     }
-    return found.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    const latest = (each: Liker) => each.updatedAt ?? each.createdAt;
+    return found.sort((a, b) => (latest(a) < latest(b) ? 1 : latest(a) > latest(b) ? -1 : 0));
 }
 
 async function postText(post: StrongRef, options: NetworkOptions): Promise<string | undefined> {
