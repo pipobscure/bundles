@@ -675,7 +675,8 @@ any download is.
 Every listing's `subject` is the same value, the sha256 of the lexicon's NSID. That is what makes
 them findable with no service of our own: the backlink index (Constellation) indexes every field
 that parses as a URI, so asking it what links to that one value lists every listing on the network.
-`search` and `listings` keep a local index of them, and search that.
+`search` and `listings` keep a local index of them, and search that. The project's page,
+https://bundle.pipobscure.com/, lists every app the same way, with its `nzip:` link.
 
 ### `publish`
 

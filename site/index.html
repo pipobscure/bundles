@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src https://constellation.microcosm.blue; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>bundle: your Node app, one signed file</title>
 <meta name="description" content="Ship a Node.js app as one signed file, and install other people's apps knowing exactly what you are getting. Experimental; needs Node 26.11.1 or later.">
@@ -32,6 +32,7 @@
         <li><a href="#install">Install</a></li>
         <li><a href="#vouch">Vouch</a></li>
         <li><a href="#get">Get it</a></li>
+        <li><a href="#apps">Apps</a></li>
       </ul>
     </nav>
   </div>
@@ -297,6 +298,31 @@ node --experimental-vfs --vfs-load ./bundle.nzip install</code></pre>
       <li><a href="https://github.com/pipobscure/bundles/blob/main/docs/design.md">How it works</a>: the format, what is signed, the trust model</li>
       <li><a href="https://www.npmjs.com/package/@pipobscure/bundle">@pipobscure/bundle</a> on npm</li>
     </ul>
+  </div>
+</section>
+
+<section id="apps">
+  <div class="wrap">
+    <h2>Apps you can install</h2>
+    <p>Every app published on the Atmosphere, read live from the open backlink index and each
+      publisher's own account. With bundle installed, an app's <code>nzip:</code> link opens
+      bundle, which installs it after the same review as <code>bundle install</code>.
+      <code>bundle search</code> finds the same apps from the command line.</p>
+    <p class="small">A listing vouches for nothing: it says where an app is, not that it is safe.
+      Whoever signed it, and whoever vouches for it, is what the review shows you.</p>
+    <div id="apps-browse" hidden>
+      <form class="apps-search" role="search">
+        <label for="apps-q">Search apps</label>
+        <input id="apps-q" type="search" autocomplete="off" spellcheck="false">
+      </form>
+      <p class="small" id="apps-status" role="status"></p>
+      <ol class="apps" id="apps-list" tabindex="-1" aria-label="Apps"></ol>
+      <nav class="pager" id="apps-pager" aria-label="Pages of apps" hidden>
+        <button type="button" id="apps-prev">Previous</button>
+        <span id="apps-where"></span>
+        <button type="button" id="apps-next">Next</button>
+      </nav>
+    </div>
   </div>
 </section>
 

@@ -603,8 +603,14 @@ action pinned to a commit SHA. It runs whenever CI passes on `main` and does not
 There is no npm token anywhere; npm trusts that workflow file by name.
 
 **The project's page**, [bundle.pipobscure.com](https://bundle.pipobscure.com/), is `site/`:
-plain HTML, one stylesheet and one small script, with no build step, so what is in the folder is
-what is served. It is deployed to GitHub Pages with each release, by the `pages` job at the end
+plain HTML, one stylesheet and one script, with no build step, so what is in the folder is
+what is served. The page works without the script; with it, it lists every app published on the
+Atmosphere, with its `nzip:` link, found from the browser as `search` finds them: the backlink
+index for who lists apps, each publisher's DID document and PDS for what, and each handle checked
+both ways over DNS-over-HTTPS (Cloudflare) or its well-known file. So its Content-Security-Policy
+allows `connect-src https:`, since a publisher's PDS can be anywhere. What it finds is kept in
+the browser's `localStorage`, shown at once on the next visit, and asked again after ten minutes;
+DID documents and handles once a day. It is deployed to GitHub Pages with each release, by the `pages` job at the end
 of the publish workflow, from the commit that was released, so the page describes the version
 people download. A fix to the page between releases goes out by hand, through
 [`.github/workflows/pages.yml`](../.github/workflows/pages.yml). To look at it locally, serve the

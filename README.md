@@ -437,7 +437,8 @@ npm install @pipobscure/bundle
 ## Learn more
 
 - **[bundle.pipobscure.com](https://bundle.pipobscure.com/)**: the project's page, the short
-  version of all of this.
+  version of all of this, and every app published on the Atmosphere, to search and install with
+  one click.
 - **[docs/cli.md](docs/cli.md)**: every command and option, where files live, environment
   variables.
 - **[docs/api.md](docs/api.md)**: the library, the plugin loader, and the package's exports.

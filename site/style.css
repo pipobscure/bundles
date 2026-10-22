@@ -166,6 +166,29 @@ thead th { font-size: .85rem; color: var(--ink-dim); }
 tbody th { font-weight: 600; }
 td.us { font-weight: 700; color: var(--ok); }
 
+/* the apps published on the Atmosphere */
+.apps-search label { display: block; font-weight: 600; margin-bottom: .3rem; }
+.apps-search input {
+  width: 100%; max-width: 28rem; font: inherit;
+  padding: .5rem .7rem; border: 1px solid var(--rule); border-radius: 8px;
+  background: var(--panel); color: var(--ink);
+}
+.apps-search { margin-bottom: .75rem; }
+.apps { list-style: none; padding: 0; display: grid; gap: .75rem; }
+.apps:focus { outline: none; }
+.app { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: .9rem 1.1rem; min-width: 0; }
+.app-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
+.app h3 { margin: 0; font-size: 1.1rem; }
+.app p { margin: .4rem 0 0; }
+.app-meta { font-size: .9rem; }
+.button.compact { padding: .25rem .8rem; font-size: .95rem; }
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; color: var(--ink-dim); font-size: .95rem; }
+.pager button {
+  font: inherit; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 6px; padding: .3rem .8rem; cursor: pointer;
+}
+.pager button:disabled { opacity: .5; cursor: default; }
+
 .links { padding-left: 1.2rem; }
 .links li { margin-bottom: .35rem; }
 
