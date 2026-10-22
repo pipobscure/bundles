@@ -179,6 +179,8 @@ td.us { font-weight: 700; color: var(--ok); }
 .app { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: .9rem 1.1rem; min-width: 0; }
 .app-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
 .app h3 { margin: 0; font-size: 1.1rem; }
+.app h3 .by { font-weight: 400; font-size: .95rem; color: var(--ink-dim); }
+.app h3 .by a { overflow-wrap: anywhere; }
 .app p { margin: .4rem 0 0; }
 .app-meta { font-size: .9rem; }
 .button.compact { padding: .25rem .8rem; font-size: .95rem; }

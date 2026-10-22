@@ -6,10 +6,11 @@ how to use it is in the [README](README.md) and [docs/](docs/).
 ## Unreleased
 
 - **The project's page lists the published apps.** [bundle.pipobscure.com](https://bundle.pipobscure.com/#apps)
-  shows every app listed on the Atmosphere, A to Z, ten to a page, with a search and each app's
-  `nzip:` link. The browser finds them as `bundle search` does, from the backlink index and each
+  shows every app listed on the Atmosphere, A to Z, ten to a page, with a search, who published
+  it (linked to their profile), and its `nzip:` link. The browser finds them as `bundle search` does, from the backlink index and each
   publisher's own PDS, with each handle checked both ways; an app whose handle does not check out
-  is linked by DID. What it finds is kept in `localStorage` and shown at once on the next visit.
+  is linked by DID. What it finds is kept in `localStorage` and shown at once on the next visit;
+  a result missing a publisher that could not be reached is not kept as fresh.
   The page's Content-Security-Policy now allows `connect-src https:`, since a PDS can be anywhere.
 
 ## 0.2.2

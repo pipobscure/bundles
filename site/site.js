@@ -92,6 +92,7 @@ function apps(root) {
   let all = [];
   let page = 0;
   let state = 'loading';    // 'loading', 'ready', or 'failed'
+  let missed = 0;           // publishers the last sync could not reach, and knew nothing of
 
   root.hidden = false;
   form.addEventListener('submit', (event) => event.preventDefault());
@@ -104,7 +105,7 @@ function apps(root) {
   render();
   if (!cached || Date.now() - cached.syncedAt > FRESH) {
     sync(cached || { syncedAt: 0, publishers: {} })
-      .then((found) => { save(found); show(found); render(); })
+      .then((found) => { missed = found.missed; delete found.missed; save(found); show(found); render(); })
       .catch(() => { if (!cached) state = 'failed'; render(); });
   }
 
@@ -115,7 +116,13 @@ function apps(root) {
     for (const [did, publisher] of Object.entries(found.publishers)) {
       const who = publisher.handle || did;
       for (const { name, title, description } of publisher.listings) {
-        all.push({ name, title, description, who, link: 'nzip:' + who + '/' + name, sort: (title || name).toLowerCase() });
+        all.push({
+          name, title, description, who,
+          by: publisher.handle ? '@' + publisher.handle : did,
+          profile: 'https://bsky.app/profile/' + encodeURIComponent(who),
+          link: 'nzip:' + who + '/' + name,
+          sort: (title || name).toLowerCase(),
+        });
       }
     }
     all.sort((a, b) => a.sort.localeCompare(b.sort, 'en') || a.who.localeCompare(b.who, 'en') || a.name.localeCompare(b.name, 'en'));
@@ -136,11 +143,12 @@ function apps(root) {
     list.replaceChildren(...shown.slice(page * PER_PAGE, (page + 1) * PER_PAGE).map(item));
 
     if (state === 'loading' && !all.length) status.textContent = 'Asking the Atmosphere which apps are published…';
-    else if (state === 'failed') status.textContent = 'The apps could not be loaded just now; bundle search lists them too.';
+    else if (state === 'failed' || (missed && !all.length)) status.textContent = 'The apps could not be loaded just now; bundle search lists them too.';
     else if (!all.length) status.textContent = 'No apps are published yet.';
     else if (words.length && !shown.length) status.textContent = 'No app matches “' + input.value.trim() + '”.';
     else if (words.length) status.textContent = shown.length + ' of ' + count(all.length) + (shown.length === 1 ? ' matches.' : ' match.');
     else status.textContent = count(all.length) + ', A to Z.';
+    if (missed && all.length) status.textContent += ' Some publishers could not be reached just now; their apps are missing.';
 
     pager.hidden = pages <= 1;
     prev.disabled = page === 0;
@@ -159,14 +167,22 @@ function apps(root) {
     const head = document.createElement('div');
     head.className = 'app-head';
     const h3 = document.createElement('h3');
-    h3.textContent = app.title || app.name;
+    const by = document.createElement('span');
+    by.className = 'by';
+    const profile = document.createElement('a');
+    profile.href = app.profile;
+    profile.target = '_blank';
+    profile.rel = 'noopener noreferrer';
+    profile.textContent = app.by;
+    by.append(' by ', profile);
+    h3.append(app.title || app.name, by);
     const link = document.createElement('a');
     link.className = 'button compact';
     link.href = app.link;
     link.textContent = 'Install';
     const sr = document.createElement('span');
     sr.className = 'sr';
-    sr.textContent = ' ' + (app.title || app.name);
+    sr.textContent = ' ' + (app.title || app.name) + ' by ' + app.by;
     link.append(sr);
     head.append(h3, link);
     li.append(head);
@@ -215,9 +231,13 @@ function apps(root) {
 
   // ----------------------------------------------------------------- syncing
 
+  // A publisher that cannot be reached keeps what was found before. One
+  // found for the first time and not reached is missing, so the result is not
+  // kept as fresh, and the next visit asks again.
   async function sync(before) {
     const dids = await publishersOfApps();
     const publishers = {};
+    let missing = 0;
     const queue = [...dids].sort();
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       for (let did = queue.shift(); did !== undefined; did = queue.shift()) {
@@ -225,10 +245,11 @@ function apps(root) {
           publishers[did] = await refresh(did, before.publishers[did]);
         } catch {
           if (before.publishers[did]) publishers[did] = before.publishers[did];
+          else missing++;
         }
       }
     }));
-    return { syncedAt: Date.now(), publishers };
+    return { syncedAt: missing ? before.syncedAt : Date.now(), publishers, missed: missing };
   }
 
   async function publishersOfApps() {
