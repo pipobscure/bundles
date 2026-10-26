@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>What’s on the server?</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌳</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* Single-theme by intent: a projected deck must not follow the room's OS theme.
+   Each slide carries its own colours inline; these tokens style only the presenter chrome. */
+:root{
+  --ground:#0C1411; --panel:#13201B; --rule:#2A3D35; --rule-hi:#3D564B;
+  --ink:#EEF0E8; --ink-dim:#B9C7BF; --muted:#8FA39A; --faint:#6B7F76;
+  --accent:#7FD18B; --accent-dim:#3F7A4A; --ok:#7FD18B; --bad:#F2A65A;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Space Grotesk",system-ui,-apple-system,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);margin:0;overflow:hidden;height:100vh}
+
+#fit{position:fixed;inset:0;display:grid;place-items:center}
+#stage{width:1920px;height:1080px;position:relative;transform-origin:center center;flex:none}
+.slide{position:absolute;inset:0;display:none}
+.slide.on{display:block;animation:in .32s cubic-bezier(.2,.7,.3,1) both}
+@keyframes in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.slide.on{animation:none}}
+
+/* Every slide is a fixed 1920x1080 frame, laid out by its own inline styles. */
+.frame{position:absolute;inset:0;width:1920px;height:1080px;overflow:hidden}
+.frame h1,.frame h2,.frame h3,.frame p,.frame ul,.frame table{margin:0}
+.frame ul{padding-left:1.1em}
+.frame table{border-collapse:collapse;width:100%}
+.frame th,.frame td{padding:.35em .6em;text-align:left;border-bottom:1px solid #DDD8CB}
+.frame th{font-weight:700}
+
+#bar{position:fixed;left:0;bottom:0;height:3px;background:var(--accent);z-index:40;transition:width .3s}
+#hud{position:fixed;right:14px;bottom:14px;z-index:41;display:flex;gap:8px;align-items:center;
+  font-family:var(--mono);font-size:12px;color:var(--faint);background:rgba(14,20,32,.9);
+  border:1px solid var(--rule);border-radius:7px;padding:7px 11px;backdrop-filter:blur(6px)}
+#hud b{color:var(--ink-dim);font-weight:500}
+#clock{font-variant-numeric:tabular-nums}
+#clock.nzip{color:var(--ok)} #clock.late{color:var(--bad)} #clock.early{color:var(--ok)}
+#hud .sep{width:1px;height:13px;background:var(--rule)}
+#hud button{font:inherit;background:none;border:1px solid var(--rule);color:var(--muted);
+  border-radius:4px;padding:2px 7px;cursor:pointer}
+#hud button:hover{color:var(--ink);border-color:var(--rule-hi)}
+#hud button:focus-visible,.ov-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:44vh;overflow-y:auto;z-index:39;
+  background:#0A0F19;border-top:1px solid var(--rule);padding:18px 24px 40px}
+#notes[hidden]{display:none}
+#notes h4{margin:0 0 9px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--accent);font-weight:500}
+#notes .body{font-size:15px;line-height:1.6;color:var(--ink-dim);max-width:105ch}
+#notes .body p{margin:0 0 9px}
+#notes .body b{color:var(--ink)}
+#notes .body em{color:var(--accent);font-style:normal;font-family:var(--mono);font-size:13.5px}
+#notes .body .say{border-left:2px solid var(--accent-dim);padding-left:13px;color:var(--ink);margin:0 0 11px}
+#notes .body ul{margin:0 0 9px;padding-left:18px}
+#notes .body li{list-style:disc;margin-bottom:5px}
+
+#ov{position:fixed;inset:0;z-index:50;background:rgba(10,15,25,.97);overflow-y:auto;padding:32px;
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:15px;align-content:start}
+#ov[hidden]{display:none}
+.ov-card{background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:13px;
+  cursor:pointer;text-align:left;font:inherit;color:inherit;display:flex;flex-direction:column;gap:7px;min-height:100px}
+.ov-card:hover{border-color:var(--accent-dim)}
+.ov-card.cur{border-color:var(--accent)}
+.ov-card .i{font-family:var(--mono);font-size:11px;color:var(--faint);display:flex;justify-content:space-between}
+.ov-card .i .a{color:var(--accent-dim)}
+.ov-card .h{font-size:14.5px;line-height:1.32;font-weight:600;color:var(--ink)}
+
+#help{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(10,15,25,.94)}
+#help[hidden]{display:none}
+#help .box{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:28px 32px;max-width:460px}
+#help h4{margin:0 0 16px;font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);font-weight:500}
+#help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:10px 20px;font-size:15px;align-items:baseline}
+#help dt{font-family:var(--mono);color:var(--ink)}
+#help dd{margin:0;color:var(--muted)}
+</style>
+
+<div id="fit"><div id="stage">
+
+<section class="slide" id="cover" data-act="" data-t="30">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:space-between">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">🌳 JavaScript · deploying · sharing tools</p>
+<div style="display:flex;flex-direction:column;gap:40px">
+<h1 style="font-size:120px;font-weight:700;line-height:1.05;color:#eef0e8">What’s on<br>the server?</h1>
+<p style="font-size:44px;line-height:1.3;color:#b9c7bf;width:1300px">A story about shipping JavaScript, and how one signed file changes what you can promise.</p>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:end">
+<p style="font-size:32px;color:#eef0e8">Philipp Dunkel · @pipobscure.com</p>
+<p style="font-size:24px;color:#b9c7bf;font-family:'JetBrains Mono', 'Courier New', monospace">github.com/pipobscure/bundles</p>
+</div>
+</div>
+<div class="notes" hidden><p>Open with the question, not the tool. Everyone in this room has deployed something and later wondered what was really running on that box. This talk is a story in four parts: the server, the tools we share, what had to exist before any of this could work, and what you can do now. The tool is called bundle, it is open source, and it is experimental: it needs Node 26.11 and a flag. Say that now so nobody feels tricked at the end.</p></div>
+</section>
+
+<section class="slide" id="deploy-day" data-act="I · On the server" data-t="60">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">I · On the server</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">Deploy day reaches for the internet.</h2>
+</div>
+<div style="display:flex;gap:48px;flex:1">
+<div style="width:1000px;flex:none;background:#13201b;border-radius:16px;padding:48px;display:flex;flex-direction:column;justify-content:center">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#8fa39a"># deploying, 16:40 on a Tuesday</span><br><span style="color:#7fd18b">$</span> git pull &amp;&amp; npm install --production<br><span style="color:#f2a65a">npm ERR! fetch failed registry.npmjs.org/…</span><br><span style="color:#f2a65a">npm ERR! 503 Service Unavailable</span><br><br><span style="color:#8fa39a"># the code hadn’t changed.</span><br><span style="color:#8fa39a"># the build had.</span></p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:32px;justify-content:center">
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700;line-height:1.2">Someone else’s uptime</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">The registry sits in the path of every deploy, and you don’t run it.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700;line-height:1.2">A dice roll when it’s up</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249"><span style="color:#b4541a">^1.2.0</span> means “whatever the registry says today”.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>Start where most of us started: a web service, and a deploy that runs npm install on the server. The loud failure is the registry being down. npm's own status page has logged an incident roughly every three weeks in recent years (re-check the figure with slides/tools/refresh-chart.mjs before presenting). But the real lesson is quieter: even when the registry is up, resolving at deploy time can give you a different tree than an hour ago. The code you deploy didn't change. The build did. Concede the obvious objection: lockfiles fixed which versions. They didn't take the network out of the deploy.</p></div>
+</section>
+
+<section class="slide" id="recipe" data-act="I · On the server" data-t="50">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">I · On the server</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">You shipped a version.<br>The server got whatever resolved.</h2>
+</div>
+<div style="display:flex;gap:48px;flex:1">
+<div style="width:760px;flex:none;background:#13201b;border-radius:16px;padding:48px;display:flex;flex-direction:column;justify-content:center">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#7fd18b">$</span> npm install<br>added 214 packages in 9s<br><br><span style="color:#8fa39a"># which 214?</span><br><span style="color:#8fa39a"># from where?</span><br><span style="color:#8fa39a"># and what just ran?</span></p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #b4541a;padding:8px 0 8px 32px">
+<h3 style="font-size:32px;font-weight:700">Decided at install time</h3>
+<p style="font-size:24px;color:#4a5249">Not when you released, and not when you tested.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #b4541a;padding:8px 0 8px 32px">
+<h3 style="font-size:32px;font-weight:700">Installing runs code</h3>
+<p style="font-size:24px;color:#4a5249">postinstall scripts run before anyone has looked at anything.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #b4541a;padding:8px 0 8px 32px">
+<h3 style="font-size:32px;font-weight:700">Nothing writes it down</h3>
+<p style="font-size:24px;color:#4a5249">Two installs of one version can differ, and nobody can say how.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>"When you publish version 1.4, you think you shipped 1.4. What you actually shipped is a recipe, and the server cooks it." The 214 packages line always gets a laugh, because everyone has seen it. Three things: it's decided late, it runs code while deciding, and nothing records what happened.</p></div>
+</section>
+
+<section class="slide" id="what-runs" data-act="I · On the server" data-t="60">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">I · On the server</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">Knowing the version isn’t knowing the code.</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:32px">
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:44px;font-weight:700;color:#b4541a">2018</p>
+<h3 style="font-size:32px;font-weight:700">event-stream</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">A helpful new maintainer, then a wallet stealer in a dependency.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:44px;font-weight:700;color:#b4541a">2021</p>
+<h3 style="font-size:32px;font-weight:700">ua-parser-js</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">An account taken over. Millions of weekly installs shipped a miner.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:44px;font-weight:700;color:#b4541a">2024</p>
+<h3 style="font-size:32px;font-weight:700">xz-utils</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">Years of patient social engineering, for one backdoor.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:44px;font-weight:700;color:#b4541a">2025</p>
+<h3 style="font-size:32px;font-weight:700">Shai-Hulud</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">A worm: it steals CI tokens and publishes itself onward.</p>
+</div>
+</div>
+<p style="font-size:44px;line-height:1.3;color:#13201b;width:1500px">Each was published correctly. You asked for a version, you got that version, and you still got owned.</p>
+</div>
+<div class="notes" hidden><p>Six months after that deploy, someone asks: what exactly is running on that box? Walk the arc, don't read the list: an accident-shaped trust problem, then targeted theft, account takeover, patient infiltration, and finally a worm that spreads by itself. xz isn't npm, which is the point: this is how software gets attacked now. For Shai-Hulud, the safe framing is "hundreds of packages across two waves in late 2025, and CISA issued an advisory"; don't quote a precise count from the stage. The punchline: version numbers didn't help, because every one of these was a correctly published version.</p></div>
+</section>
+
+<section class="slide" id="half-answers" data-act="I · On the server" data-t="55">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">I · On the server</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">So we patched around it.</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700">Lockfiles</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">Pin which versions. The network and the install scripts are still in the deploy.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700">Container images</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">Same bytes everywhere. You ship an operating system, and npm ci still ran inside it.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700">Bundlers</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">One JS file, until templates, native addons or a dynamic require fall out of it.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<h3 style="font-size:32px;font-weight:700">Compiled binaries</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">One file, but you can’t look inside, and it is rarely signed over the whole thing.</p>
+</div>
+</div>
+<p style="font-size:44px;line-height:1.3;color:#13201b;width:1560px">All of them work. None tells you, months later, <b>exactly</b> what runs and who put it there.</p>
+</div>
+<div class="notes" hidden><p>Don't trash any of these; the room uses all four and they all work. Lockfiles fixed which versions you get. Containers fixed "same bytes everywhere", at the cost of shipping an OS to run one service. Bundlers like esbuild or ncc collapse the JavaScript but leak everything that isn't an import. pkg, bun build --compile and Node SEA give you one file, but it's opaque. Land the last line: none of them answers the question from the previous slide.</p></div>
+</section>
+
+<section class="slide" id="tool-for-team" data-act="II · Sharing tools" data-t="50">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">II · Sharing tools</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">Then you write a tool for your team.</h2>
+</div>
+<div style="display:flex;gap:48px;flex:1">
+<div style="flex:1;background:#13201b;border-radius:16px;padding:48px;display:flex;flex-direction:column;gap:24px;justify-content:center">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#f2a65a;font-weight:700">how it usually goes</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#7fd18b">$</span> git clone … &amp;&amp; cd tool<br><span style="color:#7fd18b">$</span> nvm use 20&#160;&#160;<span style="color:#8fa39a"># works on 18?</span><br><span style="color:#7fd18b">$</span> npm ci&#160;&#160;&#160;&#160;&#160;<span style="color:#8fa39a"># hundreds of MB</span><br><span style="color:#7fd18b">$</span> npm link&#160;&#160;&#160;<span style="color:#8fa39a"># on PATH. somewhere.</span></p>
+</div>
+<div style="flex:1;background:#13201b;border-radius:16px;padding:48px;display:flex;flex-direction:column;gap:24px;justify-content:center">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">how it should go</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#7fd18b">$</span> curl -O …/tool<br><span style="color:#7fd18b">$</span> ./tool<br><br><span style="color:#8fa39a"># that’s it</span></p>
+</div>
+</div>
+<p style="font-size:44px;line-height:1.3;color:#13201b">A CLI is one file, or it’s a support ticket.</p>
+</div>
+<div class="notes" hidden><p>The second half of the story. The web service is under control-ish, and now you build tooling: a deploy helper, a code generator, a linter config, something the whole team uses. Getting it onto ten laptops means shipping an install procedure, and then supporting it. "The single best usability improvement I ever made to an internal tool was deleting its installation instructions."</p></div>
+</section>
+
+<section class="slide" id="drift" data-act="II · Sharing tools" data-t="45">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">II · Sharing tools</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">Ten laptops, ten slightly different tools.</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;flex:1">
+<div style="border-left:6px solid #b4541a;padding:8px 0 8px 32px;display:flex;flex-direction:column;gap:8px;justify-content:center">
+<h3 style="font-size:32px;font-weight:700">“Works for me.”</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">Which version does your colleague have? Does CI run the one you run?</p>
+</div>
+<div style="border-left:6px solid #b4541a;padding:8px 0 8px 32px;display:flex;flex-direction:column;gap:8px;justify-content:center">
+<h3 style="font-size:32px;font-weight:700">Updates by Slack message</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">“Please pull and re-link.” Half the team does.</p>
+</div>
+<div style="border-left:6px solid #b4541a;padding:8px 0 8px 32px;display:flex;flex-direction:column;gap:8px;justify-content:center">
+<h3 style="font-size:32px;font-weight:700">A toolset, not a tool</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">Five CLIs that only work together at matching versions.</p>
+</div>
+<div style="border-left:6px solid #b4541a;padding:8px 0 8px 32px;display:flex;flex-direction:column;gap:8px;justify-content:center">
+<h3 style="font-size:32px;font-weight:700">Someone else’s tool</h3>
+<p style="font-size:24px;line-height:1.4;color:#4a5249">npm i -g from a stranger runs their install scripts as you.</p>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>Same problem as the server, just multiplied by every laptop, and with no ops team watching. Consistency is the theme: the same tool, at the same version, on every machine and in CI, and a way to move everyone forward together. And then the stranger's tool: installing it globally runs their code before you've looked at it.</p></div>
+</section>
+
+<section class="slide" id="wishlist" data-act="II · The wish list" data-t="50">
+<div class="frame" style="background:#1f5c40;color:#f4f1ea;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b8e6c0;font-weight:700">II · The wish list</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#f4f1ea">What we actually wanted, on the server and on every laptop</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:56px 56px">
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">1</p><p style="font-size:32px;line-height:1.3">One file, decided when you release</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">2</p><p style="font-size:32px;line-height:1.3">Runs by name, with no install step</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">3</p><p style="font-size:32px;line-height:1.3">Says who built it, and can’t change afterwards</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">4</p><p style="font-size:32px;line-height:1.3">Others can vouch for it, or warn you off</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">5</p><p style="font-size:32px;line-height:1.3">Updates follow the publisher, and bad news finds you</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:44px;font-weight:700;color:#b8e6c0">6</p><p style="font-size:32px;line-height:1.3">The same thing in CI, on laptops and on servers</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>The pivot of the talk. Read these slowly; everything after this slide delivers one of them. Don't ship the recipe, ship the meal: one file, frozen when you release it, signed, and run as it is. Then let other people say things about that file, and let updates and warnings travel to whoever installed it.</p></div>
+</section>
+
+<section class="slide" id="tree" data-act="III · What had to exist first" data-t="55">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">III · What had to exist first</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">An app is a tree, not a blob.</h2>
+</div>
+<div style="display:flex;gap:56px;flex:1">
+<div style="width:940px;flex:none;background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:48px;display:flex;flex-direction:column;justify-content:center">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#7fd18b">// survives a bundler</span><br>import helper from './helper.js'<br><br><span style="color:#f2a65a">// does not</span><br>readFileSync(join(__dirname, 'mail.html'))<br>require(`./plugins/${name}`)<br>process.dlopen(m, './addon.node')</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:32px;justify-content:center">
+<p style="font-size:32px;line-height:1.4;color:#b9c7bf">Module resolution and every <span style="color:#7fd18b">fs</span> call assume the tree is on a real disk.</p>
+<p style="font-size:44px;line-height:1.25;font-weight:700;color:#eef0e8">So teach the runtime that a file can be a directory.</p>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>Now the mildly technical part: what had to exist before any of the wish list was possible. Every bundler bug you've filed is downstream of this. The bundler rewrote the imports it could see; then a library read a template next to itself, or did a dynamic require, and it fell over in production. Instead of teaching the bundler more file types, teach Node that one file can be the directory the app runs in. Then __dirname, assets, addons and dynamic require all just work, because nobody special-cased them.</p></div>
+</section>
+
+<section class="slide" id="node-landed" data-act="III · What had to exist first" data-t="65">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">III · What had to exist first</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">What landed in Node, piece by piece</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:24px">
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">v26.4</p>
+<h3 style="font-size:32px;font-weight:700">node:vfs</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">A file system with pluggable providers. By Matteo Collina.</p>
+</div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">v26.8</p>
+<h3 style="font-size:32px;font-weight:700">ZIP in node:zlib</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Read and write archives, reviewed with security researchers.</p>
+</div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">v26.9</p>
+<h3 style="font-size:32px;font-weight:700">ZipProvider</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Mount an archive as a directory. Native addons load from it.</p>
+</div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:28px;display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">v26.10</p>
+<h3 style="font-size:32px;font-weight:700">--vfs-load</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Run a program straight out of the archive.</p>
+</div></div>
+<div style="display:flex;flex-direction:column;gap:16px;border-left:6px solid #7fd18b;padding:8px 0 8px 32px">
+<p style="font-size:32px;line-height:1.4;color:#eef0e8">Stock Node from nodejs.org, behind <span style="color:#7fd18b">--experimental-vfs</span>. No fork, no patches.</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Before 26.10, running this meant a patched Node, built from source on every server: 30 to 90 minutes. Now it’s the download.</p>
+</div>
+</div>
+<div class="notes" hidden><p>Four pieces, all upstream and all released. node:vfs is Matteo Collina's work, and it's the foundation. On top of it: ZIP support in node:zlib (nodejs/node#64339), which went through a long review with security researchers, because ZIP is easy to get subtly wrong and every mistake is a security hole. Then the ZipProvider (#64915) and native addons from a mount (#65680). Then --vfs-load (#65748), the keystone: node --vfs-load=app.nzip runs the app inside. The bottom line is why upstream mattered in practice: before 26.10, deploying this way meant a 30 to 90 minute source build of a patched Node on each server.</p></div>
+</section>
+
+<section class="slide" id="mechanism-policy" data-act="III · What had to exist first" data-t="60">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">III · What had to exist first</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Node runs archives. It doesn’t decide which.</h2>
+</div>
+<div style="display:flex;gap:32px;flex:1">
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:48px;display:flex;flex-direction:column;gap:24px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">In the runtime · the primitive</p>
+<ul style="font-size:32px;line-height:1.6;color:#eef0e8">
+<li>Mount a zip as a directory</li>
+<li>Resolve and run modules from it</li>
+<li>Load native addons from it</li>
+</ul>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Slow to change, then permanent. Right for a primitive.</p>
+</div>
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:48px;display:flex;flex-direction:column;gap:24px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#f2a65a;font-weight:700">In userland · the policy</p>
+<ul style="font-size:32px;line-height:1.6;color:#eef0e8">
+<li>Signatures and their formats</li>
+<li>Whom you trust, and for what</li>
+<li>Names, updates, warnings</li>
+</ul>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Has to keep up with attackers, so it has to stay replaceable.</p>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>The design rule behind everything: standardise the primitive, never the policy. It's the lesson from about ten years on Temporal: the language got instants and calendars, not your business rules about working days. Here, the primitive is "an application can be loaded and run out of an archive", and that belongs in Node. Whether you should trust this particular archive must not be in Node: getting a signature format into the runtime takes two years, and getting it out again takes ten. So the trust layer, the bundle tool, is an ordinary npm package you can replace.</p></div>
+</section>
+
+<section class="slide" id="no-keys" data-act="III · What had to exist first" data-t="60">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">III · What had to exist first</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Signing, with no key to lose</h2>
+</div>
+<div style="display:flex;gap:24px;align-items:stretch">
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">1 · observe</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Run the app once and write down every file it reads.</p>
+</div>
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">2 · create</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Archive exactly those files. Same files, same bytes.</p>
+</div>
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">3 · audit</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Review it against the last release: you, or Claude in CI.</p>
+</div>
+<div style="flex:1;background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:32px;display:flex;flex-direction:column;gap:12px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#7fd18b">4 · sign</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Only if the review came back clean.</p>
+</div>
+</div>
+<div style="display:flex;gap:48px;flex:1">
+<div style="width:760px;flex:none;background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px;display:flex;flex-direction:column;justify-content:center">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8"><span style="color:#8fa39a"># release.yml</span><br>permissions:<br>&#160;&#160;id-token: write <span style="color:#8fa39a"># that’s the key</span></p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;justify-content:center">
+<p style="font-size:32px;line-height:1.4;color:#eef0e8">Sigstore signs as <b>your CI workflow</b>, or as your browser sign-in on a laptop.</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Users can require exactly that workflow, on main.</p>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>The second prerequisite: signing that doesn't mean managing keys. Sigstore issues a short-lived certificate for an identity you already have: your GitHub Actions workflow in CI, a browser login on your laptop. Nothing to store, nothing to leak. And signing is its own step, after an audit: observe, create, audit, sign. Recording beats static analysis because it catches dynamic requires and data files; the unused module in your source simply isn't in the archive. Archives are reproducible: the same files make the same bytes. bundle's own releases go through exactly this, with the audit done by Claude against the previous release.</p></div>
+</section>
+
+<section class="slide" id="no-registry" data-act="III · What had to exist first" data-t="70">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">III · What had to exist first</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Names and vouching, with no new registry</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px">
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">publisher</p>
+<h3 style="font-size:32px;font-weight:700">Listing</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">“mdview is at this URL.” Releases stay where they are.</p>
+</div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">curator</p>
+<h3 style="font-size:32px;font-weight:700">Suite</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">“These go together, and each must carry this.”</p>
+</div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:36px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">auditor · scanner · IT</p>
+<h3 style="font-size:32px;font-weight:700">Attestation</h3>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">“Audited”, “permitted”, “malware”, about one file’s hash.</p>
+</div>
+</div>
+<div style="display:flex;gap:48px;flex:1;align-items:center">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;border-left:6px solid #7fd18b;padding:8px 0 8px 32px">
+<p style="font-size:32px;line-height:1.4;color:#eef0e8">Each one is a record in <b>their own Atmosphere account</b>, any provider.</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">Checked against the owner’s key with nothing but node:crypto.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;border-left:6px solid #f2a65a;padding:8px 0 8px 32px">
+<p style="font-size:32px;line-height:1.4;color:#eef0e8"><b>You</b> hold the policy: whose word counts, and whose warning stops an install.</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf">An open index only says whom to ask.</p>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>The third prerequisite, and the one people don't expect: accounts that already exist. If you have an Atmosphere account, from whichever provider, you already have a place to publish signed records that anyone can verify without trusting the server. Every role writes only to its own account: the publisher says where the file is, the curator says what goes together, the auditor or scanner or your IT department says what they think of a file. A backlink index (Constellation) helps find records, but every record is fetched from its owner and checked against their key. Nobody runs a registry, so there's nothing in the middle to compromise. You don't need an account to install; only to publish names or attestations.</p></div>
+</section>
+
+<section class="slide" id="one-file" data-act="IV · What you can do now" data-t="65">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · What you can do now</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Your app, one file, run by name</h2>
+</div>
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.55;color:#eef0e8"><span style="color:#7fd18b">$</span> bundle create --base ./app -f app.manifest --launcher -o greet.unsigned.nzip<br><span style="color:#8fa39a">* unsigned archive (3 members, sha256 digests)</span><br><span style="color:#7fd18b">$</span> bundle sign greet.unsigned.nzip<br><span style="color:#8fa39a">* wrote greet.nzip (1904 bytes)</span><br><span style="color:#7fd18b">$</span> ./greet.nzip Grace<br>hello, Grace<br><span style="color:#7fd18b">$</span> head -2 greet.nzip<br><span style="color:#f2a65a">#!/bin/sh</span><br><span style="color:#f2a65a">exec node --no-warnings --experimental-vfs --vfs-load="$0" -- "$@"</span></p>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px">
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Two kilobytes</h3><p style="font-size:24px;color:#b9c7bf">Only the files the app read.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">It’s a zip</h3><p style="font-size:24px;color:#b9c7bf">unzip -l shows everything in it.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Plain node runs it</h3><p style="font-size:24px;color:#b9c7bf">No node_modules, no install step.</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>Demo, or show the slide if the network is bad. The app was recorded first (the observe step), so the archive holds exactly the three files it read, and the unused module in the source isn't there. --launcher puts a two-line shell script in front of the zip, so the file runs by name. The signature covers the whole file, launcher included. That's wishes one and two from the list: one file, decided at release, runs by name. On Windows, bundle install sets up a .nzip file association so the same file runs by name there too.</p></div>
+</section>
+
+<section class="slide" id="install" data-act="IV · What you can do now" data-t="65">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · What you can do now</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Install a stranger’s tool, and see who vouches for it.</h2>
+</div>
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.55;color:#eef0e8"><span style="color:#7fd18b">$</span> bundle install @alice.example/tool<br>* tool: sha256:3f1a… (signed)<br>&#160;&#160;&#160;1 signed by&#160;&#160;&#160;…/acme/tool/.github/workflows/release.yml@refs/heads/main — <span style="color:#f2a65a">new</span><br>&#160;&#160;&#160;2 attested by audit.acme.com as audited — <span style="color:#7fd18b">trusted by policy</span><br>&#160;&#160;&#160;&#160;&#160;<span style="color:#f2a65a">WARNING</span>&#160;&#160;&#160;&#160;&#160;scanner.example as malware — marked it bad<br>* accept which? numbers (1,2), 'all', or Enter to decline:</p>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px">
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Nothing runs to install</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Fetch, check, move into place. No install scripts.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">You decide once</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Your answer is remembered for every update.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Name it any way</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">A URL, a domain, or a name someone published.</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>Think of it as curl-pipe-sh with the two scary parts removed: nothing runs to install it, and nothing lands on disk unless it checks out. A file that doesn't match its signature is refused outright, so a tampered download never lands. Walk the prompt: a signer you haven't seen before is a question; an auditor your policy trusts goes straight through; a warning from a stranger is shown, not obeyed, because anyone can publish one, while a warning from someone you listed refuses it outright. Three ways to name an app: a URL, a domain whose TXT record says where, or a published name like this one. Next slide: the same install, without a terminal.</p></div>
+</section>
+
+<section class="slide" id="one-click" data-act="IV · What you can do now" data-t="60">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · What you can do now</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">One click on a link installs it.</h2>
+</div>
+<div style="display:flex;gap:56px;flex:1">
+<div style="width:900px;flex:none;display:flex;flex-direction:column;gap:32px">
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#8fa39a;font-weight:700">on your page, README or post</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;line-height:1.6;color:#eef0e8">&lt;a href="<span style="color:#7fd18b">nzip:alice.example/devtools</span>"&gt;<br>&#160;&#160;Install devtools<br>&lt;/a&gt;</p>
+</div>
+<div style="display:flex;gap:16px;align-items:center">
+<p style="font-size:32px;font-weight:700;background:#7fd18b;color:#13201b;padding:20px 32px;border-radius:999px;white-space:nowrap">🌳 Install devtools</p>
+<p style="font-size:32px;color:#7fd18b">→</p>
+<p style="font-size:24px;line-height:1.4;color:#b9c7bf;width:420px">bundle opens a window with the same review and the same questions.</p>
+</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #7fd18b;padding:4px 0 4px 28px"><h3 style="font-size:32px;font-weight:700">No terminal needed</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Once bundle is installed, the browser hands nzip: links to it.</p></div>
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #7fd18b;padding:4px 0 4px 28px"><h3 style="font-size:32px;font-weight:700">Names, never downloads</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">A link names something published. A page can’t point bundle at any old file.</p></div>
+<div style="display:flex;flex-direction:column;gap:8px;border-left:6px solid #7fd18b;padding:4px 0 4px 28px"><h3 style="font-size:32px;font-weight:700">Apps, suites, plugins</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">A plugin’s link installs it into its app. publish prints the link.</p></div>
+</div>
+</div>
+</div>
+<div class="notes" hidden><p>This is the one people underestimate. Once bundle is installed, it registers itself for nzip: links on Linux, macOS and Windows. An author puts a link on their page, their README, or in a chat message or a post; clicking it, the browser asks whether to open bundle, and bundle runs the same install as the terminal command, with the decisions in a window. So your designer, your PM, or the colleague who never opens a terminal can install your team's tools, and they still see who vouches for them. Safety: a link only ever names something published, an @handle/name or an at:// address, never a URL or a domain, so a web page can't make bundle fetch an arbitrary file. What it names is fetched, checked and reviewed like any install. bundle publish and bundle suite publish print the link for you, and the project's page lists every published app with its link. If links ever stop opening bundle, bundle links puts it right.</p></div>
+</section>
+
+<section class="slide" id="stay-current" data-act="IV · What you can do now" data-t="55">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · What you can do now</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Updates follow the publisher. Bad news finds you.</h2>
+</div>
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.55;color:#eef0e8"><span style="color:#7fd18b">$</span> bundle update<br>1 of 4 updated: tool<br><br><span style="color:#8fa39a"># a new terminal, the next morning:</span><br><span style="color:#f2a65a">tool: WARNING — scanner.example as malware has marked it bad since it was last checked</span><br><br><span style="color:#7fd18b">$</span> bundle installed tool<br><span style="color:#f2a65a">tool CHANGED</span> the file is not the bytes that were installed</p>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px">
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Releases move, you follow</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">An install remembers how it was named, and asks again.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">A quiet daily check</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">At shell start, and silent when there’s nothing to say.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Changes get noticed</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Whoever touched the file on disk.</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>The part I like most: if a scanner flags something you installed last week, your next terminal tells you. You didn't subscribe to a mailing list or read a security advisory; the warning travelled to you, because it's an attestation about the exact hash you have. The shell check runs at most once a day, gives up quickly offline, and says nothing when there's nothing to say. bundle installed answers "is this still what I installed?" on any machine.</p></div>
+</section>
+
+<section class="slide" id="suites" data-act="IV · What you can do now" data-t="65">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · What you can do now</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Your team’s toolset, with one question</h2>
+</div>
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.55;color:#eef0e8"><span style="color:#7fd18b">$</span> bundle install @acme.com/devtools<br>* suite devtools expects its members to carry:<br>&#160;&#160;&#160;1 signed by …/acme/cli/…/release.yml@refs/heads/main — for cli<br>&#160;&#160;&#160;2 attested by published@did:plc:… — for cli-git, cli-k8s<br>accept which, for those members? all<br><span style="color:#7fd18b">suite devtools: 3 installed</span><br><br><span style="color:#8fa39a"># and IT pushes one rule to every laptop:</span><br>{ "require": { "attesters": ["permitted@did:web:it.acme.com"] } }</p>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px">
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Asked once</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Every tool is still reviewed on its own.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">Kept in step</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Tools added are installed, tools dropped are removed.</p></div>
+<div style="border-left:6px solid #7fd18b;padding:4px 0 4px 28px;display:flex;flex-direction:column;gap:8px"><h3 style="font-size:32px;font-weight:700">IT can say yes or no</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Permit the suite, prohibit one tool in it.</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>Back to the ten laptops. A suite is a list of things that go together, like your team's toolset, published by whoever curates it. It doesn't vouch for anything itself: it says what each tool must carry, so you're asked once instead of ten times. bundle update keeps everyone on the same set. The company case: IT requires "permitted by us" of everything, permits a whole suite with one attestation, and can still prohibit one tool inside it. That's wish six: the same thing on every laptop and in CI.</p></div>
+</section>
+
+<section class="slide" id="server" data-act="IV · Back on the server" data-t="75">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">IV · Back on the server</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Deploying a web service, now</h2>
+</div>
+<div style="display:flex;gap:48px;flex:1">
+<div style="width:960px;flex:none;background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column;justify-content:center">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.6;color:#eef0e8"><span style="color:#8fa39a"># /etc/bundle/policy.json</span><br>{ "require": { "attesters":<br>&#160;&#160;["published@did:plc:…"] } }<br><br><span style="color:#7fd18b">$</span> bundle install --system \<br>&#160;&#160;&#160;&#160;--name shop \<br>&#160;&#160;&#160;&#160;@you.example/shop<br><br><span style="color:#8fa39a"># each systemd unit:</span><br>node --experimental-vfs \<br>&#160;&#160;--vfs-load=…/shop.nzip -- run checkout</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+<div style="display:flex;flex-direction:column;gap:6px"><h3 style="font-size:32px;font-weight:700">One app, every service a part</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">API, auth, workers, mail… each pinned by hash.</p></div>
+<div style="display:flex;flex-direction:column;gap:6px"><h3 style="font-size:32px;font-weight:700">CI vouches for one hash</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">The servers only accept what that account attested.</p></div>
+<div style="display:flex;flex-direction:column;gap:6px"><h3 style="font-size:32px;font-weight:700">Unchanged means untouched</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Same bytes, same hash: not fetched, not restarted.</p></div>
+<div style="display:flex;flex-direction:column;gap:6px"><h3 style="font-size:32px;font-weight:700">All or none</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">No half the services on last week’s release.</p></div>
+</div>
+</div>
+<p style="font-size:44px;line-height:1.3;font-weight:700;color:#7fd18b">What’s on the server? One hash, and who vouched for it.</p>
+</div>
+<div class="notes" hidden><p>This closes the loop from the first slide. Picture a product made of many services. CI builds each service as a part, builds one app that pins every part's hash, and attests that one hash from its own Atmosphere account. The servers' policy only accepts that attestation, and it names a DID, never a handle, because handles change hands. Each systemd unit runs stock Node with the app and asks it to run one part; no unit points at a service's own archive. Archive members all carry a fixed date, so an unchanged part is the same bytes in the next release, keeps its hash, and its service isn't even restarted. Compare that with the deploy on slide two: no registry, no npm install, no copying files around, and a single answer to "what's running".</p></div>
+</section>
+
+<section class="slide" id="before-after" data-act="V · Why it matters" data-t="45">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">V · Why it matters</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">What was hard, and what it is now</h2>
+</div>
+<table style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;color:#13201b">
+<tr><th style="width:44%;color:#b4541a">Hard before</th><th style="width:56%;color:#1f5c40">Now</th></tr>
+<tr><td>What’s on the server?</td><td>One hash, and who vouched for it</td></tr>
+<tr style="background:#ebe7dc"><td>Deploys that need the registry</td><td>The file is the release</td></tr>
+<tr><td>Handing a colleague a CLI</td><td>One file that runs by name, or one click</td></tr>
+<tr style="background:#ebe7dc"><td>Ten laptops in step</td><td>A suite, kept current by bundle update</td></tr>
+<tr><td>Who vouches for it?</td><td>Signatures and attestations you choose</td></tr>
+<tr style="background:#ebe7dc"><td>Hearing about a compromise</td><td>Your next terminal tells you</td></tr>
+<tr><td>Plugins as loose npm packages</td><td>Signed plugins, installed per app</td></tr>
+</table>
+</div>
+<div class="notes" hidden><p>The summary of the story, row by row: the server question from the opening, the deploy that reached for the internet, the tool for your team, the ten laptops, the stranger's tool. One row we didn't demo: if your app takes plugins, they can be signed bundles too, installed for your app, and a plugin called lodash can never replace your lodash, because your app's own dependencies always win. Don't read the table out; pick two rows that landed best with this room.</p></div>
+</section>
+
+<section class="slide" id="why-care" data-act="V · Why it matters" data-t="50">
+<div class="frame" style="background:#f4f1ea;color:#13201b;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#b4541a;font-weight:700">V · Why it matters</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#13201b">Why you, a JavaScript developer, should care</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:40px;flex:1">
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-top:8px solid #1f5c40;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:20px">
+<h3 style="font-size:44px;font-weight:700;line-height:1.15">You can say what’s running</h3>
+<p style="font-size:32px;line-height:1.35;color:#4a5249">With a hash, on any server or laptop, months later.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-top:8px solid #1f5c40;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:20px">
+<h3 style="font-size:44px;font-weight:700;line-height:1.15">You can share a tool</h3>
+<p style="font-size:32px;line-height:1.35;color:#4a5249">One file, one click, kept current. No support channel.</p>
+</div>
+<div style="background:#fbfaf5;border:1px solid #ddd8cb;border-top:8px solid #1f5c40;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:20px">
+<h3 style="font-size:44px;font-weight:700;line-height:1.15">You choose whom to trust</h3>
+<p style="font-size:32px;line-height:1.35;color:#4a5249">See who vouches, and let your policy decide.</p>
+</div>
+</div>
+<p style="font-size:32px;line-height:1.4;color:#13201b">Built on Node itself: <b>no new runtime, no new registry, no fork.</b> You still develop with npm; this changes what you hand over.</p>
+</div>
+<div class="notes" hidden><p>Three takeaways, one per card; this is the slide people should remember. First, the question from the opening has an answer now. Second, sharing tooling stops being a support burden. Third, trust stops being an assumption you make about the registry and becomes something visible that you decide. And it doesn't ask you to switch runtimes or registries: it builds on features that are now in Node, and it doesn't replace npm; it's a way to ship what npm built.</p></div>
+</section>
+
+<section class="slide" id="honest" data-act="V · Honestly" data-t="40">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#f2a65a;font-weight:700">V · Honestly</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">What this isn’t, yet</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;flex:1">
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:12px;justify-content:center"><h3 style="font-size:32px;font-weight:700">Not stable</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Node 26.11+ with --experimental-vfs. Both sides are experimental.</p></div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:12px;justify-content:center"><h3 style="font-size:32px;font-weight:700">Not a sandbox</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">Checked code runs with full access, like any Node program.</p></div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:12px;justify-content:center"><h3 style="font-size:32px;font-weight:700">Not proof of safety</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">A signature says who built it. Review and attestations say the rest.</p></div>
+<div style="background:#1b2b25;border:1px solid #2a3d35;border-radius:16px;padding:40px;display:flex;flex-direction:column;gap:12px;justify-content:center"><h3 style="font-size:32px;font-weight:700">Not a replacement for npm</h3><p style="font-size:24px;line-height:1.4;color:#b9c7bf">You still develop with npm. This changes what you hand over.</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>Before anyone goes and uses this for everything: four things it isn't. Being upfront here is what makes the rest credible. On "not proof of safety": most npm compromises shipped perfectly signed packages from real, hijacked accounts, which is exactly why attestations from other people exist.</p></div>
+</section>
+
+<section class="slide" id="try-it" data-act="Try it tonight" data-t="40">
+<div class="frame" style="background:#13201b;color:#eef0e8;font-family:'Space Grotesk', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;letter-spacing:4px;text-transform:uppercase;color:#7fd18b;font-weight:700">Try it tonight</p>
+<h2 style="font-size:72px;font-weight:700;line-height:1.1;color:#eef0e8">Pack your own tool, then ask me anything.</h2>
+</div>
+<div style="background:#0c1411;border:1px solid #2a3d35;border-radius:16px;padding:40px 48px;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;line-height:1.6;color:#eef0e8"><span style="color:#8fa39a"># get bundle (needs node 26.11.1+)</span><br><span style="color:#7fd18b">$</span> curl -LO https://github.com/pipobscure/bundles/releases/latest/download/bundle.nzip<br><span style="color:#7fd18b">$</span> node --experimental-vfs --vfs-load ./bundle.nzip install<br><span style="color:#8fa39a"># pack yours</span><br><span style="color:#7fd18b">$</span> BUNDLE_MANIFEST=app.manifest node --experimental-vfs -r @pipobscure/bundle/record --vfs-load=./app<br><span style="color:#7fd18b">$</span> bundle create --base ./app --files app.manifest --launcher --output app.unsigned.nzip<br><span style="color:#7fd18b">$</span> bundle sign app.unsigned.nzip &amp;&amp; ./app.nzip</p>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:end;flex:1">
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">Code &amp; docs</p><p style="font-size:32px">github.com/pipobscure/bundles</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">Package</p><p style="font-size:32px">npm: @pipobscure/bundle</p></div>
+<div style="display:flex;flex-direction:column;gap:8px"><p style="font-size:24px;letter-spacing:3px;text-transform:uppercase;color:#7fd18b;font-weight:700">Say hi</p><p style="font-size:32px">@pipobscure.com</p></div>
+</div>
+</div>
+<div class="notes" hidden><p>"If you ship a CLI, try packing it tonight. I'd love to hear where it breaks." The fourth line is the observe step: run the app once, the way it's normally used, and it writes down every file it reads. Likely questions: Native addons? Yes, loaded straight from the archive. Size? Only the files the app read; a small CLI is kilobytes. Do I need an Atmosphere account? No: install by URL or domain, sign with sigstore; accounts are only for publishing names and attestations. Windows? Yes, tested in CI, along with macOS. Isn't npm provenance enough? It's good, and it's about packages you install from npm; this is about the finished app you hand over. Bun or Deno? This builds on Node's own new features, so it's Node.</p></div>
+</section>
+
+</div></div>
+
+<div id="bar"></div>
+<div id="hud">
+  <span id="pos"></span><span class="sep"></span>
+  <span id="clock" title="press T to start/pause">0:00</span><span class="sep"></span>
+  <button id="bN" type="button" title="speaker notes (S)">notes</button>
+  <button id="bO" type="button" title="overview (O)">grid</button>
+</div>
+
+<div id="notes" hidden><h4 id="nh">Speaker notes</h4><div class="body" id="nb"></div></div>
+<div id="ov" hidden></div>
+<div id="help" hidden><div class="box">
+  <h4>Controls</h4>
+  <dl>
+    <dt>&rarr; &nbsp;&darr; &nbsp;space</dt><dd>next slide</dd>
+    <dt>&larr; &nbsp;&uarr;</dt><dd>previous slide</dd>
+    <dt>Home / End</dt><dd>first / last</dd>
+    <dt>S</dt><dd>speaker notes</dd>
+    <dt>O</dt><dd>overview grid</dd>
+    <dt>T</dt><dd>start / pause the pace timer</dd>
+    <dt>R</dt><dd>reset the timer</dd>
+    <dt>F</dt><dd>fullscreen</dd>
+    <dt>?</dt><dd>this panel</dd>
+  </dl>
+  <p style="margin:18px 0 0;font-size:13.5px;color:var(--muted);line-height:1.5">
+    The timer turns <b style="color:var(--bad)">orange</b> when you are behind the planned pace for the current slide and
+    <b style="color:var(--ok)">green</b> when you are ahead. Planned runtime is about 21 minutes.</p>
+</div></div>
+
+<script>
+(function(){
+  // A slide marked `data-cut` is kept in the file but left out of the deck —
+  // parked rather than deleted. Add `?cut` to the URL to put them all back;
+  // everything else (offsets, act labels, kicker numbers, the timing plan) is
+  // derived from this list, so a cut slide costs nothing and leaves no gap.
+  var SHOW_CUT = /[?&](cut|all)\b/.test(location.search) || /[?&](cut|all)\b/.test(location.hash);
+  var slides = [].slice.call(document.querySelectorAll('.slide'))
+    .filter(function (s) { return SHOW_CUT || !s.hasAttribute('data-cut'); });
+  var stage = document.getElementById('stage');
+  var N = slides.length, cur = 0;
+
+  var plan = [], acc = 0;
+  slides.forEach(function(s){ plan.push(acc); acc += parseInt(s.dataset.t || '60', 10); });
+  var total = acc;
+
+  // Offsets, act labels and kicker numbers are derived from position, so
+  // inserting or moving a slide can never leave them inconsistent.
+  slides.forEach(function(s, i){
+    var hex = '0x' + i.toString(16).toUpperCase().padStart(2, '0');
+    var off = s.querySelector('.gutter .off'); if (off) off.textContent = hex;
+    var act = s.querySelector('.gutter .act'); if (act) act.textContent = s.dataset.act || '';
+    var k = s.querySelector('.kicker');
+    if (k && k.lastElementChild) k.lastElementChild.textContent = hex.slice(2);
+  });
+
+  function heading(s){
+    var h = s.querySelector('h1, h2');
+    return h ? h.textContent.replace(/\s+/g,' ').trim() : '—';
+  }
+
+  function fit(){
+    var k = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    stage.style.transform = 'scale(' + k + ')';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  var nb = document.getElementById('nb'), nh = document.getElementById('nh');
+  function show(i){
+    cur = Math.max(0, Math.min(N - 1, i));
+    slides.forEach(function(s, j){ s.classList.toggle('on', j === cur); });
+    document.getElementById('pos').textContent =
+      String(cur + 1).padStart(2,'0') + ' / ' + String(N).padStart(2,'0');
+    document.getElementById('bar').style.width = (cur / (N - 1) * 100) + '%';
+    var n = slides[cur].querySelector('.notes');
+    nb.innerHTML = n ? n.innerHTML : '<p style="color:var(--faint)">No notes for this slide.</p>';
+    var m = Math.floor(plan[cur] / 60), sec = plan[cur] % 60;
+    nh.textContent = 'Speaker notes — slide ' + (cur+1) + ' of ' + N +
+      ' · planned start ' + m + ':' + String(sec).padStart(2,'0') +
+      ' · this slide ' + slides[cur].dataset.t + 's';
+    history.replaceState(null, '', '#' + (cur + 1));
+    tick();
+  }
+
+  var running = false, elapsed = 0, last = 0;
+  var clock = document.getElementById('clock');
+  function fmt(s){
+    var neg = s < 0; s = Math.abs(Math.round(s));
+    return (neg ? '-' : '') + Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  }
+  function tick(){
+    clock.textContent = fmt(elapsed) + ' / ' + fmt(total);
+    clock.className = '';
+    if (!running && elapsed === 0) return;
+    var drift = elapsed - plan[cur];
+    clock.className = drift > 45 ? 'late' : (drift < -45 ? 'early' : 'run');
+    clock.title = drift > 0 ? Math.round(drift) + 's behind plan' : Math.round(-drift) + 's ahead of plan';
+  }
+  setInterval(function(){
+    if (!running) return;
+    var now = Date.now(); elapsed += (now - last) / 1000; last = now; tick();
+  }, 500);
+
+  var ov = document.getElementById('ov');
+  function buildOv(){
+    ov.innerHTML = '';
+    slides.forEach(function(s, i){
+      var b = document.createElement('button');
+      b.className = 'ov-card' + (i === cur ? ' cur' : '');
+      b.type = 'button';
+      b.innerHTML = '<span class="i"><span>' + String(i+1).padStart(2,'0') +
+        '</span><span class="a"></span></span><span class="h"></span>';
+      b.querySelector('.a').textContent = s.dataset.act || '';
+      b.querySelector('.h').textContent = heading(s);
+      b.addEventListener('click', function(){ ov.hidden = true; show(i); });
+      ov.appendChild(b);
+    });
+  }
+  function toggleOv(){
+    if (ov.hidden) { buildOv(); ov.hidden = false; } else { ov.hidden = true; }
+  }
+
+  var notes = document.getElementById('notes'), help = document.getElementById('help');
+  document.getElementById('bN').addEventListener('click', function(){ notes.hidden = !notes.hidden; });
+  document.getElementById('bO').addEventListener('click', toggleOv);
+
+  document.addEventListener('keydown', function(e){
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === 'Escape') { ov.hidden = true; help.hidden = true; return; }
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === ' ' || k === 'PageDown') { e.preventDefault(); show(cur+1); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { e.preventDefault(); show(cur-1); }
+    else if (k === 'Home') { e.preventDefault(); show(0); }
+    else if (k === 'End') { e.preventDefault(); show(N-1); }
+    else if (k === 's' || k === 'S') { notes.hidden = !notes.hidden; }
+    else if (k === 'o' || k === 'O') { toggleOv(); }
+    else if (k === 't' || k === 'T') { running = !running; last = Date.now(); tick(); }
+    else if (k === 'r' || k === 'R') { running = false; elapsed = 0; tick(); }
+    else if (k === 'f' || k === 'F') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    }
+    else if (k === '?') { help.hidden = !help.hidden; }
+  });
+
+  var start = parseInt((location.hash || '#1').slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1);
+})();
+</script>
