@@ -1,12 +1,12 @@
 # Talks
 
 Three self-contained decks. Each is one HTML file: open it in a browser, no build step, no
-server, no dependencies. The only thing each fetches is two Google Fonts; everything else,
+server, no dependencies. The only thing each fetches is its Google Fonts; everything else,
 layout, diagrams, speaker notes, is in the file. All three use the same controls (below).
 
 | Deck | For | Length |
 |---|---|---|
-| [`server.html`](server.html), *What’s on the server?* | JavaScript enthusiasts: a story from deploying web services and sharing tools to what one signed file makes possible | ~21 min, 23 slides, plus questions |
+| [`server.html`](server.html), *Ship the Tree* (the story) | JavaScript enthusiasts: a story from deploying web services and sharing tools to what one signed file makes possible | ~25 min, 27 slides, plus questions |
 | [`meetup.html`](meetup.html), *Your Node app, one file* | a JS meetup: developers who ship and install Node tools, and want to know whether it works and what it does for them | ~21 min, 21 slides, plus questions |
 | [`index.html`](index.html), *Ship the Tree* | a technical conference: file formats, signatures, and the Node changes behind them | ~26 min, 22 slides |
 
@@ -62,22 +62,24 @@ is exactly one internals slide, and it says so.
 
 ## The story deck
 
-*What’s on the server?* is told as a story for JavaScript developers, in five parts: deploying
+*Ship the Tree*, the story deck, is told as a story for JavaScript developers, in five parts: deploying
 a web service and never quite knowing what runs on the box; sharing tools across a team and
 the drift that follows, ending on a wish list; what had to exist first (Node running an app
 out of an archive, keyless signing, records in Atmosphere accounts); what you can do now (one
 file, an install that shows who vouches, `nzip:` links that install in one click, updates and
-warnings that find you, suites, a web service deployed whole); and why it matters, with
+warnings that reach you, suites, a web service deployed whole); and why it matters, with
 honest limits. It is mildly technical, and it deliberately leaves out standalone executables
 and checking an app as it runs.
 
 Its slides are laid out on a 1920×1080 stage, each one styled inline, so it scales like the
-others. It was drafted as a Claude slides artifact and assembled into this file; edit the
+others. Every slide has the same dark ground; each part has its own accent colour
+(I orange, II yellow, III blue, IV green, V violet) on its label, rules and highlights, while
+code keeps one set of colours throughout. It was drafted as a Claude slides artifact and assembled into this file; edit the
 `<section>`s here directly.
 
 ## The technical deck
 
-Everything from here on is about *Ship the Tree*.
+Everything from here on is about the technical deck, `index.html`.
 
 Planned runtime is **25:45** of content across 22 slides — 29:15 across 25 with the cut
 ones put back. That is tight for a 30-minute slot with questions, so decide your cuts in
