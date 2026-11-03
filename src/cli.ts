@@ -636,7 +636,7 @@ export const HELP: Record<string, string> = {
       --no-sigstore     leave the sigstore libraries out of the embedded verifier
       --untrusted       let the finished executable run an archive whose
                         signature is good but unanchored
-  -r, --root <file>     trusted root the executable checks against; repeatable
+  -r, --root <file>     trusted root the executable checks against (baked in); repeatable
       --identity <san>  identity the executable requires of a signature
       --issuer <url>    issuer the executable requires of a signature
       --attester <[kind@]who>  attester the executable requires; repeatable.

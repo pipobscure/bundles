@@ -353,7 +353,7 @@ network.
 | `--node <file>` | the node binary to embed (default: the one running) |
 | `--base <file>` | reuse a runtime built before, instead of building one |
 | `--no-sigstore` | leave the sigstore libraries out of the verifier (it can then check only certificate-chain signatures) |
-| `-r, --root <file>` | a trusted root the executable checks against; repeatable |
+| `-r, --root <file>` | a trusted root the executable checks against, read now and baked in as its certificate, so the file need not exist where it runs; repeatable |
 | `--identity <san>`, `--issuer <url>` | the sigstore signer the executable requires |
 | `--attester <[kind@]who>` | an attester the executable requires; repeatable. Handles are resolved now; the DID is baked. |
 | `--quorum <n>` | how many of the attesters (default: all) |

@@ -266,20 +266,32 @@ export function verifierFiles({ sigstore = true }: VerifierOptions = {}): string
 const SIGSTORE_PACKAGES = ['@sigstore/verify', '@sigstore/bundle', '@sigstore/protobuf-specs', '@sigstore/tuf'];
 
 /**
- * Resolve the paths in a baked policy, because a policy is baked *here* and read
- * *there*. `--root build/certs/root.pem` is a sentence about the directory the
- * build ran in; the binary that carries it may be run anywhere, by anyone, and a
- * trust root it cannot find is a container that refuses everything. PEM text
- * passes through untouched — it is not a path and has no directory to be
- * relative to.
+ * Anchor a baked policy, because a policy is baked *here* and read *there*.
+ * `--root build/certs/root.pem` is a sentence about the machine the build ran
+ * on; the binary that carries it may be run anywhere, by anyone, and a trust
+ * root it cannot find is a container that refuses everything. So a root given
+ * as a file is read now and baked as its PEM text — resolving the path is not
+ * enough, since the file is not there on anyone else's machine. PEM text
+ * passes through untouched.
  */
 function anchorPolicy(options: BootstrapOptions): BootstrapOptions {
     const anchored = { ...options };
-    if (options.roots) {
-        anchored.roots = options.roots.map((root) => (root.includes('-----BEGIN') ? root : PATH.resolve(root)));
-    }
+    if (options.roots) anchored.roots = options.roots.map(bakedRoot);
     if (options.trustedRoot) anchored.trustedRoot = PATH.resolve(options.trustedRoot);
     return anchored;
+}
+
+/** A trusted root as the PEM text a binary can carry, read from its file if it is one. */
+function bakedRoot(root: string): string {
+    if (root.includes('-----BEGIN')) return root;
+    let text: string;
+    try {
+        text = FS.readFileSync(root, 'utf-8');
+    } catch (err) {
+        throw new Error(`sea: cannot read the trusted root ${root}: ${(err as Error).message}`);
+    }
+    if (!text.includes('-----BEGIN CERTIFICATE-----')) throw new Error(`sea: the trusted root ${root} holds no PEM certificate`);
+    return text;
 }
 
 /**

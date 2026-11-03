@@ -365,16 +365,22 @@ test('the runtime says what it is, and what it wants', needsSea, () => {
 
 test('a runtime built with a policy of its own takes none from its command line', needsSea, async () => {
     const sealed = executablePath(PATH.join(tmp, 'sealed-node'));
-    // Deliberately relative: a policy is baked *here* and read *there*, so the
-    // build has to anchor it. A binary carrying `build/certs/root.pem` would
-    // refuse everything the moment it ran from anywhere else.
+    // A policy is baked *here* and read *there*, so the build has to carry the
+    // root itself, not where it was. A binary carrying `build/certs/root.pem`,
+    // relative or resolved, would refuse everything on any other machine. So the
+    // root is given by a relative path to a copy, and the copy is gone before
+    // the binary runs.
+    const copy = PATH.join(tmp, 'baked-root.pem');
+    FS.copyFileSync(ROOT_PEM, copy);
     await createSeaBase({
         output: sealed, sigstore: false,
-        bootstrap: { roots: [PATH.relative(process.cwd(), ROOT_PEM)], sealed: true },
+        bootstrap: { roots: [PATH.relative(process.cwd(), copy)], sealed: true },
     });
+    FS.rmSync(copy);
 
     // The baked root is enough on its own: nothing in the environment, no flag,
-    // and a working directory that knows nothing about where it was built.
+    // no file where it was built, and a working directory that knows nothing
+    // about any of that.
     const ran = spawnSync(sealed, [SIGNED_APP],
         { encoding: 'utf-8', cwd: tmp, env: { ...process.env, BUNDLE_ROOTS: '' } });
     assert.equal(ran.status, 0, ran.stderr);
@@ -391,6 +397,15 @@ test('a runtime built with a policy of its own takes none from its command line'
     const entry = run(sealed, ['--entry', 'index.js', SIGNED_APP], { BUNDLE_ROOTS: '' });
     assert.equal(entry.status, 0, entry.stderr);
     discard(sealed);
+});
+
+test('a trusted root that is not a PEM certificate is refused at build time', needsSea, async () => {
+    const notPem = PATH.join(tmp, 'not-a-root.pem');
+    FS.writeFileSync(notPem, 'just some text\n');
+    await assert.rejects(createSeaBase({ output: PATH.join(tmp, 'never-built'), sigstore: false, bootstrap: { roots: [notPem], sealed: true } }),
+        /holds no PEM certificate/);
+    await assert.rejects(createSeaBase({ output: PATH.join(tmp, 'never-built'), sigstore: false, bootstrap: { roots: [PATH.join(tmp, 'missing.pem')], sealed: true } }),
+        /cannot read the trusted root/);
 });
 
 test('the same base becomes a self-validating executable by appending an app', needsSea, async () => {

@@ -12,6 +12,13 @@ how to use it is in the [README](README.md) and [docs/](docs/).
   is linked by DID. What it finds is kept in `localStorage` and shown at once on the next visit;
   a result missing a publisher that could not be reached is not kept as fresh.
   The page's Content-Security-Policy now allows `connect-src https:`, since a PDS can be anywhere.
+- **`bundle sea --root` bakes in the certificate, not its path.** An executable built with
+  `--root root.pem` carried the absolute path of that file and read it each time it ran, so on
+  any machine without the file at that path it refused to run at all (`ENOENT`). It now reads
+  the file while building and carries the PEM text, and a root that cannot be read, or holds no
+  certificate, fails the build instead of every run. Executables built before need rebuilding.
+- **[examples/sea-worker](examples/sea-worker/)**: a standalone executable that starts worker
+  threads from its own files, read out of the archive inside it.
 
 ## 0.2.2
 
