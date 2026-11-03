@@ -1,0 +1,9 @@
+{
+  "name": "@example/sea-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Counts primes on a pool of worker threads whose script lives inside the archive — for checking that a standalone executable can start a Worker from one of its own files.",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "EUPL-1.2"
+}

@@ -221,7 +221,7 @@ bundle sign tool.unsigned          # -> tool
 `bundle sea` builds one file containing Node, the verifier and your app. It is built
 unsigned, so you can review it as it will run, and refuses to run until `bundle sign` signs
 the whole thing. Then it checks its own signature before running anything, needs nothing
-installed, and can carry its own rules for whom it accepts. Worker threads work as usual. Built without an app, it is
+installed, and can carry its own rules for whom it accepts. Worker threads work as usual (see [examples/sea-worker](examples/sea-worker/)). Built without an app, it is
 a **verifying node**: `./node-verifying app.nzip` checks any archive and runs it.
 
 ## Deciding whom you trust
