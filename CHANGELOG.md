@@ -3,7 +3,7 @@
 What each release changed. The reasoning behind the project is in [HISTORY.md](HISTORY.md);
 how to use it is in the [README](README.md) and [docs/](docs/).
 
-## Unreleased
+## 0.2.3
 
 - **The project's page lists the published apps.** [bundle.pipobscure.com](https://bundle.pipobscure.com/#apps)
   shows every app listed on the Atmosphere, A to Z, ten to a page, with a search, who published
